@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 
+from app.api.v1.system import router as system_router
+
 from app.api.v1.auth import router as auth_router
+from app.api.v1.nodes import router as nodes_router
 from app.api.v1.rbac import router as rbac_router
 from app.core.config import settings
 from app.db.database import check_database
@@ -13,7 +16,10 @@ app = FastAPI(
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(rbac_router, prefix=settings.API_PREFIX)
+app.include_router(nodes_router, prefix=settings.API_PREFIX)
 
+
+app.include_router(system_router)
 
 @app.get("/")
 def root() -> dict[str, str]:
