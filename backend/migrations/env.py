@@ -6,6 +6,8 @@ from app.db.database import engine
 from app.models.base import Base
 
 import app.models.user
+import app.models.rbac
+import app.models.node
 
 config = context.config
 
@@ -27,7 +29,6 @@ def run_migrations_online():
             compare_type=True,
             compare_server_default=True,
         )
-
         with context.begin_transaction():
             context.run_migrations()
 

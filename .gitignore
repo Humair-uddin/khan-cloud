@@ -31,3 +31,6 @@ Thumbs.db
 # Logs and runtime files
 *.log
 *.pid
+
+# Local Feature Pack backups
+.feature-pack-backups/
