@@ -1,0 +1,9 @@
+[project]
+name = "khan-cloud-agent"
+version = "0.6.0"
+description = "Khan Cloud universal node agent framework"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

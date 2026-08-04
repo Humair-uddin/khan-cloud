@@ -1,0 +1,22 @@
+[Unit]
+Description=Khan Cloud Universal Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/khan-cloud/source/node-agent
+ExecStart=/opt/khan-cloud/source/node-agent/.venv/bin/python -m khan_agent --config /etc/khan-cloud-agent/config.yaml
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/khan-cloud-agent
+ReadOnlyPaths=/etc/khan-cloud-agent
+
+[Install]
+WantedBy=multi-user.target

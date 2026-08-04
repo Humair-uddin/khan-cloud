@@ -1,0 +1,18 @@
+agent:
+  node_name: KC-NODE-01
+  control_plane_url: http://192.168.18.100:8000
+  heartbeat_interval_seconds: 30
+  request_timeout_seconds: 10
+  log_level: INFO
+  state_directory: /var/lib/khan-cloud-agent
+  plugin_directory: /etc/khan-cloud-agent/plugins
+  observation_only: true
+
+security:
+  enrollment_token: ""
+  node_token: ""
+  verify_tls: true
+
+heartbeat:
+  enabled: false
+  endpoint: /api/v1/nodes/heartbeat
