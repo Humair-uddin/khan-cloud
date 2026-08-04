@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 
 from app.api.v1.auth import router as auth_router
-from app.api.v1.rbac import router as rbac_router
 from app.core.config import settings
 from app.db.database import check_database
 
@@ -11,8 +10,11 @@ app = FastAPI(
     description="Khan Cloud Control Plane",
 )
 
-app.include_router(auth_router, prefix=settings.API_PREFIX)
-app.include_router(rbac_router, prefix=settings.API_PREFIX)
+# Register feature routers directly with the FastAPI application.
+app.include_router(
+    auth_router,
+    prefix=settings.API_PREFIX,
+)
 
 
 @app.get("/")

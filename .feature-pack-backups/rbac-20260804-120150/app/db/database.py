@@ -14,14 +14,17 @@ DATABASE_URL = URL.create(
     database=settings.POSTGRES_DB,
 )
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    future=True,
+)
 
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
     autocommit=False,
 )
-
 
 def get_db():
     db = SessionLocal()
@@ -37,5 +40,5 @@ def check_database():
         return True
 
 
+# Register all models here
 import app.models.user  # noqa: E402,F401
-import app.models.rbac  # noqa: E402,F401
