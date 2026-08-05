@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import BaseModel
 
@@ -16,6 +17,8 @@ class Node(BaseModel):
     marketplace_state: Mapped[str] = mapped_column(String(30), default="not_eligible", index=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    deployment_profile_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    intended_purpose: Mapped[str] = mapped_column(String(50), default="internal_lab", index=True)
     hostname: Mapped[str] = mapped_column(String(255))
     operating_system: Mapped[str] = mapped_column(String(255), default="")
     kernel_version: Mapped[str] = mapped_column(String(255), default="")

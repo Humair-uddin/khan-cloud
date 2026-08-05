@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+
+from app.api.v1.deployment_profiles import router as deployment_profiles_router
 from app.api.v1.audit import router as audit_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.nodes import router as nodes_router
@@ -24,3 +26,5 @@ def health():
     try: check_database(); database="connected"; service_status="healthy"
     except Exception: database="disconnected"; service_status="degraded"
     return {"status":service_status,"database":database,"version":settings.APP_VERSION}
+
+app.include_router(deployment_profiles_router, prefix=settings.API_PREFIX)

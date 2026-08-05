@@ -11,6 +11,8 @@ DEFAULT_PERMISSIONS: dict[str,str] = {
 "nodes.maintenance":"Manage node maintenance.","nodes.retire":"Retire nodes.",
 "nodes.inventory.read":"View node inventory and capabilities.",
 "nodes.credentials.rotate":"Rotate node credentials.","audit.read":"View audit records.",
+"deployment_profiles.read":"View deployment profiles.",
+"deployment_profiles.manage":"Create and manage deployment profiles.",
 "deployments.read":"View deployments.","deployments.manage":"Manage deployments.",
 "settings.read":"View settings.","settings.manage":"Modify settings.",
 }
