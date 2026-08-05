@@ -1,9 +1,7 @@
 from datetime import datetime
 from typing import Any
 from uuid import UUID
-
 from pydantic import BaseModel, ConfigDict, Field
-
 
 class NodeRegistrationRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
@@ -15,13 +13,13 @@ class NodeRegistrationRequest(BaseModel):
     management_ip: str = Field(default="", max_length=64)
     production_ip: str = Field(default="", max_length=64)
     inventory: dict[str, Any] = Field(default_factory=dict)
-
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
 class NodeRegistrationResponse(BaseModel):
     node_id: UUID
     node_secret: str
     status: str
-
+    lifecycle_state: str
 
 class NodeHeartbeatRequest(BaseModel):
     hostname: str = Field(min_length=1, max_length=255)
@@ -31,16 +29,22 @@ class NodeHeartbeatRequest(BaseModel):
     management_ip: str = Field(default="", max_length=64)
     production_ip: str = Field(default="", max_length=64)
     inventory: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
+class NodeActionRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
 
 class NodeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: UUID
     name: str
     machine_id: str
     status: str
+    lifecycle_state: str
+    connectivity_state: str
+    marketplace_state: str
     is_enabled: bool
+    capabilities: dict[str, Any]
     hostname: str
     operating_system: str
     kernel_version: str
