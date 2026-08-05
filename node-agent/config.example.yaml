@@ -9,9 +9,11 @@ agent:
   observation_only: true
 
 security:
-  enrollment_token: ""
-  node_token: ""
-  verify_tls: true
+  enrollment_token: "REPLACE_WITH_EXISTING_NODE_ENROLLMENT_TOKEN"
+  verify_tls: false
+
+enrollment:
+  endpoint: /api/v1/nodes/register
 
 heartbeat:
   enabled: false

@@ -1,58 +1,46 @@
-# Khan Cloud Universal Agent v0.6.0
+# Khan Cloud Universal Agent v0.6.3
 
-This is the first working Universal Agent framework.
+## FP-009 capability
 
-## Implemented
+The agent can now:
 
-- YAML configuration
-- Persistent node identity
-- Agent state machine
-- Structured startup and heartbeat logs
-- Optional heartbeat client
-- Read-only plugin loader skeleton
-- Linux systemd unit
-- Unit tests
-- Observation-only safe default
+- enroll through the existing `POST /api/v1/nodes/register` endpoint;
+- store the returned node ID and secret with mode `0600`;
+- send an authenticated heartbeat through `POST /api/v1/nodes/heartbeat`;
+- refuse heartbeat when enrollment credentials are missing;
+- avoid printing the node secret in logs.
 
-## Safety boundary
+## Safe test flow
 
-This release does not:
-
-- install or upgrade GPU drivers;
-- change BIOS, firmware, Secure Boot, RAID, partitions, or networking;
-- delete host or customer files;
-- execute AI recommendations;
-- stop workloads;
-- enable itself automatically.
-
-## Developer verification
+Create a private configuration:
 
 ```bash
-cd node-agent
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest -q
-.venv/bin/python -m khan_agent --once
+cp config.example.yaml /home/khanadmin/khan-agent-test.yaml
+chmod 600 /home/khanadmin/khan-agent-test.yaml
 ```
 
-## Linux service installation
+Edit only the enrollment token and node name.
+
+Enroll:
 
 ```bash
-sudo ./scripts/install-linux-service.sh /opt/khan-cloud/source/node-agent
+.venv/bin/python -m khan_agent \
+  --config /home/khanadmin/khan-agent-test.yaml \
+  --enroll
 ```
 
-The script installs the unit but deliberately does not enable or start it.
-Review `/etc/khan-cloud-agent/config.yaml` first.
+Send one heartbeat:
 
-## Heartbeat
-
-Heartbeat is disabled by default because the exact control-plane heartbeat
-contract must be verified before the service is activated.
-
-After the backend heartbeat endpoint and schema are confirmed, set:
-
-```yaml
-heartbeat:
-  enabled: true
-  endpoint: /api/v1/nodes/heartbeat
+```bash
+.venv/bin/python -m khan_agent \
+  --config /home/khanadmin/khan-agent-test.yaml \
+  --heartbeat-once
 ```
+
+Credentials are stored under the configured `state_directory`.
+
+## Current limitation
+
+This early enrollment model uses a shared enrollment token and a generated node
+secret. Future secure enrollment will replace it with short-lived, scoped tokens
+and certificate-based identity.

@@ -20,7 +20,6 @@ class AgentConfig(BaseModel):
 
 class SecurityConfig(BaseModel):
     enrollment_token: str = ""
-    node_token: str = ""
     verify_tls: bool = True
 
 
@@ -29,10 +28,15 @@ class HeartbeatConfig(BaseModel):
     endpoint: str = "/api/v1/nodes/heartbeat"
 
 
+class EnrollmentConfig(BaseModel):
+    endpoint: str = "/api/v1/nodes/register"
+
+
 class AgentSettings(BaseModel):
     agent: AgentConfig
     security: SecurityConfig = SecurityConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
+    enrollment: EnrollmentConfig = EnrollmentConfig()
 
     @classmethod
     def load(cls, path: Path) -> "AgentSettings":
@@ -40,7 +44,6 @@ class AgentSettings(BaseModel):
             raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
             return cls.model_validate(raw)
 
-        # Safe development defaults: observation-only and no heartbeat.
         return cls.model_validate(
             {
                 "agent": {

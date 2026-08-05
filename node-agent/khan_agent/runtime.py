@@ -5,13 +5,13 @@ import json
 import logging
 import signal
 from dataclasses import asdict
-from datetime import UTC, datetime
-from pathlib import Path
 
 from khan_agent import __version__
 from khan_agent.client import ControlPlaneClient
 from khan_agent.config import AgentSettings
+from khan_agent.credentials import CredentialStore, NodeCredentials
 from khan_agent.identity import IdentityStore
+from khan_agent.inventory import collect_safe_inventory
 from khan_agent.plugins import PluginManager
 from khan_agent.state import AgentState, StateMachine
 
@@ -33,8 +33,87 @@ class AgentRuntime:
         self.identity = IdentityStore(
             settings.agent.state_directory
         ).load_or_create()
+        self.credential_store = CredentialStore(settings.agent.state_directory)
         self.client = ControlPlaneClient(settings)
         self.plugin_manager = PluginManager(settings.agent.plugin_directory)
+
+    def _registration_payload(self) -> dict[str, object]:
+        return {
+            "name": self.settings.agent.node_name,
+            "machine_id": self.identity.node_uuid,
+            "hostname": self.identity.hostname,
+            "operating_system": self.identity.platform,
+            "kernel_version": self.identity.platform_release,
+            "agent_version": __version__,
+            "management_ip": "",
+            "production_ip": "",
+            "inventory": collect_safe_inventory(),
+        }
+
+    def _heartbeat_payload(self) -> dict[str, object]:
+        payload = self._registration_payload()
+        payload.pop("name")
+        payload.pop("machine_id")
+        return payload
+
+    async def enroll_once(self) -> None:
+        configure_logging(self.settings.agent.log_level)
+
+        if self.credential_store.exists():
+            credentials = self.credential_store.load()
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "enrollment_skipped",
+                        "reason": "credentials_already_exist",
+                        "node_id": credentials.node_id,
+                    }
+                )
+            )
+            return
+
+        response = await self.client.enroll(self._registration_payload())
+        credentials = NodeCredentials(
+            node_id=str(response["node_id"]),
+            node_secret=str(response["node_secret"]),
+        )
+        self.credential_store.save(credentials)
+
+        logger.info(
+            json.dumps(
+                {
+                    "event": "enrollment_success",
+                    "node_id": credentials.node_id,
+                    "status": response.get("status"),
+                    "credentials_file": str(self.credential_store.path),
+                }
+            )
+        )
+
+    async def heartbeat_once(self) -> None:
+        configure_logging(self.settings.agent.log_level)
+
+        if not self.credential_store.exists():
+            raise RuntimeError(
+                "Node is not enrolled. Run the agent with --enroll first."
+            )
+
+        credentials = self.credential_store.load()
+        response = await self.client.heartbeat(
+            self._heartbeat_payload(),
+            credentials,
+        )
+
+        logger.info(
+            json.dumps(
+                {
+                    "event": "heartbeat_success",
+                    "node_id": credentials.node_id,
+                    "status": response.get("status"),
+                    "last_seen_at": response.get("last_seen_at"),
+                }
+            )
+        )
 
     async def run(self, once: bool = False) -> None:
         configure_logging(self.settings.agent.log_level)
@@ -42,15 +121,22 @@ class AgentRuntime:
         self.state.transition(AgentState.CONFIGURED)
         plugins = self.plugin_manager.load_all()
 
-        startup = {
-            "event": "agent_started",
-            "version": __version__,
-            "state": self.state.current,
-            "identity": asdict(self.identity),
-            "observation_only": self.settings.agent.observation_only,
-            "plugins": [{"name": p.name, "version": p.version} for p in plugins],
-        }
-        logger.info(json.dumps(startup, default=str))
+        logger.info(
+            json.dumps(
+                {
+                    "event": "agent_started",
+                    "version": __version__,
+                    "state": self.state.current,
+                    "identity": asdict(self.identity),
+                    "observation_only": self.settings.agent.observation_only,
+                    "plugins": [
+                        {"name": p.name, "version": p.version}
+                        for p in plugins
+                    ],
+                },
+                default=str,
+            )
+        )
 
         if once or not self.settings.heartbeat.enabled:
             logger.info(
@@ -65,28 +151,31 @@ class AgentRuntime:
             self.state.transition(AgentState.STOPPED)
             return
 
+        if not self.credential_store.exists():
+            raise RuntimeError(
+                "Heartbeat is enabled but the node is not enrolled. "
+                "Run with --enroll first."
+            )
+
         await self._heartbeat_loop()
         self.state.transition(AgentState.STOPPED)
 
     async def _heartbeat_loop(self) -> None:
+        credentials = self.credential_store.load()
+
         while not self.stop_event.is_set():
             self.state.transition(AgentState.CONNECTING)
             try:
-                payload = {
-                    "node_uuid": self.identity.node_uuid,
-                    "node_name": self.settings.agent.node_name,
-                    "agent_version": __version__,
-                    "agent_state": self.state.current,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "observation_only": self.settings.agent.observation_only,
-                }
-                await self.client.heartbeat(payload)
+                await self.client.heartbeat(
+                    self._heartbeat_payload(),
+                    credentials,
+                )
                 self.state.transition(AgentState.CONNECTED)
                 logger.info(
                     json.dumps(
                         {
                             "event": "heartbeat_success",
-                            "node_uuid": self.identity.node_uuid,
+                            "node_id": credentials.node_id,
                         }
                     )
                 )
@@ -96,7 +185,7 @@ class AgentRuntime:
                     json.dumps(
                         {
                             "event": "heartbeat_failed",
-                            "node_uuid": self.identity.node_uuid,
+                            "node_id": credentials.node_id,
                             "error": str(exc),
                         }
                     )
@@ -116,5 +205,4 @@ class AgentRuntime:
             try:
                 loop.add_signal_handler(sig, self.stop_event.set)
             except NotImplementedError:
-                # Windows event loops may not support signal handlers.
                 pass
