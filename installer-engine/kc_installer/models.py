@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class FeaturePackInfo(BaseModel):
+    id: str
+    name: str
+    version: str
+    minimum_platform_version: str | None = None
+    description: str = ""
+    signed: bool = False
+
+
+class ComponentSpec(BaseModel):
+    enabled: bool = False
+    source: Path | None = None
+    destination: Path | None = None
+
+
+class OperationsSpec(BaseModel):
+    require_clean_git: bool = True
+    create_backup: bool = True
+    allow_dependency_install: bool = False
+    restart_services: bool = False
+    run_health_checks: bool = True
+    rollback_on_failure: bool = True
+
+
+class TestsSpec(BaseModel):
+    installer_engine: bool = False
+    backend: bool = False
+    node_agent: bool = False
+    frontend: bool = False
+
+
+class CommandHealthCheck(BaseModel):
+    type: Literal["command"]
+    name: str
+    command: list[str] = Field(min_length=1)
+
+
+class Manifest(BaseModel):
+    feature_pack: FeaturePackInfo
+    components: dict[str, ComponentSpec]
+    operations: OperationsSpec = OperationsSpec()
+    tests: TestsSpec = TestsSpec()
+    health_checks: list[CommandHealthCheck] = []

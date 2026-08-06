@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ENGINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "$ENGINE_DIR/.venv/bin/python" -m kc_installer install "$@"
