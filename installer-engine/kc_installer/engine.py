@@ -778,11 +778,37 @@ def rollback(
 
 
 def run_health_checks(context: InstallContext) -> None:
-    for check in context.manifest.health_checks:
-        execute_command(
-            list(check.command),
-            cwd=context.target_dir,
+    for position, check in enumerate(context.manifest.health_checks):
+        try:
+            result = execute_command(
+                list(check.command),
+                cwd=context.target_dir,
+            )
+        except CommandExecutionError as exc:
+            result = exc.result
+            context.state.record_health_check_result(
+                context.transaction_id, name=check.name, position=position,
+                status="failed", return_code=result.returncode,
+                timed_out=result.timed_out, stdout=result.stdout, stderr=result.stderr,
+            )
+            raise
+        context.state.record_health_check_result(
+            context.transaction_id, name=check.name, position=position,
+            status="success", return_code=result.returncode,
+            timed_out=result.timed_out, stdout=result.stdout, stderr=result.stderr,
         )
+
+
+def restart_declared_services(context: InstallContext) -> None:
+    if not context.manifest.operations.restart_services:
+        return
+    for service in context.manifest.operations.services:
+        name = service.name.strip()
+        if not name or any(ch.isspace() for ch in name) or "/" in name:
+            raise InstallError(f"Invalid service name: {service.name!r}")
+        execute_command(["systemctl", "restart", name], cwd=context.target_dir)
+        execute_command(["systemctl", "is-active", "--quiet", name], cwd=context.target_dir)
+        context.state.record(context.transaction_id, "service_restart", "success", name)
 
 
 def create_report(
@@ -929,6 +955,11 @@ def _install_locked(
             "success",
             f"Activated {len(staged_items)} component(s).",
         )
+
+        if context.manifest.operations.restart_services:
+            context.state.heartbeat(context.transaction_id)
+            context.state.record(context.transaction_id, "service_restart", "started")
+            restart_declared_services(context)
 
         if context.manifest.operations.run_health_checks:
             context.state.heartbeat(context.transaction_id)

@@ -208,6 +208,9 @@ def main() -> None:
                 "remediation_attempts": state.remediation_attempts(
                     args.transaction_id
                 ),
+                "health_checks": state.health_check_results(
+                    args.transaction_id
+                ),
                 },
                 indent=2,
                 default=str,
@@ -471,7 +474,7 @@ def main() -> None:
                 {
                     "status": "healthy",
                     "component": "installer-engine",
-                    "version": "0.9.1",
+                    "version": "1.0.0",
                 }
             )
         )

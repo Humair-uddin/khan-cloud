@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "khan-cloud-installer"
-version = "0.9.1"
+version = "1.0.0"
 description = "Manifest-driven installer engine for Khan Cloud"
 requires-python = ">=3.12"
 dependencies = [

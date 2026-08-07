@@ -131,6 +131,23 @@ class InstallerState:
                     remediation_action_id,
                     attempt_number
                 );
+
+                CREATE TABLE IF NOT EXISTS health_check_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    return_code INTEGER,
+                    timed_out INTEGER NOT NULL DEFAULT 0,
+                    stdout TEXT NOT NULL DEFAULT '',
+                    stderr TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(transaction_id)
+                        REFERENCES installations(transaction_id)
+                        ON DELETE CASCADE,
+                    UNIQUE(transaction_id, position)
+                );
                 """
             )
 
@@ -599,6 +616,44 @@ class InstallerState:
             ).fetchall()
 
         return [dict(row) for row in rows]
+
+    def record_health_check_result(
+        self,
+        transaction_id: str,
+        *,
+        name: str,
+        position: int,
+        status: str,
+        return_code: int | None,
+        timed_out: bool,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT OR REPLACE INTO health_check_results (
+                    transaction_id, name, position, status, return_code,
+                    timed_out, stdout, stderr, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (transaction_id, name, position, status, return_code,
+                 int(timed_out), stdout, stderr, utc_now()),
+            )
+
+    def health_check_results(self, transaction_id: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT name, position, status, return_code, timed_out,
+                          stdout, stderr, created_at
+                   FROM health_check_results
+                   WHERE transaction_id = ? ORDER BY position""",
+                (transaction_id,),
+            ).fetchall()
+        return [
+            {**dict(row), "timed_out": bool(row["timed_out"])}
+            for row in rows
+        ]
 
     def record(
         self,

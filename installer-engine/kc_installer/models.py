@@ -21,6 +21,10 @@ class ComponentSpec(BaseModel):
     destination: Path | None = None
 
 
+class ServiceRestartSpec(BaseModel):
+    name: str
+
+
 class OperationsSpec(BaseModel):
     require_clean_git: bool = True
     create_backup: bool = True
@@ -28,6 +32,7 @@ class OperationsSpec(BaseModel):
     restart_services: bool = False
     run_health_checks: bool = True
     rollback_on_failure: bool = True
+    services: list[ServiceRestartSpec] = []
 
 
 class CompatibilitySpec(BaseModel):
