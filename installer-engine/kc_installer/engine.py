@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -11,6 +10,7 @@ from pathlib import Path
 
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.models import Manifest
+from kc_installer.paths import InstallerPaths
 
 
 class InstallError(RuntimeError):
@@ -22,6 +22,7 @@ class InstallContext:
     package_dir: Path
     target_dir: Path
     manifest: Manifest
+    paths: InstallerPaths
     backup_dir: Path
     stage_dir: Path
     dry_run: bool
@@ -37,7 +38,9 @@ def command_output(command: list[str]) -> str:
 
 
 def ensure_clean_git(target: Path) -> None:
-    status = command_output(["git", "-C", str(target), "status", "--short"])
+    status = command_output(
+        ["git", "-C", str(target), "status", "--short"]
+    )
     if status:
         raise InstallError(
             "Git working tree is not clean:\n" + status
@@ -49,7 +52,11 @@ def prepare_context(
     target_dir: Path,
     *,
     dry_run: bool,
+    paths: InstallerPaths | None = None,
 ) -> InstallContext:
+    active_paths = paths or InstallerPaths.from_environment()
+    active_paths.ensure_directories()
+
     manifest = load_manifest(package_dir)
     errors = validate_manifest_files(package_dir, manifest)
     if errors:
@@ -59,15 +66,16 @@ def prepare_context(
         ensure_clean_git(target_dir)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
     backup_dir = (
-        target_dir
-        / ".feature-pack-backups"
+        active_paths.backup_root
         / f"{manifest.feature_pack.id.lower()}-{stamp}"
     )
+
     stage_dir = Path(
         tempfile.mkdtemp(
             prefix=f"{manifest.feature_pack.id.lower()}-stage-",
-            dir=target_dir,
+            dir=active_paths.temp_dir,
         )
     )
 
@@ -75,6 +83,7 @@ def prepare_context(
         package_dir=package_dir,
         target_dir=target_dir,
         manifest=manifest,
+        paths=active_paths,
         backup_dir=backup_dir,
         stage_dir=stage_dir,
         dry_run=dry_run,
@@ -86,12 +95,29 @@ def copy_component_to_stage(
     name: str,
 ) -> tuple[Path, Path]:
     component = context.manifest.components[name]
-    assert component.source is not None
-    assert component.destination is not None
 
-    source = context.package_dir / component.source
+    if component.source is None:
+        raise InstallError(
+            f"Component {name!r} has no source path."
+        )
+
+    if component.destination is None:
+        raise InstallError(
+            f"Component {name!r} has no destination path."
+        )
+
+    source = (context.package_dir / component.source).resolve()
     staged = context.stage_dir / component.destination
-    destination = context.target_dir / component.destination
+    destination = (
+        context.target_dir / component.destination
+    ).resolve()
+
+    try:
+        destination.relative_to(context.target_dir)
+    except ValueError as exc:
+        raise InstallError(
+            f"Unsafe destination outside target repository: {destination}"
+        ) from exc
 
     if source.is_dir():
         shutil.copytree(source, staged)
@@ -119,18 +145,26 @@ def backup_destination(
         shutil.copy2(destination, backup_target)
 
 
-def activate_component(staged: Path, destination: Path) -> None:
+def activate_component(
+    staged: Path,
+    destination: Path,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+
     if destination.exists():
         if destination.is_dir():
             shutil.rmtree(destination)
         else:
             destination.unlink()
+
     shutil.move(str(staged), str(destination))
 
 
-def rollback(context: InstallContext, destinations: list[Path]) -> None:
-    for destination in destinations:
+def rollback(
+    context: InstallContext,
+    destinations: list[Path],
+) -> None:
+    for destination in reversed(destinations):
         if destination.exists():
             if destination.is_dir():
                 shutil.rmtree(destination)
@@ -139,8 +173,10 @@ def rollback(context: InstallContext, destinations: list[Path]) -> None:
 
         relative = destination.relative_to(context.target_dir)
         backup = context.backup_dir / relative
+
         if backup.exists():
             destination.parent.mkdir(parents=True, exist_ok=True)
+
             if backup.is_dir():
                 shutil.copytree(backup, destination)
             else:
@@ -149,7 +185,11 @@ def rollback(context: InstallContext, destinations: list[Path]) -> None:
 
 def run_health_checks(context: InstallContext) -> None:
     for check in context.manifest.health_checks:
-        subprocess.run(check.command, check=True)
+        subprocess.run(
+            check.command,
+            check=True,
+            cwd=context.target_dir,
+        )
 
 
 def create_report(
@@ -158,22 +198,36 @@ def create_report(
     destinations: list[Path],
     message: str = "",
 ) -> Path:
-    reports = context.target_dir / "installer-engine" / "reports"
-    reports.mkdir(parents=True, exist_ok=True)
-    report_path = reports / (
+    context.paths.reports_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    report_path = context.paths.reports_dir / (
         f"{context.manifest.feature_pack.id.lower()}-"
         f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
     )
+
     report = {
-        "feature_pack": context.manifest.feature_pack.model_dump(),
+        "feature_pack": (
+            context.manifest.feature_pack.model_dump()
+        ),
         "status": status,
         "dry_run": context.dry_run,
+        "package": str(context.package_dir),
+        "target": str(context.target_dir),
         "destinations": [str(item) for item in destinations],
         "backup": str(context.backup_dir),
+        "runtime": str(context.paths.runtime_root),
+        "state": str(context.paths.state_root),
         "message": message,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
-    report_path.write_text(json.dumps(report, indent=2, default=str))
+
+    report_path.write_text(
+        json.dumps(report, indent=2, default=str)
+    )
+
     return report_path
 
 
@@ -182,29 +236,41 @@ def install(
     target_dir: Path,
     *,
     dry_run: bool = False,
+    paths: InstallerPaths | None = None,
 ) -> Path:
     context = prepare_context(
         package_dir.resolve(),
         target_dir.resolve(),
         dry_run=dry_run,
+        paths=paths,
     )
+
     destinations: list[Path] = []
 
     try:
-        enabled = [
+        enabled_components = [
             name
-            for name, spec in context.manifest.components.items()
-            if spec.enabled
+            for name, specification
+            in context.manifest.components.items()
+            if specification.enabled
         ]
 
         staged_items: list[tuple[Path, Path]] = []
-        for name in enabled:
-            staged, destination = copy_component_to_stage(context, name)
+
+        for name in enabled_components:
+            staged, destination = copy_component_to_stage(
+                context,
+                name,
+            )
             staged_items.append((staged, destination))
             destinations.append(destination)
 
         if dry_run:
-            return create_report(context, "dry_run_success", destinations)
+            return create_report(
+                context,
+                "dry_run_success",
+                destinations,
+            )
 
         if context.manifest.operations.create_backup:
             for destination in destinations:
@@ -216,14 +282,29 @@ def install(
         if context.manifest.operations.run_health_checks:
             run_health_checks(context)
 
-        return create_report(context, "success", destinations)
+        return create_report(
+            context,
+            "success",
+            destinations,
+        )
+
     except Exception as exc:
         if (
             not dry_run
             and context.manifest.operations.rollback_on_failure
         ):
             rollback(context, destinations)
-        create_report(context, "failed", destinations, str(exc))
+
+        create_report(
+            context,
+            "failed",
+            destinations,
+            str(exc),
+        )
         raise
+
     finally:
-        shutil.rmtree(context.stage_dir, ignore_errors=True)
+        shutil.rmtree(
+            context.stage_dir,
+            ignore_errors=True,
+        )

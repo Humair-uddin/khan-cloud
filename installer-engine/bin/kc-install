@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ENGINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec "$ENGINE_DIR/.venv/bin/python" -m kc_installer install "$@"
+
+SOURCE_DIR="${KHAN_CLOUD_INSTALLER_SOURCE:-/opt/khan-cloud/source/installer-engine}"
+RUNTIME_DIR="${KHAN_CLOUD_INSTALLER_RUNTIME:-/opt/khan-cloud/runtime/installer}"
+PYTHON_BIN="$RUNTIME_DIR/.venv/bin/python"
+
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "Khan Cloud Installer runtime is not initialized:"
+    echo "  $PYTHON_BIN"
+    echo
+    echo "Run the installer runtime setup first."
+    exit 1
+fi
+
+export PYTHONPATH="$SOURCE_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+exec "$PYTHON_BIN" -m kc_installer install "$@"
