@@ -322,3 +322,72 @@ class InstallerState:
                 """,
                 (now, transaction_id),
             )
+
+    def classify_incomplete(
+        self,
+        *,
+        stale_after_seconds: int = 300,
+    ) -> list[dict]:
+        import os
+        import socket
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        local_hostname = socket.gethostname()
+        results = []
+
+        for item in self.incomplete_installations():
+            classification = "unknown"
+            reason = "Unable to verify transaction owner."
+
+            heartbeat_raw = item.get("last_heartbeat_at")
+            owner_hostname = item.get("owner_hostname")
+            owner_pid = item.get("owner_pid")
+
+            heartbeat_age = None
+
+            if heartbeat_raw:
+                heartbeat = datetime.fromisoformat(heartbeat_raw)
+                heartbeat_age = (
+                    now - heartbeat
+                ).total_seconds()
+
+            if owner_hostname == local_hostname and owner_pid:
+                try:
+                    os.kill(int(owner_pid), 0)
+                    process_alive = True
+                except ProcessLookupError:
+                    process_alive = False
+                except PermissionError:
+                    process_alive = True
+
+                if process_alive:
+                    classification = "active"
+                    reason = "Owner process is still running."
+                else:
+                    classification = "interrupted"
+                    reason = "Owner process no longer exists."
+
+            elif heartbeat_age is not None:
+                if heartbeat_age > stale_after_seconds:
+                    classification = "stale"
+                    reason = (
+                        "Heartbeat exceeded stale threshold."
+                    )
+                else:
+                    classification = "recent_remote"
+                    reason = (
+                        "Transaction belongs to another host "
+                        "and heartbeat is still recent."
+                    )
+
+            results.append(
+                {
+                    **item,
+                    "classification": classification,
+                    "reason": reason,
+                    "heartbeat_age_seconds": heartbeat_age,
+                }
+            )
+
+        return results
