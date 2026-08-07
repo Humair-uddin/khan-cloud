@@ -85,6 +85,7 @@ operations:
     assert stages == [
         "started",
         "validated",
+        "preflight",
         "staged",
         "completed",
     ]

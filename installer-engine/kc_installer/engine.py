@@ -13,6 +13,7 @@ from kc_installer.lock import InstallerLock
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.models import Manifest
 from kc_installer.paths import InstallerPaths
+from kc_installer.preflight import run_preflight
 from kc_installer.state import InstallerState
 
 
@@ -136,6 +137,55 @@ def prepare_context(
         "validated",
         "success",
         "Manifest and repository validation passed.",
+    )
+
+    preflight_results = run_preflight(
+        manifest,
+        target_dir,
+    )
+
+    failed_preflight = [
+        result
+        for result in preflight_results
+        if not result.passed
+    ]
+
+    for result in preflight_results:
+        state.record(
+            transaction_id,
+            "preflight",
+            "success" if result.passed else "failed",
+            (
+                f"{result.name}: actual={result.actual}; "
+                f"required={result.required}"
+            ),
+        )
+
+    if failed_preflight:
+        message = "; ".join(
+            (
+                f"{result.name}: actual={result.actual}, "
+                f"required={result.required}"
+            )
+            for result in failed_preflight
+        )
+
+        state.finish(
+            transaction_id,
+            status="preflight_failed",
+            stage="preflight",
+            error_message=message,
+        )
+
+        raise InstallError(
+            "Preflight compatibility check failed: " + message
+        )
+
+    state.record(
+        transaction_id,
+        "preflight",
+        "success",
+        "All compatibility checks passed.",
     )
 
     return InstallContext(

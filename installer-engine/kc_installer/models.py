@@ -30,6 +30,17 @@ class OperationsSpec(BaseModel):
     rollback_on_failure: bool = True
 
 
+class CompatibilitySpec(BaseModel):
+    operating_systems: list[str] = []
+    architectures: list[str] = []
+    minimum_memory_mb: int | None = Field(default=None, ge=1)
+    minimum_disk_mb: int | None = Field(default=None, ge=1)
+
+
+class PreflightSpec(BaseModel):
+    required_commands: list[str] = []
+
+
 class TestsSpec(BaseModel):
     installer_engine: bool = False
     backend: bool = False
@@ -47,5 +58,7 @@ class Manifest(BaseModel):
     feature_pack: FeaturePackInfo
     components: dict[str, ComponentSpec]
     operations: OperationsSpec = OperationsSpec()
+    compatibility: CompatibilitySpec = CompatibilitySpec()
+    preflight: PreflightSpec = PreflightSpec()
     tests: TestsSpec = TestsSpec()
     health_checks: list[CommandHealthCheck] = []
