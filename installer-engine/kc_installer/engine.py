@@ -290,6 +290,14 @@ def _install_locked(
             staged_items.append((staged, destination))
             destinations.append(destination)
 
+        context.state.record_destinations(
+            context.transaction_id,
+            [
+                (destination, destination.exists())
+                for destination in destinations
+            ],
+        )
+
         context.state.heartbeat(context.transaction_id)
         context.state.record(
             context.transaction_id,

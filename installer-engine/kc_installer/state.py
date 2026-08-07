@@ -59,6 +59,22 @@ class InstallerState:
                 CREATE INDEX IF NOT EXISTS
                     idx_journal_transaction
                 ON journal(transaction_id, id);
+
+                CREATE TABLE IF NOT EXISTS transaction_destinations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    destination_path TEXT NOT NULL,
+                    existed_before INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    FOREIGN KEY(transaction_id)
+                        REFERENCES installations(transaction_id)
+                        ON DELETE CASCADE,
+                    UNIQUE(transaction_id, destination_path)
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_transaction_destinations
+                ON transaction_destinations(transaction_id, position);
                 """
             )
 
@@ -153,6 +169,47 @@ class InstallerState:
             )
 
         return transaction_id
+
+    def record_destinations(
+        self,
+        transaction_id: str,
+        destinations: list[tuple[Path, bool]],
+    ) -> None:
+        with self._connect() as db:
+            for position, (destination, existed_before) in enumerate(
+                destinations
+            ):
+                db.execute(
+                    """
+                    INSERT INTO transaction_destinations (
+                        transaction_id,
+                        destination_path,
+                        existed_before,
+                        position
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        transaction_id,
+                        str(destination),
+                        int(existed_before),
+                        position,
+                    ),
+                )
+
+    def destinations(self, transaction_id: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT destination_path, existed_before, position
+                FROM transaction_destinations
+                WHERE transaction_id = ?
+                ORDER BY position
+                """,
+                (transaction_id,),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
 
     def record(
         self,
