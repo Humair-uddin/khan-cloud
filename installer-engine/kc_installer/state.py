@@ -255,3 +255,28 @@ class InstallerState:
             ).fetchall()
 
         return [dict(row) for row in rows]
+
+    def incomplete_installations(self) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT *
+                FROM installations
+                WHERE status = 'running'
+                ORDER BY started_at ASC
+                """
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def mark_interrupted(
+        self,
+        transaction_id: str,
+        message: str = "Installer process ended before transaction completion.",
+    ) -> None:
+        self.finish(
+            transaction_id,
+            status="interrupted",
+            stage="interrupted",
+            error_message=message,
+        )
