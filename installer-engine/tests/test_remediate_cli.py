@@ -1,9 +1,13 @@
 import json
 import os
 import sys
+import base64
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from kc_installer.trust import package_digest
 
 from kc_installer.cli import main
 from kc_installer.paths import InstallerPaths
@@ -72,6 +76,27 @@ def create_transaction(
 
     state = InstallerState(paths.database_path)
 
+    trust = None
+    if eligible:
+        private = Ed25519PrivateKey.generate()
+        public = private.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        (paths.trust_store_dir / "test.json").write_text(json.dumps({
+            "signer_id": "test-signer",
+            "public_key": base64.b64encode(public).decode(),
+        }))
+        digest = package_digest(package)
+        signature = private.sign(digest.encode("ascii"))
+        (package / "signature.json").write_text(json.dumps({
+            "signer_id": "test-signer",
+            "algorithm": "ed25519",
+            "signature": base64.b64encode(signature).decode(),
+        }))
+        from kc_installer.trust import verify_package_signature
+        trust = verify_package_signature(package, paths.trust_store_dir)
+
     transaction_id = state.begin(
         feature_pack_id="FP-MANUAL-REMEDIATE",
         feature_pack_version="1.0.0",
@@ -80,6 +105,12 @@ def create_transaction(
         backup_path=tmp_path / "backup",
         dry_run=False,
     )
+
+    if trust is not None:
+        state.record_package_trust(
+            transaction_id, trusted=trust.trusted, signer_id=trust.signer_id,
+            package_digest=trust.package_digest, trust_reason=trust.reason,
+        )
 
     state.record_remediation_plan(
         transaction_id,
@@ -274,7 +305,7 @@ def test_remediate_cli_rejects_manifest_tampering(
 
     with pytest.raises(
         SystemExit,
-        match="manifest.*no longer match",
+        match="trust no longer matches|manifest.*no longer match",
     ):
         run_cli(
             monkeypatch,

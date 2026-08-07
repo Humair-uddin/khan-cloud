@@ -20,6 +20,7 @@ class InstallerState:
         self._initialize()
         self.update_destination_schema()
         self.update_remediation_schema()
+        self.update_trust_schema()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -869,6 +870,71 @@ class InstallerState:
                     str(destination_path),
                 ),
             )
+
+
+    def record_package_trust(
+        self,
+        transaction_id: str,
+        *,
+        trusted: bool,
+        signer_id: str | None,
+        package_digest: str,
+        trust_reason: str,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE installations
+                SET package_trusted = ?, signer_id = ?,
+                    package_digest = ?, trust_reason = ?
+                WHERE transaction_id = ?
+                """,
+                (int(trusted), signer_id, package_digest, trust_reason, transaction_id),
+            )
+        self.record(
+            transaction_id,
+            "package_trust",
+            "trusted" if trusted else "untrusted",
+            f"{signer_id or 'unsigned'}: {trust_reason}",
+        )
+
+    def interrupt_running_remediation_attempts(
+        self, transaction_id: str | None = None
+    ) -> int:
+        now = utc_now()
+        with self._connect() as db:
+            params: tuple = ()
+            where = "status = 'running'"
+            if transaction_id is not None:
+                where += " AND transaction_id = ?"
+                params = (transaction_id,)
+            rows = db.execute(
+                f"SELECT id FROM remediation_execution_attempts WHERE {where}", params
+            ).fetchall()
+            for row in rows:
+                db.execute(
+                    """UPDATE remediation_execution_attempts
+                    SET status='interrupted', completed_at=?, verified=0,
+                        error_message='Execution interrupted before completion.'
+                    WHERE id=?""",
+                    (now, row["id"]),
+                )
+        return len(rows)
+
+    def update_trust_schema(self) -> None:
+        with self._connect() as db:
+            columns = {row["name"] for row in db.execute(
+                "PRAGMA table_info(installations)"
+            ).fetchall()}
+            additions = {
+                "package_trusted": "INTEGER",
+                "signer_id": "TEXT",
+                "package_digest": "TEXT",
+                "trust_reason": "TEXT",
+            }
+            for name, sql_type in additions.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE installations ADD COLUMN {name} {sql_type}")
 
     def update_remediation_schema(self) -> None:
         with self._connect() as db:

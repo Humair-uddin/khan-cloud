@@ -84,6 +84,7 @@ operations:
 
     assert stages == [
         "started",
+        "package_trust",
         "validated",
         "preflight",
         "staged",

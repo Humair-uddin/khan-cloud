@@ -19,6 +19,7 @@ from kc_installer.preflight import (
     run_preflight,
 )
 from kc_installer.state import InstallerState
+from kc_installer.trust import verify_package_signature
 
 
 def parser() -> argparse.ArgumentParser:
@@ -256,6 +257,20 @@ def main() -> None:
         target_path = Path(installation["target_path"])
 
         manifest = load_manifest(package_path)
+        trust_result = verify_package_signature(
+            package_path,
+            paths.trust_store_dir,
+        )
+        if (
+            not trust_result.trusted
+            or installation.get("package_trusted") != 1
+            or trust_result.signer_id != installation.get("signer_id")
+            or trust_result.package_digest != installation.get("package_digest")
+        ):
+            raise SystemExit(
+                "Package trust no longer matches the persisted transaction; "
+                "refusing remediation."
+            )
 
         if (
             manifest.feature_pack.id

@@ -21,6 +21,7 @@ from kc_installer.preflight import (
     run_preflight,
 )
 from kc_installer.state import InstallerState
+from kc_installer.trust import verify_package_signature
 
 
 class InstallError(RuntimeError):
@@ -95,6 +96,23 @@ class CommandExecutionError(InstallError):
         self.result = result
 
 
+MAX_COMMAND_OUTPUT_CHARS = 65536
+
+def _sanitize_command_output(value: str) -> str:
+    import re
+    redacted = re.sub(
+        r"(?i)(token|password|secret|api[_-]?key)(\s*[=:]\s*)[^\s]+",
+        r"\1\2[REDACTED]",
+        value,
+    )
+    if len(redacted) > MAX_COMMAND_OUTPUT_CHARS:
+        omitted = len(redacted) - MAX_COMMAND_OUTPUT_CHARS
+        redacted = redacted[:MAX_COMMAND_OUTPUT_CHARS] + (
+            f"\n...[TRUNCATED {omitted} CHARS]"
+        )
+    return redacted
+
+
 def execute_command(
     command: list[str],
     *,
@@ -127,8 +145,8 @@ def execute_command(
         result = CommandExecutionResult(
             command=list(command),
             returncode=None,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=_sanitize_command_output(stdout),
+            stderr=_sanitize_command_output(stderr),
             timed_out=True,
         )
 
@@ -143,8 +161,8 @@ def execute_command(
     result = CommandExecutionResult(
         command=list(command),
         returncode=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
+        stdout=_sanitize_command_output(completed.stdout),
+        stderr=_sanitize_command_output(completed.stderr),
     )
 
     if completed.returncode != 0:
@@ -430,6 +448,18 @@ def prepare_context(
         dry_run=dry_run,
     )
 
+    trust_result = verify_package_signature(
+        package_dir,
+        active_paths.trust_store_dir,
+    )
+    state.record_package_trust(
+        transaction_id,
+        trusted=trust_result.trusted,
+        signer_id=trust_result.signer_id,
+        package_digest=trust_result.package_digest,
+        trust_reason=trust_result.reason,
+    )
+
     state.record(
         transaction_id,
         "validated",
@@ -552,7 +582,7 @@ def prepare_context(
     remediation_decisions = evaluate_remediation_policy(
         manifest,
         dry_run=dry_run,
-        trusted_package=False,
+        trusted_package=trust_result.trusted,
     )
 
     decision_by_dependency = {
@@ -602,6 +632,37 @@ def prepare_context(
                 f"{action.command!r}"
             ),
         )
+
+    if not dry_run:
+        for position, action in enumerate(remediation_plan):
+            decision = decision_by_dependency[action.dependency_name]
+            if not decision.eligible:
+                continue
+            state.record(
+                transaction_id,
+                "remediation_execution",
+                "automatic",
+                f"{action.dependency_name}: automatic remediation authorized",
+            )
+            try:
+                execute_remediation_attempt(
+                    state=state,
+                    transaction_id=transaction_id,
+                    position=position,
+                    decision=decision,
+                    manifest=manifest,
+                    cwd=target_dir,
+                )
+            except Exception as exc:
+                state.finish(
+                    transaction_id,
+                    status="remediation_failed",
+                    stage="remediation_execution",
+                    error_message=str(exc),
+                )
+                raise InstallError(
+                    f"Automatic remediation failed for {action.dependency_name}: {exc}"
+                ) from exc
 
     state.record(
         transaction_id,

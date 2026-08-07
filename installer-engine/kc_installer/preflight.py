@@ -198,6 +198,24 @@ def build_remediation_plan(
     return plan
 
 
+
+
+_BLOCKED_REMEDIATION_EXECUTABLES = {
+    "sh", "bash", "dash", "zsh", "fish", "csh", "tcsh",
+    "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh",
+}
+
+def remediation_command_allowed(command: list[str]) -> tuple[bool, str]:
+    if not command or not command[0].strip():
+        return False, "remediation command is empty"
+    if any("\x00" in item for item in command):
+        return False, "remediation command contains NUL data"
+    executable = Path(command[0]).name.lower()
+    if executable in _BLOCKED_REMEDIATION_EXECUTABLES:
+        return False, "shell interpreters are prohibited for remediation"
+    return True, "allowed"
+
+
 @dataclass(frozen=True)
 class RemediationPolicyDecision:
     dependency_name: str
@@ -239,8 +257,15 @@ def evaluate_remediation_policy(
             eligible = False
             reason = "package trust has not been verified"
         else:
-            eligible = True
-            reason = "eligible"
+            command_allowed, command_reason = remediation_command_allowed(
+                list(action.command)
+            )
+            if not command_allowed:
+                eligible = False
+                reason = command_reason
+            else:
+                eligible = True
+                reason = "eligible"
 
         decisions.append(
             RemediationPolicyDecision(

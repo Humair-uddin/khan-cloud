@@ -101,6 +101,10 @@ class InstallerPaths:
         return self.state_root / "installer.db"
 
     @property
+    def trust_store_dir(self) -> Path:
+        return self.state_root / "trusted-signers"
+
+    @property
     def installation_lock_path(self) -> Path:
         return self.lock_dir / "installation.lock"
 
@@ -115,6 +119,7 @@ class InstallerPaths:
             self.history_dir,
             self.checkpoint_dir,
             self.lock_dir,
+            self.trust_store_dir,
             self.backup_root,
             self.package_root,
         )
