@@ -255,6 +255,119 @@ def execute_remediation(
     )
 
 
+def execute_remediation_attempt(
+    *,
+    state: InstallerState,
+    transaction_id: str,
+    position: int,
+    decision: RemediationPolicyDecision,
+    manifest: Manifest,
+    cwd: Path,
+    timeout_seconds: float = 300.0,
+) -> RemediationExecutionResult:
+    """
+    Execute one remediation decision with mandatory persisted
+    attempt lifecycle and audit recording.
+
+    This function is intentionally not wired into install().
+    """
+
+    attempt_id = state.begin_remediation_attempt(
+        transaction_id,
+        position,
+    )
+
+    try:
+        result = execute_remediation(
+            decision,
+            manifest,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+        )
+
+    except RemediationExecutionError as exc:
+        command_result = exc.command_result
+
+        status = "blocked"
+
+        if command_result is not None:
+            status = (
+                "timeout"
+                if command_result.timed_out
+                else "failed"
+            )
+
+        state.finish_remediation_attempt(
+            attempt_id,
+            status=status,
+            return_code=(
+                command_result.returncode
+                if command_result is not None
+                else None
+            ),
+            timed_out=(
+                command_result.timed_out
+                if command_result is not None
+                else False
+            ),
+            stdout=(
+                command_result.stdout
+                if command_result is not None
+                else ""
+            ),
+            stderr=(
+                command_result.stderr
+                if command_result is not None
+                else ""
+            ),
+            verified=False,
+            error_message=str(exc),
+        )
+
+        raise
+
+    except CommandExecutionError as exc:
+        result_data = exc.result
+
+        state.finish_remediation_attempt(
+            attempt_id,
+            status=(
+                "timeout"
+                if result_data.timed_out
+                else "failed"
+            ),
+            return_code=result_data.returncode,
+            timed_out=result_data.timed_out,
+            stdout=result_data.stdout,
+            stderr=result_data.stderr,
+            verified=False,
+            error_message=str(exc),
+        )
+
+        raise
+
+    except Exception as exc:
+        state.finish_remediation_attempt(
+            attempt_id,
+            status="failed",
+            verified=False,
+            error_message=str(exc),
+        )
+        raise
+
+    state.finish_remediation_attempt(
+        attempt_id,
+        status="success",
+        return_code=result.command_result.returncode,
+        timed_out=result.command_result.timed_out,
+        stdout=result.command_result.stdout,
+        stderr=result.command_result.stderr,
+        verified=result.verified,
+    )
+
+    return result
+
+
 def command_output(command: list[str]) -> str:
     return subprocess.run(
         command,
