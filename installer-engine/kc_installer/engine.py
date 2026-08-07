@@ -290,6 +290,7 @@ def _install_locked(
             staged_items.append((staged, destination))
             destinations.append(destination)
 
+        context.state.heartbeat(context.transaction_id)
         context.state.record(
             context.transaction_id,
             "staged",
@@ -313,6 +314,7 @@ def _install_locked(
             for destination in destinations:
                 backup_destination(context, destination)
 
+        context.state.heartbeat(context.transaction_id)
         context.state.record(
             context.transaction_id,
             "backup",
@@ -323,6 +325,7 @@ def _install_locked(
         for staged, destination in staged_items:
             activate_component(staged, destination)
 
+        context.state.heartbeat(context.transaction_id)
         context.state.record(
             context.transaction_id,
             "activated",
@@ -331,12 +334,14 @@ def _install_locked(
         )
 
         if context.manifest.operations.run_health_checks:
+            context.state.heartbeat(context.transaction_id)
             context.state.record(
                 context.transaction_id,
                 "health_check",
                 "started",
             )
             run_health_checks(context)
+            context.state.heartbeat(context.transaction_id)
             context.state.record(
                 context.transaction_id,
                 "health_check",
