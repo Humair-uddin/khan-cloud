@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI
 
 from app.api.v1.deployment_profiles import router as deployment_profiles_router
@@ -34,3 +37,11 @@ def health():
     return {"status":service_status,"database":database,"version":settings.APP_VERSION}
 
 app.include_router(deployment_profiles_router, prefix=settings.API_PREFIX)
+
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+if FRONTEND_DIR.is_dir():
+    app.mount(
+        "/ui",
+        StaticFiles(directory=FRONTEND_DIR, html=True),
+        name="control-plane-ui",
+    )

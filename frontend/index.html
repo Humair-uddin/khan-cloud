@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Khan Cloud Control Plane</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" class="shell">
+    <section id="login-view" class="login-view" hidden>
+      <form id="login-form" class="login-card" autocomplete="on">
+        <div class="brand-mark">KC</div>
+        <div>
+          <p class="eyebrow">KHAN CLOUD</p>
+          <h1>Control Plane</h1>
+          <p class="muted">Operations access</p>
+        </div>
+        <label>Username or email
+          <input id="username" name="username" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <label>API base <span class="optional">optional</span>
+          <input id="api-base" name="apiBase" placeholder="same origin">
+        </label>
+        <button class="primary" type="submit">Sign in</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="dashboard-view" hidden>
+      <header class="topbar">
+        <div class="brand-inline">
+          <div class="brand-mark small">KC</div>
+          <div><p class="eyebrow">KHAN CLOUD</p><strong>Operations</strong></div>
+        </div>
+        <div class="topbar-actions">
+          <span id="user-label" class="user-label"></span>
+          <button id="refresh-button" class="secondary" type="button">Refresh</button>
+          <button id="logout-button" class="ghost" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <div class="heading-row">
+          <div>
+            <p class="eyebrow">CONTROL PLANE</p>
+            <h1>Operations Dashboard</h1>
+            <p id="generated-label" class="muted"></p>
+          </div>
+          <div id="system-banner" class="system-banner" hidden></div>
+        </div>
+
+        <section id="summary-cards" class="cards" aria-label="Fleet summary"></section>
+
+        <div class="grid-two">
+          <section class="panel">
+            <div class="panel-header">
+              <div><p class="eyebrow">DEPLOYMENTS</p><h2>Deployment health</h2></div>
+              <span id="deployment-count" class="badge"></span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Deployment</th><th>Health</th><th>Nodes</th><th>Online</th><th>Failed</th><th>Attention</th></tr></thead>
+                <tbody id="deployments-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel attention-panel">
+            <div class="panel-header">
+              <div><p class="eyebrow">ATTENTION</p><h2>Operations queue</h2></div>
+              <span id="attention-count" class="badge danger"></span>
+            </div>
+            <div id="attention-list" class="attention-list"></div>
+          </section>
+        </div>
+      </main>
+    </section>
+  </div>
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
