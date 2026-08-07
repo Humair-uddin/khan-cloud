@@ -75,6 +75,89 @@ class InstallContext:
     dry_run: bool
 
 
+@dataclass(frozen=True)
+class CommandExecutionResult:
+    command: list[str]
+    returncode: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+class CommandExecutionError(InstallError):
+    def __init__(
+        self,
+        message: str,
+        result: CommandExecutionResult,
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+
+
+def execute_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: float = 300.0,
+) -> CommandExecutionResult:
+    if not command:
+        raise ValueError("Command must not be empty.")
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+
+        result = CommandExecutionResult(
+            command=list(command),
+            returncode=None,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=True,
+        )
+
+        raise CommandExecutionError(
+            (
+                "Command timed out after "
+                f"{timeout_seconds} seconds: {command!r}"
+            ),
+            result,
+        ) from exc
+
+    result = CommandExecutionResult(
+        command=list(command),
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+    )
+
+    if completed.returncode != 0:
+        raise CommandExecutionError(
+            (
+                f"Command failed with exit code "
+                f"{completed.returncode}: {command!r}"
+            ),
+            result,
+        )
+
+    return result
+
+
 def command_output(command: list[str]) -> str:
     return subprocess.run(
         command,
