@@ -37,6 +37,12 @@ class CompatibilitySpec(BaseModel):
     minimum_disk_mb: int | None = Field(default=None, ge=1)
 
 
+class RemediationAction(BaseModel):
+    type: Literal["command"]
+    command: list[str] = Field(min_length=1)
+    description: str = ""
+
+
 class DependencySpec(BaseModel):
     name: str
     command: str
@@ -46,6 +52,7 @@ class DependencySpec(BaseModel):
         "manual",
     ] = "required"
     description: str = ""
+    remediation: RemediationAction | None = None
 
 
 class PreflightSpec(BaseModel):

@@ -13,7 +13,11 @@ from kc_installer.lock import InstallerLock
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.models import Manifest
 from kc_installer.paths import InstallerPaths
-from kc_installer.preflight import classify_dependencies, run_preflight
+from kc_installer.preflight import (
+    build_remediation_plan,
+    classify_dependencies,
+    run_preflight,
+)
 from kc_installer.state import InstallerState
 
 
@@ -247,6 +251,20 @@ def prepare_context(
 
         raise InstallError(
             "Dependency validation failed: " + message
+        )
+
+    remediation_plan = build_remediation_plan(manifest)
+
+    for action in remediation_plan:
+        state.record(
+            transaction_id,
+            "remediation_plan",
+            "planned",
+            (
+                f"{action.dependency_name}: "
+                f"{action.action_type} "
+                f"{action.command!r}"
+            ),
         )
 
     state.record(

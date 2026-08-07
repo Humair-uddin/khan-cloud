@@ -7,6 +7,11 @@ from pathlib import Path
 from kc_installer.engine import install, recover_transaction
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.paths import InstallerPaths
+from kc_installer.preflight import (
+    build_remediation_plan,
+    classify_dependencies,
+    run_preflight,
+)
 from kc_installer.state import InstallerState
 
 
@@ -20,6 +25,13 @@ def parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate")
     validate.add_argument("package")
+
+    plan = sub.add_parser("plan")
+    plan.add_argument("package")
+    plan.add_argument(
+        "--target",
+        default="/opt/khan-cloud/source",
+    )
 
     install_cmd = sub.add_parser("install")
     install_cmd.add_argument("package")
@@ -76,6 +88,59 @@ def main() -> None:
                 {
                     "status": "valid",
                     "feature_pack": manifest.feature_pack.model_dump(),
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if args.command == "plan":
+        package = Path(args.package).resolve()
+        target = Path(args.target).resolve()
+
+        manifest = load_manifest(package)
+        errors = validate_manifest_files(package, manifest)
+
+        if errors:
+            raise SystemExit("\n".join(errors))
+
+        preflight_results = run_preflight(manifest, target)
+        dependency_results = classify_dependencies(manifest)
+        remediation_plan = build_remediation_plan(manifest)
+
+        print(
+            json.dumps(
+                {
+                    "feature_pack": manifest.feature_pack.model_dump(),
+                    "preflight": [
+                        {
+                            "name": item.name,
+                            "passed": item.passed,
+                            "actual": item.actual,
+                            "required": item.required,
+                        }
+                        for item in preflight_results
+                    ],
+                    "dependencies": [
+                        {
+                            "name": item.name,
+                            "classification": item.classification,
+                            "available": item.available,
+                            "command": item.command,
+                            "description": item.description,
+                        }
+                        for item in dependency_results
+                    ],
+                    "remediation_plan": [
+                        {
+                            "dependency": item.dependency_name,
+                            "type": item.action_type,
+                            "command": item.command,
+                            "description": item.description,
+                        }
+                        for item in remediation_plan
+                    ],
                 },
                 indent=2,
                 default=str,

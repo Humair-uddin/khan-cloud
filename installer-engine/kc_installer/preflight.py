@@ -154,3 +154,45 @@ def classify_dependencies(
         )
 
     return results
+
+
+@dataclass(frozen=True)
+class RemediationPlanItem:
+    dependency_name: str
+    action_type: str
+    command: list[str]
+    description: str
+
+
+def build_remediation_plan(
+    manifest: Manifest,
+) -> list[RemediationPlanItem]:
+    plan: list[RemediationPlanItem] = []
+
+    dependency_results = {
+        item.name: item
+        for item in classify_dependencies(manifest)
+    }
+
+    for dependency in manifest.preflight.dependencies:
+        result = dependency_results[dependency.name]
+
+        if result.available:
+            continue
+
+        if dependency.classification != "remediable":
+            continue
+
+        if dependency.remediation is None:
+            continue
+
+        plan.append(
+            RemediationPlanItem(
+                dependency_name=dependency.name,
+                action_type=dependency.remediation.type,
+                command=list(dependency.remediation.command),
+                description=dependency.remediation.description,
+            )
+        )
+
+    return plan
