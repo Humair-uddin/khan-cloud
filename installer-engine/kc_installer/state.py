@@ -99,6 +99,37 @@ class InstallerState:
                     transaction_id,
                     position
                 );
+
+                CREATE TABLE IF NOT EXISTS remediation_execution_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    remediation_action_id INTEGER NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    return_code INTEGER,
+                    timed_out INTEGER NOT NULL DEFAULT 0,
+                    stdout TEXT NOT NULL DEFAULT '',
+                    stderr TEXT NOT NULL DEFAULT '',
+                    verified INTEGER,
+                    error_message TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(transaction_id)
+                        REFERENCES installations(transaction_id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY(remediation_action_id)
+                        REFERENCES transaction_remediation_actions(id)
+                        ON DELETE CASCADE,
+                    UNIQUE(remediation_action_id, attempt_number)
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_remediation_execution_attempts
+                ON remediation_execution_attempts(
+                    transaction_id,
+                    remediation_action_id,
+                    attempt_number
+                );
                 """
             )
 
@@ -227,6 +258,22 @@ class InstallerState:
         actions: list[dict],
     ) -> None:
         with self._connect() as db:
+            existing_attempt = db.execute(
+                """
+                SELECT 1
+                FROM remediation_execution_attempts
+                WHERE transaction_id = ?
+                LIMIT 1
+                """,
+                (transaction_id,),
+            ).fetchone()
+
+            if existing_attempt is not None:
+                raise ValueError(
+                    "Cannot replace remediation plan after "
+                    "execution attempts have been recorded."
+                )
+
             db.execute(
                 """
                 DELETE FROM transaction_remediation_actions
@@ -298,6 +345,238 @@ class InstallerState:
                     else None
                 ),
                 "policy_reason": row["policy_reason"],
+            }
+            for row in rows
+        ]
+
+    def begin_remediation_attempt(
+        self,
+        transaction_id: str,
+        position: int,
+    ) -> int:
+        now = utc_now()
+
+        with self._connect() as db:
+            action = db.execute(
+                """
+                SELECT
+                    id,
+                    dependency_name
+                FROM transaction_remediation_actions
+                WHERE transaction_id = ?
+                  AND position = ?
+                """,
+                (transaction_id, position),
+            ).fetchone()
+
+            if action is None:
+                raise ValueError(
+                    "Remediation action not found for "
+                    f"transaction {transaction_id}, position {position}."
+                )
+
+            row = db.execute(
+                """
+                SELECT COALESCE(MAX(attempt_number), 0) + 1
+                FROM remediation_execution_attempts
+                WHERE remediation_action_id = ?
+                """,
+                (action["id"],),
+            ).fetchone()
+
+            attempt_number = int(row[0])
+
+            cursor = db.execute(
+                """
+                INSERT INTO remediation_execution_attempts (
+                    transaction_id,
+                    remediation_action_id,
+                    attempt_number,
+                    status,
+                    started_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    transaction_id,
+                    action["id"],
+                    attempt_number,
+                    "running",
+                    now,
+                ),
+            )
+
+            attempt_id = int(cursor.lastrowid)
+
+            db.execute(
+                """
+                INSERT INTO journal (
+                    transaction_id,
+                    stage,
+                    status,
+                    message,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    transaction_id,
+                    "remediation_execution",
+                    "started",
+                    (
+                        f"{action['dependency_name']}: "
+                        f"attempt {attempt_number} started"
+                    ),
+                    now,
+                ),
+            )
+
+        return attempt_id
+
+    def finish_remediation_attempt(
+        self,
+        attempt_id: int,
+        *,
+        status: str,
+        return_code: int | None = None,
+        timed_out: bool = False,
+        stdout: str = "",
+        stderr: str = "",
+        verified: bool | None = None,
+        error_message: str = "",
+    ) -> None:
+        now = utc_now()
+
+        with self._connect() as db:
+            attempt = db.execute(
+                """
+                SELECT
+                    attempts.transaction_id,
+                    attempts.attempt_number,
+                    actions.dependency_name
+                FROM remediation_execution_attempts AS attempts
+                JOIN transaction_remediation_actions AS actions
+                  ON actions.id = attempts.remediation_action_id
+                WHERE attempts.id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+
+            if attempt is None:
+                raise ValueError(
+                    f"Remediation execution attempt not found: {attempt_id}"
+                )
+
+            db.execute(
+                """
+                UPDATE remediation_execution_attempts
+                SET
+                    status = ?,
+                    completed_at = ?,
+                    return_code = ?,
+                    timed_out = ?,
+                    stdout = ?,
+                    stderr = ?,
+                    verified = ?,
+                    error_message = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    now,
+                    return_code,
+                    int(timed_out),
+                    stdout,
+                    stderr,
+                    (
+                        int(verified)
+                        if verified is not None
+                        else None
+                    ),
+                    error_message,
+                    attempt_id,
+                ),
+            )
+
+            message = (
+                f"{attempt['dependency_name']}: "
+                f"attempt {attempt['attempt_number']} {status}"
+            )
+
+            if error_message:
+                message += f": {error_message}"
+
+            db.execute(
+                """
+                INSERT INTO journal (
+                    transaction_id,
+                    stage,
+                    status,
+                    message,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt["transaction_id"],
+                    "remediation_execution",
+                    status,
+                    message,
+                    now,
+                ),
+            )
+
+    def remediation_attempts(
+        self,
+        transaction_id: str,
+    ) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT
+                    attempts.id,
+                    attempts.attempt_number,
+                    attempts.status,
+                    attempts.started_at,
+                    attempts.completed_at,
+                    attempts.return_code,
+                    attempts.timed_out,
+                    attempts.stdout,
+                    attempts.stderr,
+                    attempts.verified,
+                    attempts.error_message,
+                    actions.dependency_name,
+                    actions.position
+                FROM remediation_execution_attempts AS attempts
+                JOIN transaction_remediation_actions AS actions
+                  ON actions.id = attempts.remediation_action_id
+                WHERE attempts.transaction_id = ?
+                ORDER BY
+                    actions.position,
+                    attempts.attempt_number
+                """,
+                (transaction_id,),
+            ).fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "dependency_name": row["dependency_name"],
+                "position": row["position"],
+                "attempt_number": row["attempt_number"],
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "return_code": row["return_code"],
+                "timed_out": bool(row["timed_out"]),
+                "stdout": row["stdout"],
+                "stderr": row["stderr"],
+                "verified": (
+                    bool(row["verified"])
+                    if row["verified"] is not None
+                    else None
+                ),
+                "error_message": row["error_message"],
             }
             for row in rows
         ]
