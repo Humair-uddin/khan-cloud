@@ -12,6 +12,7 @@ from khan_agent.config import AgentSettings
 from khan_agent.credentials import CredentialStore, NodeCredentials
 from khan_agent.identity import IdentityStore
 from khan_agent.inventory import collect_safe_inventory
+from khan_agent.installer_telemetry import read_latest_installer_snapshot
 from khan_agent.plugins import PluginManager
 from khan_agent.state import AgentState, StateMachine
 
@@ -36,6 +37,7 @@ class AgentRuntime:
         self.credential_store = CredentialStore(settings.agent.state_directory)
         self.client = ControlPlaneClient(settings)
         self.plugin_manager = PluginManager(settings.agent.plugin_directory)
+        self._last_installer_telemetry_key: tuple[str, str, str] | None = None
 
     def _registration_payload(self) -> dict[str, object]:
         return {
@@ -94,6 +96,50 @@ class AgentRuntime:
             )
         )
 
+    async def _report_installer_telemetry(self, credentials: NodeCredentials) -> None:
+        if not self.settings.telemetry.enabled:
+            return
+
+        snapshot = read_latest_installer_snapshot(
+            self.settings.telemetry.installer_database_path
+        )
+        if snapshot is None:
+            return
+
+        key = (snapshot.transaction_id, snapshot.status, snapshot.stage)
+        if key == self._last_installer_telemetry_key:
+            return
+
+        try:
+            await self.client.report_installation_event(
+                snapshot.as_payload(),
+                credentials,
+            )
+        except Exception as exc:
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "installer_telemetry_failed",
+                        "transaction_id": snapshot.transaction_id,
+                        "error": str(exc),
+                    }
+                )
+            )
+            return
+
+        self._last_installer_telemetry_key = key
+
+        logger.info(
+            json.dumps(
+                {
+                    "event": "installer_telemetry_reported",
+                    "transaction_id": snapshot.transaction_id,
+                    "status": snapshot.status,
+                    "stage": snapshot.stage,
+                }
+            )
+        )
+
     async def heartbeat_once(self) -> None:
         configure_logging(self.settings.agent.log_level)
 
@@ -107,6 +153,7 @@ class AgentRuntime:
             self._heartbeat_payload(),
             credentials,
         )
+        await self._report_installer_telemetry(credentials)
 
         logger.info(
             json.dumps(
@@ -174,6 +221,7 @@ class AgentRuntime:
                     self._heartbeat_payload(),
                     credentials,
                 )
+                await self._report_installer_telemetry(credentials)
                 self.state.transition(AgentState.CONNECTED)
                 logger.info(
                     json.dumps(

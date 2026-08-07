@@ -33,3 +33,8 @@ class Node(BaseModel):
     production_ip: Mapped[str] = mapped_column(String(64), default="")
     inventory: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    installation_status: Mapped[str] = mapped_column(String(40), default="not_started", index=True)
+    installation_stage: Mapped[str] = mapped_column(String(60), default="")
+    installation_failure_category: Mapped[str] = mapped_column(String(60), default="", index=True)
+    installation_message: Mapped[str] = mapped_column(String(500), default="")
+    installation_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

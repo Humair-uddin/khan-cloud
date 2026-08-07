@@ -34,11 +34,18 @@ class EnrollmentConfig(BaseModel):
     endpoint: str = "/api/v1/nodes/register"
 
 
+class TelemetryConfig(BaseModel):
+    enabled: bool = True
+    endpoint: str = "/api/v1/nodes/installation-events"
+    installer_database_path: Path = Path("/opt/khan-cloud/state/installer/installer.db")
+
+
 class AgentSettings(BaseModel):
     agent: AgentConfig
     security: SecurityConfig = SecurityConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     enrollment: EnrollmentConfig = EnrollmentConfig()
+    telemetry: TelemetryConfig = TelemetryConfig()
 
     @classmethod
     def load(cls, path: Path) -> "AgentSettings":

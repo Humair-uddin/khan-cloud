@@ -122,3 +122,32 @@ def maintenance_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends
 @router.post("/{node_id}/retire",response_model=NodeRead)
 def retire_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends(require_permission("nodes.retire")),db: Session=Depends(get_db)):
     return _transition(node_id,payload,"retired",user,db)
+
+# Installation telemetry is node-authenticated and intentionally sanitized.
+from app.schemas.installation_event import InstallationEventCreate, InstallationEventRead
+from app.services.installation_telemetry_service import (
+    list_node_installation_events,
+    record_installation_event,
+)
+
+
+@router.post("/installation-events", response_model=InstallationEventRead, status_code=status.HTTP_201_CREATED)
+def installation_event(
+    payload: InstallationEventCreate,
+    node: Node = Depends(get_authenticated_node),
+    db: Session = Depends(get_db),
+):
+    return record_installation_event(db, node=node, payload=payload)
+
+
+@router.get(
+    "/{node_id}/installation-events",
+    response_model=list[InstallationEventRead],
+    dependencies=[Depends(require_permission("nodes.read"))],
+)
+def installation_events(node_id: UUID, limit: int = 100, db: Session = Depends(get_db)):
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+    safe_limit = max(1, min(limit, 500))
+    return list_node_installation_events(db, node_id, limit=safe_limit)

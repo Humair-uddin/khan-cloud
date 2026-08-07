@@ -1,6 +1,6 @@
 [project]
 name = "khan-cloud-agent"
-version = "0.7.0"
+version = "0.8.0"
 description = "Khan Cloud universal node agent framework"
 requires-python = ">=3.12"
 

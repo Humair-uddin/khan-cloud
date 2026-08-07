@@ -44,3 +44,7 @@ Credentials are stored under the configured `state_directory`.
 Enrollment now prefers the scoped Deployment Profile enrollment code and retains the generated node
 secret for authenticated heartbeats. The legacy shared token is a compatibility fallback
 and certificate-based identity.
+
+## Installer telemetry
+
+When enabled, the node agent reads the Khan Cloud Installer Engine's durable SQLite state in read-only mode and reports only a sanitized transaction summary to the Control Plane. It never uploads installer database contents, arbitrary logs, environment variables, enrollment codes, node secrets, or customer contact data.

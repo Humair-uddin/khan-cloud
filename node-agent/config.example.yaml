@@ -19,3 +19,8 @@ enrollment:
 heartbeat:
   enabled: false
   endpoint: /api/v1/nodes/heartbeat
+
+telemetry:
+  enabled: true
+  endpoint: /api/v1/nodes/installation-events
+  installer_database_path: /opt/khan-cloud/state/installer/installer.db

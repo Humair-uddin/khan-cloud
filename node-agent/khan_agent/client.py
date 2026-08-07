@@ -60,3 +60,22 @@ class ControlPlaneClient:
             )
             response.raise_for_status()
             return response.json()
+    async def report_installation_event(
+        self,
+        payload: dict[str, Any],
+        credentials: NodeCredentials,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.settings.agent.request_timeout_seconds,
+            verify=self.settings.security.verify_tls,
+        ) as client:
+            response = await client.post(
+                f"{self.base_url}{self.settings.telemetry.endpoint}",
+                json=payload,
+                headers={
+                    "X-Node-ID": credentials.node_id,
+                    "X-Node-Secret": credentials.node_secret,
+                },
+            )
+            response.raise_for_status()
+            return response.json()

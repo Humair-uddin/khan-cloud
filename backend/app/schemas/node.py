@@ -63,5 +63,10 @@ class NodeRead(BaseModel):
     production_ip: str
     inventory: dict[str, Any]
     last_seen_at: datetime | None
+    installation_status: str
+    installation_stage: str
+    installation_failure_category: str
+    installation_message: str
+    installation_updated_at: datetime | None
     created_at: datetime
     updated_at: datetime
