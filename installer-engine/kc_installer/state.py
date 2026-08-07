@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import socket
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -60,6 +62,26 @@ class InstallerState:
                 """
             )
 
+            columns = {
+                row["name"]
+                for row in db.execute(
+                    "PRAGMA table_info(installations)"
+                ).fetchall()
+            }
+
+            additions = {
+                "owner_pid": "INTEGER",
+                "owner_hostname": "TEXT",
+                "last_heartbeat_at": "TEXT",
+            }
+
+            for name, sql_type in additions.items():
+                if name not in columns:
+                    db.execute(
+                        f"ALTER TABLE installations "
+                        f"ADD COLUMN {name} {sql_type}"
+                    )
+
     def begin(
         self,
         *,
@@ -86,9 +108,12 @@ class InstallerState:
                     dry_run,
                     status,
                     current_stage,
-                    started_at
+                    started_at,
+                    owner_pid,
+                    owner_hostname,
+                    last_heartbeat_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     transaction_id,
@@ -100,6 +125,9 @@ class InstallerState:
                     int(dry_run),
                     "running",
                     "started",
+                    now,
+                    os.getpid(),
+                    socket.gethostname(),
                     now,
                 ),
             )
@@ -280,3 +308,17 @@ class InstallerState:
             stage="interrupted",
             error_message=message,
         )
+
+    def heartbeat(self, transaction_id: str) -> None:
+        now = utc_now()
+
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE installations
+                SET last_heartbeat_at = ?
+                WHERE transaction_id = ?
+                  AND status = 'running'
+                """,
+                (now, transaction_id),
+            )
