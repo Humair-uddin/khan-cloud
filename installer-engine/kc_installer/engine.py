@@ -508,9 +508,8 @@ def rollback(
 
 def run_health_checks(context: InstallContext) -> None:
     for check in context.manifest.health_checks:
-        subprocess.run(
-            check.command,
-            check=True,
+        execute_command(
+            list(check.command),
             cwd=context.target_dir,
         )
 
