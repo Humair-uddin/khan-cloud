@@ -42,6 +42,14 @@ def parser() -> argparse.ArgumentParser:
         default=300,
     )
 
+    recover = sub.add_parser("recover")
+    recover.add_argument("transaction_id")
+    recover.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=300,
+    )
+
     sub.add_parser("self-test")
 
     return root
@@ -125,6 +133,54 @@ def main() -> None:
         print(
             json.dumps(
                 result,
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if args.command == "recover":
+        state = InstallerState(paths.database_path)
+
+        matches = [
+            item
+            for item in state.classify_incomplete(
+                stale_after_seconds=args.stale_after_seconds,
+            )
+            if item["transaction_id"] == args.transaction_id
+        ]
+
+        if not matches:
+            raise SystemExit(
+                "Transaction is not currently incomplete or was not found."
+            )
+
+        item = matches[0]
+
+        if item["classification"] == "active":
+            raise SystemExit(
+                "Recovery refused: transaction is still active."
+            )
+
+        if item["classification"] not in {
+            "interrupted",
+            "stale",
+        }:
+            raise SystemExit(
+                "Recovery refused: transaction is not safely recoverable."
+            )
+
+        state.mark_recovery_requested(args.transaction_id)
+
+        print(
+            json.dumps(
+                {
+                    "status": "recovery_requested",
+                    "transaction_id": args.transaction_id,
+                    "classification": item["classification"],
+                    "current_stage": item["current_stage"],
+                    "backup_path": item["backup_path"],
+                },
                 indent=2,
                 default=str,
             )

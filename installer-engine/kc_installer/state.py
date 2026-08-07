@@ -391,3 +391,15 @@ class InstallerState:
             )
 
         return results
+
+    def mark_recovery_requested(
+        self,
+        transaction_id: str,
+        message: str = "Recovery requested by administrator.",
+    ) -> None:
+        self.record(
+            transaction_id,
+            "recovery_requested",
+            "pending",
+            message,
+        )
