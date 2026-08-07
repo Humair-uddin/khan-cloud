@@ -11,6 +11,7 @@ from pathlib import Path
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.models import Manifest
 from kc_installer.paths import InstallerPaths
+from kc_installer.state import InstallerState
 
 
 class InstallError(RuntimeError):
@@ -23,6 +24,8 @@ class InstallContext:
     target_dir: Path
     manifest: Manifest
     paths: InstallerPaths
+    state: InstallerState
+    transaction_id: str
     backup_dir: Path
     stage_dir: Path
     dry_run: bool
@@ -79,11 +82,31 @@ def prepare_context(
         )
     )
 
+    state = InstallerState(active_paths.database_path)
+
+    transaction_id = state.begin(
+        feature_pack_id=manifest.feature_pack.id,
+        feature_pack_version=manifest.feature_pack.version,
+        package_path=package_dir,
+        target_path=target_dir,
+        backup_path=backup_dir,
+        dry_run=dry_run,
+    )
+
+    state.record(
+        transaction_id,
+        "validated",
+        "success",
+        "Manifest and repository validation passed.",
+    )
+
     return InstallContext(
         package_dir=package_dir,
         target_dir=target_dir,
         manifest=manifest,
         paths=active_paths,
+        state=state,
+        transaction_id=transaction_id,
         backup_dir=backup_dir,
         stage_dir=stage_dir,
         dry_run=dry_run,
@@ -205,10 +228,11 @@ def create_report(
 
     report_path = context.paths.reports_dir / (
         f"{context.manifest.feature_pack.id.lower()}-"
-        f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+        f"{context.transaction_id}.json"
     )
 
     report = {
+        "transaction_id": context.transaction_id,
         "feature_pack": (
             context.manifest.feature_pack.model_dump()
         ),
@@ -265,7 +289,19 @@ def install(
             staged_items.append((staged, destination))
             destinations.append(destination)
 
+        context.state.record(
+            context.transaction_id,
+            "staged",
+            "success",
+            f"Staged {len(staged_items)} component(s).",
+        )
+
         if dry_run:
+            context.state.finish(
+                context.transaction_id,
+                status="dry_run_success",
+                stage="completed",
+            )
             return create_report(
                 context,
                 "dry_run_success",
@@ -276,11 +312,41 @@ def install(
             for destination in destinations:
                 backup_destination(context, destination)
 
+        context.state.record(
+            context.transaction_id,
+            "backup",
+            "success",
+            str(context.backup_dir),
+        )
+
         for staged, destination in staged_items:
             activate_component(staged, destination)
 
+        context.state.record(
+            context.transaction_id,
+            "activated",
+            "success",
+            f"Activated {len(staged_items)} component(s).",
+        )
+
         if context.manifest.operations.run_health_checks:
+            context.state.record(
+                context.transaction_id,
+                "health_check",
+                "started",
+            )
             run_health_checks(context)
+            context.state.record(
+                context.transaction_id,
+                "health_check",
+                "success",
+            )
+
+        context.state.finish(
+            context.transaction_id,
+            status="success",
+            stage="completed",
+        )
 
         return create_report(
             context,
@@ -289,11 +355,55 @@ def install(
         )
 
     except Exception as exc:
+        context.state.record(
+            context.transaction_id,
+            "failed",
+            "failed",
+            str(exc),
+        )
+
         if (
             not dry_run
             and context.manifest.operations.rollback_on_failure
         ):
-            rollback(context, destinations)
+            context.state.record(
+                context.transaction_id,
+                "rollback",
+                "started",
+            )
+
+            try:
+                rollback(context, destinations)
+            except Exception as rollback_exc:
+                context.state.finish(
+                    context.transaction_id,
+                    status="rollback_failed",
+                    stage="rollback",
+                    error_message=(
+                        f"Original error: {exc}; "
+                        f"Rollback error: {rollback_exc}"
+                    ),
+                )
+                create_report(
+                    context,
+                    "rollback_failed",
+                    destinations,
+                    str(rollback_exc),
+                )
+                raise
+
+            context.state.record(
+                context.transaction_id,
+                "rollback",
+                "success",
+            )
+
+        context.state.finish(
+            context.transaction_id,
+            status="failed",
+            stage="failed",
+            error_message=str(exc),
+        )
 
         create_report(
             context,
