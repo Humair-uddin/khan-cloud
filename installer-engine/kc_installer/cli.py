@@ -186,6 +186,9 @@ def main() -> None:
                 {
                     "installation": installation,
                     "journal": state.journal(args.transaction_id),
+                "remediation_plan": state.remediation_plan(
+                    args.transaction_id
+                ),
                 },
                 indent=2,
                 default=str,

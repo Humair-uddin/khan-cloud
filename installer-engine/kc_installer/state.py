@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sqlite3
@@ -76,6 +77,27 @@ class InstallerState:
                 CREATE INDEX IF NOT EXISTS
                     idx_transaction_destinations
                 ON transaction_destinations(transaction_id, position);
+
+                CREATE TABLE IF NOT EXISTS transaction_remediation_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    dependency_name TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    command_json TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL,
+                    FOREIGN KEY(transaction_id)
+                        REFERENCES installations(transaction_id)
+                        ON DELETE CASCADE,
+                    UNIQUE(transaction_id, position)
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_transaction_remediation_actions
+                ON transaction_remediation_actions(
+                    transaction_id,
+                    position
+                );
                 """
             )
 
@@ -197,6 +219,71 @@ class InstallerState:
                         position,
                     ),
                 )
+
+    def record_remediation_plan(
+        self,
+        transaction_id: str,
+        actions: list[dict],
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                DELETE FROM transaction_remediation_actions
+                WHERE transaction_id = ?
+                """,
+                (transaction_id,),
+            )
+
+            for position, action in enumerate(actions):
+                db.execute(
+                    """
+                    INSERT INTO transaction_remediation_actions (
+                        transaction_id,
+                        dependency_name,
+                        action_type,
+                        command_json,
+                        description,
+                        position
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        transaction_id,
+                        action["dependency_name"],
+                        action["action_type"],
+                        json.dumps(action["command"]),
+                        action.get("description", ""),
+                        position,
+                    ),
+                )
+
+    def remediation_plan(self, transaction_id: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT
+                    dependency_name,
+                    action_type,
+                    command_json,
+                    description,
+                    position
+                FROM transaction_remediation_actions
+                WHERE transaction_id = ?
+                ORDER BY position
+                """,
+                (transaction_id,),
+            ).fetchall()
+
+        return [
+            {
+                "dependency_name": row["dependency_name"],
+                "action_type": row["action_type"],
+                "command": json.loads(row["command_json"]),
+                "description": row["description"],
+                "position": row["position"],
+            }
+            for row in rows
+        ]
 
     def destinations(self, transaction_id: str) -> list[dict]:
         with self._connect() as db:

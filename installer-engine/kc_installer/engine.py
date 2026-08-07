@@ -255,6 +255,19 @@ def prepare_context(
 
     remediation_plan = build_remediation_plan(manifest)
 
+    state.record_remediation_plan(
+        transaction_id,
+        [
+            {
+                "dependency_name": action.dependency_name,
+                "action_type": action.action_type,
+                "command": list(action.command),
+                "description": action.description,
+            }
+            for action in remediation_plan
+        ],
+    )
+
     for action in remediation_plan:
         state.record(
             transaction_id,
