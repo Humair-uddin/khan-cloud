@@ -13,6 +13,8 @@ DEFAULT_PERMISSIONS: dict[str,str] = {
 "nodes.credentials.rotate":"Rotate node credentials.","audit.read":"View audit records.",
 "deployment_profiles.read":"View deployment profiles.",
 "deployment_profiles.manage":"Create and manage deployment profiles.",
+"organizations.read":"View organizations.","organizations.manage":"Manage organizations and memberships.",
+"support.read":"View support cases.","support.manage":"Create and manage support cases.",
 "deployments.read":"View deployments.","deployments.manage":"Manage deployments.",
 "settings.read":"View settings.","settings.manage":"Modify settings.",
 }
@@ -21,12 +23,12 @@ DEFAULT_ROLES: dict[str,set[str]] = {
 "platform_admin": set(DEFAULT_PERMISSIONS),
 "operator":{"users.read","roles.read","nodes.read","nodes.approve","nodes.disable",
 "nodes.maintenance","nodes.inventory.read","audit.read","deployments.read",
-"deployments.manage","settings.read"},
+"deployments.manage","organizations.read","support.read","support.manage","settings.read"},
 "security_officer":{"users.read","roles.read","nodes.read","nodes.disable",
 "nodes.credentials.rotate","nodes.inventory.read","audit.read","settings.read"},
 "marketplace_manager":{"nodes.read","nodes.approve","nodes.inventory.read","audit.read","deployments.read"},
-"support_engineer":{"users.read","nodes.read","nodes.inventory.read","audit.read","deployments.read"},
-"customer":{"nodes.read","deployments.read","deployments.manage"},
+"support_engineer":{"users.read","nodes.read","nodes.inventory.read","audit.read","deployments.read","organizations.read","support.read","support.manage"},
+"customer":{"nodes.read","deployments.read","deployments.manage","organizations.read","support.read","support.manage"},
 "viewer":{"users.read","roles.read","nodes.read","nodes.inventory.read","audit.read","deployments.read","settings.read"},
 }
 class RBACConflictError(ValueError): pass

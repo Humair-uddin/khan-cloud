@@ -21,6 +21,7 @@ class DeploymentProfileCreate(BaseModel):
     resource_policy: dict[str, Any] = Field(default_factory=dict)
     expires_at: datetime | None = None
     max_uses: int = Field(default=1, ge=1, le=10000)
+    organization_id: UUID | None = None
 
 
 class DeploymentProfileRead(BaseModel):
@@ -39,6 +40,7 @@ class DeploymentProfileRead(BaseModel):
     max_uses: int
     uses_count: int
     is_active: bool
+    organization_id: UUID | None
     created_by_user_id: UUID
     created_at: datetime
     updated_at: datetime

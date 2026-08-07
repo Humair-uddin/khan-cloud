@@ -16,6 +16,7 @@ from app.schemas.deployment_profile import (
     DeploymentProfileResolveRequest,
     DeploymentProfileRotateResponse,
 )
+from app.services.organization_service import user_can_access_deployment_profile
 from app.services.deployment_profile_service import (
     DeploymentProfileError,
     create_profile,
@@ -48,11 +49,16 @@ def list_profiles(
     user: User = Depends(require_permission("deployment_profiles.read")),
     db: Session = Depends(get_db),
 ):
-    return list(
+    profiles = list(
         db.scalars(
             select(DeploymentProfile).order_by(DeploymentProfile.created_at.desc())
         ).unique()
     )
+    return [
+        profile
+        for profile in profiles
+        if user_can_access_deployment_profile(db, user, profile)
+    ]
 
 
 @router.get("/{profile_id}", response_model=DeploymentProfileRead)
@@ -62,7 +68,7 @@ def get_profile(
     db: Session = Depends(get_db),
 ):
     profile = db.get(DeploymentProfile, profile_id)
-    if profile is None:
+    if profile is None or not user_can_access_deployment_profile(db, user, profile):
         raise HTTPException(status_code=404, detail="Deployment profile not found.")
     return profile
 
@@ -127,7 +133,7 @@ def deployment_operations(
     db: Session = Depends(get_db),
 ):
     profile = db.get(DeploymentProfile, profile_id)
-    if profile is None:
+    if profile is None or not user_can_access_deployment_profile(db, user, profile):
         raise HTTPException(status_code=404, detail="Deployment profile not found.")
     if stale_after_seconds < 30 or stale_after_seconds > 86400:
         raise HTTPException(

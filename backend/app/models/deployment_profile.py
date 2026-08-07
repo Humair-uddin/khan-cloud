@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,13 @@ class DeploymentProfile(BaseModel):
     )
     max_uses: Mapped[int] = mapped_column(Integer, default=1)
     uses_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    organization_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_by_user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),

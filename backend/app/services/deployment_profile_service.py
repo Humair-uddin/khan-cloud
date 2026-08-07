@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.deployment_profile import DeploymentProfile
+from app.models.organization import Organization
 from app.schemas.deployment_profile import DeploymentProfileCreate
 from app.services.audit_service import record_audit_event
 
@@ -53,6 +54,8 @@ def create_profile(
     actor_user_id: UUID,
 ) -> tuple[DeploymentProfile, str]:
     _validate_profile_policy(payload)
+    if payload.organization_id is not None and db.get(Organization, payload.organization_id) is None:
+        raise DeploymentProfileError("Organization not found.")
     code = create_enrollment_code()
 
     profile = DeploymentProfile(
@@ -68,6 +71,7 @@ def create_profile(
         expires_at=payload.expires_at,
         max_uses=payload.max_uses,
         uses_count=0,
+        organization_id=payload.organization_id,
         created_by_user_id=actor_user_id,
         is_active=True,
     )

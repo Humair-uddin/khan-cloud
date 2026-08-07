@@ -6,6 +6,8 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.nodes import router as nodes_router
 from app.api.v1.rbac import router as rbac_router
 from app.api.v1.system import router as system_router
+from app.api.v1.organizations import router as organizations_router
+from app.api.v1.support import router as support_router
 from app.core.config import settings
 from app.db.database import check_database
 
@@ -15,6 +17,8 @@ app.include_router(rbac_router,prefix=settings.API_PREFIX)
 app.include_router(nodes_router,prefix=settings.API_PREFIX)
 app.include_router(audit_router,prefix=settings.API_PREFIX)
 app.include_router(system_router)
+app.include_router(organizations_router,prefix=settings.API_PREFIX)
+app.include_router(support_router,prefix=settings.API_PREFIX)
 
 @app.get("/")
 def root():
