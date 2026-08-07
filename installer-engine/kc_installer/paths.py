@@ -100,6 +100,10 @@ class InstallerPaths:
     def database_path(self) -> Path:
         return self.state_root / "installer.db"
 
+    @property
+    def installation_lock_path(self) -> Path:
+        return self.lock_dir / "installation.lock"
+
     def ensure_directories(self) -> None:
         directories = (
             self.runtime_root,

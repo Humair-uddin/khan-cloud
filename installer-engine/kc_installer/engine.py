@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kc_installer.lock import InstallerLock
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.models import Manifest
 from kc_installer.paths import InstallerPaths
@@ -255,7 +256,7 @@ def create_report(
     return report_path
 
 
-def install(
+def _install_locked(
     package_dir: Path,
     target_dir: Path,
     *,
@@ -417,4 +418,23 @@ def install(
         shutil.rmtree(
             context.stage_dir,
             ignore_errors=True,
+        )
+
+
+def install(
+    package_dir: Path,
+    target_dir: Path,
+    *,
+    dry_run: bool = False,
+    paths: InstallerPaths | None = None,
+) -> Path:
+    active_paths = paths or InstallerPaths.from_environment()
+    active_paths.ensure_directories()
+
+    with InstallerLock(active_paths.installation_lock_path):
+        return _install_locked(
+            package_dir,
+            target_dir,
+            dry_run=dry_run,
+            paths=active_paths,
         )
