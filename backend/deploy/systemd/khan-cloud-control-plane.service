@@ -1,0 +1,36 @@
+[Unit]
+Description=Khan Cloud Control Plane
+Documentation=file:/opt/khan-cloud/source/backend/README.md
+Wants=network-online.target
+After=network-online.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=khanadmin
+Group=khanadmin
+WorkingDirectory=/opt/khan-cloud/source/backend
+EnvironmentFile=/opt/khan-cloud/source/backend/.env
+ExecStart=/opt/khan-cloud/source/backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGINT
+SyslogIdentifier=khan-cloud-control-plane
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
