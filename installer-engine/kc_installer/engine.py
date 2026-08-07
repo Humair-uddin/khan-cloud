@@ -15,6 +15,7 @@ from kc_installer.models import Manifest
 from kc_installer.paths import InstallerPaths
 from kc_installer.preflight import (
     build_remediation_plan,
+    evaluate_remediation_policy,
     classify_dependencies,
     run_preflight,
 )
@@ -255,6 +256,17 @@ def prepare_context(
 
     remediation_plan = build_remediation_plan(manifest)
 
+    remediation_decisions = evaluate_remediation_policy(
+        manifest,
+        dry_run=dry_run,
+        trusted_package=False,
+    )
+
+    decision_by_dependency = {
+        decision.dependency_name: decision
+        for decision in remediation_decisions
+    }
+
     state.record_remediation_plan(
         transaction_id,
         [
@@ -263,12 +275,30 @@ def prepare_context(
                 "action_type": action.action_type,
                 "command": list(action.command),
                 "description": action.description,
+                "eligible": (
+                    decision_by_dependency[action.dependency_name].eligible
+                ),
+                "policy_reason": (
+                    decision_by_dependency[action.dependency_name].reason
+                ),
             }
             for action in remediation_plan
         ],
     )
 
     for action in remediation_plan:
+        decision = decision_by_dependency[action.dependency_name]
+
+        state.record(
+            transaction_id,
+            "remediation_policy",
+            "eligible" if decision.eligible else "blocked",
+            (
+                f"{action.dependency_name}: "
+                f"{decision.reason}"
+            ),
+        )
+
         state.record(
             transaction_id,
             "remediation_plan",

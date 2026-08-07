@@ -121,6 +121,8 @@ def test_state_persists_structured_remediation_plan(tmp_path: Path) -> None:
     ]
     assert plan[0]["description"] == "Install Docker."
     assert plan[0]["position"] == 0
+    assert plan[0]["eligible"] is None
+    assert plan[0]["policy_reason"] is None
 
     assert plan[1]["dependency_name"] == "Example Tool"
     assert plan[1]["command"] == [
@@ -130,6 +132,8 @@ def test_state_persists_structured_remediation_plan(tmp_path: Path) -> None:
         "example-tool",
     ]
     assert plan[1]["position"] == 1
+    assert plan[1]["eligible"] is None
+    assert plan[1]["policy_reason"] is None
 
 
 def test_empty_remediation_plan_is_persisted_as_empty(tmp_path: Path) -> None:

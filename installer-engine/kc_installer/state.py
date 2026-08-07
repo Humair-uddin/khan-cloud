@@ -19,6 +19,7 @@ class InstallerState:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
         self.update_destination_schema()
+        self.update_remediation_schema()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -243,9 +244,11 @@ class InstallerState:
                         action_type,
                         command_json,
                         description,
-                        position
+                        position,
+                        eligible,
+                        policy_reason
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         transaction_id,
@@ -254,6 +257,12 @@ class InstallerState:
                         json.dumps(action["command"]),
                         action.get("description", ""),
                         position,
+                        (
+                            int(action["eligible"])
+                            if action.get("eligible") is not None
+                            else None
+                        ),
+                        action.get("policy_reason"),
                     ),
                 )
 
@@ -266,7 +275,9 @@ class InstallerState:
                     action_type,
                     command_json,
                     description,
-                    position
+                    position,
+                    eligible,
+                    policy_reason
                 FROM transaction_remediation_actions
                 WHERE transaction_id = ?
                 ORDER BY position
@@ -281,6 +292,12 @@ class InstallerState:
                 "command": json.loads(row["command_json"]),
                 "description": row["description"],
                 "position": row["position"],
+                "eligible": (
+                    bool(row["eligible"])
+                    if row["eligible"] is not None
+                    else None
+                ),
+                "policy_reason": row["policy_reason"],
             }
             for row in rows
         ]
@@ -573,6 +590,27 @@ class InstallerState:
                     str(destination_path),
                 ),
             )
+
+    def update_remediation_schema(self) -> None:
+        with self._connect() as db:
+            columns = {
+                row["name"]
+                for row in db.execute(
+                    "PRAGMA table_info(transaction_remediation_actions)"
+                ).fetchall()
+            }
+
+            additions = {
+                "eligible": "INTEGER",
+                "policy_reason": "TEXT",
+            }
+
+            for name, sql_type in additions.items():
+                if name not in columns:
+                    db.execute(
+                        "ALTER TABLE transaction_remediation_actions "
+                        f"ADD COLUMN {name} {sql_type}"
+                    )
 
     def update_destination_schema(self) -> None:
         with self._connect() as db:

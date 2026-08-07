@@ -86,5 +86,7 @@ def test_show_cli_exposes_persisted_remediation_plan(
             ],
             "description": "Install Docker.",
             "position": 0,
+            "eligible": None,
+            "policy_reason": None,
         }
     ]
