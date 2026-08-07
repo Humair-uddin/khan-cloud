@@ -20,6 +20,8 @@ class NodeRegistrationResponse(BaseModel):
     node_secret: str
     status: str
     lifecycle_state: str
+    deployment_profile_id: UUID | None = None
+    intended_purpose: str
 
 class NodeHeartbeatRequest(BaseModel):
     hostname: str = Field(min_length=1, max_length=255)
@@ -44,6 +46,8 @@ class NodeRead(BaseModel):
     connectivity_state: str
     marketplace_state: str
     is_enabled: bool
+    deployment_profile_id: UUID | None
+    intended_purpose: str
     capabilities: dict[str, Any]
     hostname: str
     operating_system: str

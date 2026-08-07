@@ -9,17 +9,74 @@ from app.db.database import get_db
 from app.models.node import Node
 from app.models.user import User
 from app.schemas.node import NodeActionRequest,NodeHeartbeatRequest,NodeRead,NodeRegistrationRequest,NodeRegistrationResponse
-from app.services.node_service import NodeLifecycleError,heartbeat_node,register_node,transition_node
+from app.services.deployment_profile_service import (
+    DeploymentProfileError,
+    consume_profile_code,
+    resolve_profile,
+)
+from app.services.node_service import (
+    NodeLifecycleError,
+    heartbeat_node,
+    register_node,
+    transition_node,
+)
 
 router=APIRouter(prefix="/nodes",tags=["nodes"])
 
-@router.post("/register",response_model=NodeRegistrationResponse,status_code=status.HTTP_201_CREATED)
-def register(payload: NodeRegistrationRequest,x_enrollment_token: str=Header(alias="X-Enrollment-Token"),db: Session=Depends(get_db)):
-    if x_enrollment_token!=settings.NODE_ENROLLMENT_TOKEN:
-        raise HTTPException(status_code=401,detail="Invalid enrollment token.")
-    try: node,secret=register_node(db,payload)
-    except NodeLifecycleError as exc: raise HTTPException(status_code=409,detail=str(exc)) from exc
-    return NodeRegistrationResponse(node_id=node.id,node_secret=secret,status=node.status,lifecycle_state=node.lifecycle_state)
+@router.post(
+    "/register",
+    response_model=NodeRegistrationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register(
+    payload: NodeRegistrationRequest,
+    x_deployment_enrollment_code: str | None = Header(
+        default=None,
+        alias="X-Deployment-Enrollment-Code",
+    ),
+    x_enrollment_token: str | None = Header(
+        default=None,
+        alias="X-Enrollment-Token",
+    ),
+    db: Session = Depends(get_db),
+):
+    profile = None
+
+    if x_deployment_enrollment_code:
+        try:
+            profile = resolve_profile(db, x_deployment_enrollment_code)
+        except DeploymentProfileError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+    elif x_enrollment_token != settings.NODE_ENROLLMENT_TOKEN:
+        raise HTTPException(
+            status_code=401,
+            detail="Valid deployment enrollment code is required.",
+        )
+
+    try:
+        node, secret = register_node(
+            db,
+            payload,
+            deployment_profile_id=(profile.id if profile else None),
+            intended_purpose=(profile.purpose if profile else None),
+            commit=profile is None,
+        )
+        if profile is not None:
+            consume_profile_code(db, profile, commit=False)
+            db.commit()
+            db.refresh(node)
+    except (NodeLifecycleError, DeploymentProfileError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return NodeRegistrationResponse(
+        node_id=node.id,
+        node_secret=secret,
+        status=node.status,
+        lifecycle_state=node.lifecycle_state,
+        deployment_profile_id=node.deployment_profile_id,
+        intended_purpose=node.intended_purpose,
+    )
 
 @router.post("/heartbeat",response_model=NodeRead)
 def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated_node),db: Session=Depends(get_db)):

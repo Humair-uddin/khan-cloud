@@ -9,7 +9,8 @@ agent:
   observation_only: true
 
 security:
-  enrollment_token: "REPLACE_WITH_EXISTING_NODE_ENROLLMENT_TOKEN"
+  deployment_enrollment_code: "REPLACE_WITH_DEPLOYMENT_ENROLLMENT_CODE"
+  enrollment_token: ""  # legacy fallback only
   verify_tls: false
 
 enrollment:

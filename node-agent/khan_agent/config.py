@@ -19,6 +19,8 @@ class AgentConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
+    deployment_enrollment_code: str = ""
+    # Legacy shared token remains only for backwards-compatible private/lab use.
     enrollment_token: str = ""
     verify_tls: bool = True
 

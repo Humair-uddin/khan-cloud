@@ -85,6 +85,10 @@ class AgentRuntime:
                     "event": "enrollment_success",
                     "node_id": credentials.node_id,
                     "status": response.get("status"),
+                    "deployment_profile_id": response.get(
+                        "deployment_profile_id"
+                    ),
+                    "intended_purpose": response.get("intended_purpose"),
                     "credentials_file": str(self.credential_store.path),
                 }
             )

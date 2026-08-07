@@ -19,7 +19,7 @@ cp config.example.yaml /home/khanadmin/khan-agent-test.yaml
 chmod 600 /home/khanadmin/khan-agent-test.yaml
 ```
 
-Edit only the enrollment token and node name.
+Edit the deployment enrollment code and node name. The legacy shared enrollment token is retained only for backwards-compatible private/lab use.
 
 Enroll:
 
@@ -41,6 +41,6 @@ Credentials are stored under the configured `state_directory`.
 
 ## Current limitation
 
-This early enrollment model uses a shared enrollment token and a generated node
-secret. Future secure enrollment will replace it with short-lived, scoped tokens
+Enrollment now prefers the scoped Deployment Profile enrollment code and retains the generated node
+secret for authenticated heartbeats. The legacy shared token is a compatibility fallback
 and certificate-based identity.

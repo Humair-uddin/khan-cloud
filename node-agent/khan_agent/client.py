@@ -14,11 +14,19 @@ class ControlPlaneClient:
         self.base_url = str(settings.agent.control_plane_url).rstrip("/")
 
     async def enroll(self, payload: dict[str, Any]) -> dict[str, Any]:
-        token = self.settings.security.enrollment_token
-        if not token:
+        deployment_code = self.settings.security.deployment_enrollment_code
+        legacy_token = self.settings.security.enrollment_token
+
+        if deployment_code:
+            headers = {
+                "X-Deployment-Enrollment-Code": deployment_code,
+            }
+        elif legacy_token:
+            headers = {"X-Enrollment-Token": legacy_token}
+        else:
             raise RuntimeError(
-                "Enrollment token is missing. Set security.enrollment_token "
-                "in the private agent configuration."
+                "Enrollment credential is missing. Set "
+                "security.deployment_enrollment_code."
             )
 
         async with httpx.AsyncClient(
@@ -28,7 +36,7 @@ class ControlPlaneClient:
             response = await client.post(
                 f"{self.base_url}{self.settings.enrollment.endpoint}",
                 json=payload,
-                headers={"X-Enrollment-Token": token},
+                headers=headers,
             )
             response.raise_for_status()
             return response.json()

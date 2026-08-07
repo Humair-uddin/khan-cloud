@@ -52,15 +52,25 @@ def sync_legacy_status(node: Node) -> None:
     elif node.lifecycle_state=="pending_approval": node.status="pending_approval"
     else: node.status="offline"
 
-def register_node(db: Session, payload: NodeRegistrationRequest) -> tuple[Node,str]:
-    node=db.scalar(select(Node).where(Node.machine_id==payload.machine_id))
-    secret=create_node_secret(); summary=inventory_summary(payload.inventory)
-    caps=normalized_capabilities(payload.capabilities,payload.inventory)
+def register_node(
+    db: Session,
+    payload: NodeRegistrationRequest,
+    *,
+    deployment_profile_id: UUID | None = None,
+    intended_purpose: str | None = None,
+    commit: bool = True,
+) -> tuple[Node, str]:
+    node = db.scalar(select(Node).where(Node.machine_id == payload.machine_id))
+    secret = create_node_secret()
+    summary = inventory_summary(payload.inventory)
+    caps = normalized_capabilities(payload.capabilities, payload.inventory)
     if node is None:
         node=Node(
             name=payload.name,machine_id=payload.machine_id,secret_hash=hash_node_secret(secret),
             status="pending_approval",lifecycle_state="pending_approval",connectivity_state="online",
             marketplace_state="not_eligible",is_enabled=True,capabilities=caps,
+            deployment_profile_id=deployment_profile_id,
+            intended_purpose=intended_purpose or "internal_lab",
             hostname=payload.hostname,operating_system=payload.operating_system,
             kernel_version=payload.kernel_version,agent_version=payload.agent_version,
             management_ip=payload.management_ip,production_ip=payload.production_ip,
@@ -71,7 +81,20 @@ def register_node(db: Session, payload: NodeRegistrationRequest) -> tuple[Node,s
             resource_type="node",resource_id=str(node.id),
             details={"machine_id":node.machine_id,"name":node.name})
     else:
-        if node.lifecycle_state=="retired": raise NodeLifecycleError("Retired nodes cannot re-enroll.")
+        if node.lifecycle_state == "retired":
+            raise NodeLifecycleError("Retired nodes cannot re-enroll.")
+        if (
+            deployment_profile_id is not None
+            and node.deployment_profile_id is not None
+            and node.deployment_profile_id != deployment_profile_id
+        ):
+            raise NodeLifecycleError(
+                "Node is already bound to a different deployment profile."
+            )
+        if deployment_profile_id is not None:
+            node.deployment_profile_id = deployment_profile_id
+        if intended_purpose is not None:
+            node.intended_purpose = intended_purpose
         node.name=payload.name; node.secret_hash=hash_node_secret(secret)
         node.connectivity_state="online"; node.hostname=payload.hostname
         node.operating_system=payload.operating_system; node.kernel_version=payload.kernel_version
@@ -80,7 +103,12 @@ def register_node(db: Session, payload: NodeRegistrationRequest) -> tuple[Node,s
         node.capabilities=caps; node.last_seen_at=datetime.now(UTC)
         for k,v in summary.items(): setattr(node,k,v)
         sync_legacy_status(node)
-    db.commit(); db.refresh(node); return node,secret
+    if commit:
+        db.commit()
+        db.refresh(node)
+    else:
+        db.flush()
+    return node, secret
 
 def authenticate_node(db: Session,node_id,node_secret: str) -> Node | None:
     node=db.get(Node,node_id)

@@ -109,9 +109,27 @@ def resolve_profile(db: Session, enrollment_code: str) -> DeploymentProfile:
     return profile
 
 
-def consume_profile_code(db: Session, profile: DeploymentProfile) -> None:
+def consume_profile_code(
+    db: Session,
+    profile: DeploymentProfile,
+    *,
+    commit: bool = True,
+) -> None:
+    # Re-check immediately before consumption so the caller can keep
+    # registration + code consumption in one transaction.
+    if not profile.is_active:
+        raise DeploymentProfileError("Deployment profile is disabled.")
+    if profile.expires_at is not None and profile.expires_at <= datetime.now(UTC):
+        raise DeploymentProfileError("Deployment enrollment code has expired.")
+    if profile.uses_count >= profile.max_uses:
+        raise DeploymentProfileError(
+            "Deployment enrollment code has no remaining uses."
+        )
     profile.uses_count += 1
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 def rotate_profile_code(
