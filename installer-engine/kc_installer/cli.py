@@ -35,6 +35,13 @@ def parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show")
     show.add_argument("transaction_id")
 
+    recovery_status = sub.add_parser("recovery-status")
+    recovery_status.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=300,
+    )
+
     sub.add_parser("self-test")
 
     return root
@@ -102,6 +109,22 @@ def main() -> None:
                     "installation": installation,
                     "journal": state.journal(args.transaction_id),
                 },
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if args.command == "recovery-status":
+        state = InstallerState(paths.database_path)
+
+        result = state.classify_incomplete(
+            stale_after_seconds=args.stale_after_seconds,
+        )
+
+        print(
+            json.dumps(
+                result,
                 indent=2,
                 default=str,
             )
