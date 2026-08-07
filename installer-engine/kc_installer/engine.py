@@ -16,6 +16,7 @@ from kc_installer.paths import InstallerPaths
 from kc_installer.preflight import (
     build_remediation_plan,
     evaluate_remediation_policy,
+    RemediationPolicyDecision,
     classify_dependencies,
     run_preflight,
 )
@@ -156,6 +157,102 @@ def execute_command(
         )
 
     return result
+
+
+@dataclass(frozen=True)
+class RemediationExecutionResult:
+    dependency_name: str
+    dependency_command: str
+    command_result: CommandExecutionResult
+    verified: bool
+
+
+class RemediationExecutionError(InstallError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        command_result: CommandExecutionResult | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.command_result = command_result
+
+
+def execute_remediation(
+    decision: RemediationPolicyDecision,
+    manifest: Manifest,
+    *,
+    cwd: Path,
+    timeout_seconds: float = 300.0,
+) -> RemediationExecutionResult:
+    """
+    Execute one already-authorized remediation decision and verify
+    that its declared dependency becomes available.
+
+    This function does not evaluate trust or policy itself. It only
+    accepts an already-produced policy decision and fails closed when
+    that decision is not eligible.
+    """
+
+    if not decision.eligible:
+        raise RemediationExecutionError(
+            (
+                f"Remediation is not eligible for "
+                f"{decision.dependency_name}: {decision.reason}"
+            )
+        )
+
+    if decision.action_type != "command":
+        raise RemediationExecutionError(
+            (
+                "Unsupported remediation action type: "
+                f"{decision.action_type}"
+            )
+        )
+
+    dependency = next(
+        (
+            item
+            for item in manifest.preflight.dependencies
+            if item.name == decision.dependency_name
+        ),
+        None,
+    )
+
+    if dependency is None:
+        raise RemediationExecutionError(
+            (
+                "Dependency not found in manifest: "
+                f"{decision.dependency_name}"
+            )
+        )
+
+    command_result = execute_command(
+        list(decision.command),
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+    )
+
+    import shutil as _shutil
+
+    verified = _shutil.which(dependency.command) is not None
+
+    if not verified:
+        raise RemediationExecutionError(
+            (
+                f"Remediation command succeeded but dependency "
+                f"{decision.dependency_name!r} is still unavailable "
+                f"({dependency.command})."
+            ),
+            command_result=command_result,
+        )
+
+    return RemediationExecutionResult(
+        dependency_name=decision.dependency_name,
+        dependency_command=dependency.command,
+        command_result=command_result,
+        verified=True,
+    )
 
 
 def command_output(command: list[str]) -> str:
