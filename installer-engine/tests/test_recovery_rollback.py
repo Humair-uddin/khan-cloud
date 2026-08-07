@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from kc_installer.engine import InstallError, recover_transaction
+from kc_installer.engine import InstallError, checksum_path, recover_transaction
 from kc_installer.paths import InstallerPaths
 from kc_installer.state import InstallerState
 
@@ -64,6 +64,12 @@ def prepare_interrupted_transaction(
             (existing, True),
             (newly_created, False),
         ],
+    )
+
+    state.record_backup_checksum(
+        transaction_id,
+        existing,
+        checksum_path(backup_existing),
     )
 
     with state._connect() as db:

@@ -17,6 +17,7 @@ class InstallerState:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.update_destination_schema()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -201,7 +202,11 @@ class InstallerState:
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT destination_path, existed_before, position
+                SELECT
+                    destination_path,
+                    existed_before,
+                    position,
+                    backup_checksum
                 FROM transaction_destinations
                 WHERE transaction_id = ?
                 ORDER BY position
@@ -460,3 +465,41 @@ class InstallerState:
             "pending",
             message,
         )
+
+    def record_backup_checksum(
+        self,
+        transaction_id: str,
+        destination_path: Path,
+        checksum: str,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE transaction_destinations
+                SET backup_checksum = ?
+                WHERE transaction_id = ?
+                  AND destination_path = ?
+                """,
+                (
+                    checksum,
+                    transaction_id,
+                    str(destination_path),
+                ),
+            )
+
+    def update_destination_schema(self) -> None:
+        with self._connect() as db:
+            columns = {
+                row["name"]
+                for row in db.execute(
+                    "PRAGMA table_info(transaction_destinations)"
+                ).fetchall()
+            }
+
+            if "backup_checksum" not in columns:
+                db.execute(
+                    """
+                    ALTER TABLE transaction_destinations
+                    ADD COLUMN backup_checksum TEXT
+                    """
+                )

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from kc_installer.cli import main
+from kc_installer.engine import checksum_path
 from kc_installer.state import InstallerState
 
 
@@ -149,6 +150,12 @@ def test_recover_cli_executes_guarded_rollback(
     state.record_destinations(
         transaction_id,
         [(existing, True)],
+    )
+
+    state.record_backup_checksum(
+        transaction_id,
+        existing,
+        checksum_path(backup / "existing.txt"),
     )
 
     with state._connect() as db:

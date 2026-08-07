@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -17,6 +18,42 @@ from kc_installer.state import InstallerState
 
 class InstallError(RuntimeError):
     pass
+
+
+def checksum_path(path: Path) -> str:
+    digest = hashlib.sha256()
+
+    if path.is_file():
+        with path.open("rb") as handle:
+            for chunk in iter(
+                lambda: handle.read(1024 * 1024),
+                b"",
+            ):
+                digest.update(chunk)
+
+        return digest.hexdigest()
+
+    if path.is_dir():
+        for item in sorted(
+            (entry for entry in path.rglob("*") if entry.is_file()),
+            key=lambda entry: str(entry.relative_to(path)),
+        ):
+            relative = str(item.relative_to(path)).encode("utf-8")
+            digest.update(relative)
+            digest.update(b"\0")
+
+            with item.open("rb") as handle:
+                for chunk in iter(
+                    lambda: handle.read(1024 * 1024),
+                    b"",
+                ):
+                    digest.update(chunk)
+
+        return digest.hexdigest()
+
+    raise InstallError(
+        f"Cannot checksum missing path: {path}"
+    )
 
 
 @dataclass
@@ -320,7 +357,27 @@ def _install_locked(
 
         if context.manifest.operations.create_backup:
             for destination in destinations:
+                existed_before = destination.exists()
+
                 backup_destination(context, destination)
+
+                if existed_before:
+                    relative = destination.relative_to(
+                        context.target_dir
+                    )
+                    backup = context.backup_dir / relative
+
+                    if not backup.exists():
+                        raise InstallError(
+                            "Backup creation failed for "
+                            f"{destination}"
+                        )
+
+                    context.state.record_backup_checksum(
+                        context.transaction_id,
+                        destination,
+                        checksum_path(backup),
+                    )
 
         context.state.heartbeat(context.transaction_id)
         context.state.record(
@@ -539,6 +596,23 @@ def recover_transaction(
                     "Recovery refused: required backup is missing for "
                     f"{destination}"
                 )
+
+            if existed_before:
+                recorded_checksum = item.get("backup_checksum")
+
+                if not recorded_checksum:
+                    raise InstallError(
+                        "Recovery refused: required backup checksum "
+                        f"is missing for {destination}"
+                    )
+
+                actual_checksum = checksum_path(backup)
+
+                if actual_checksum != recorded_checksum:
+                    raise InstallError(
+                        "Recovery refused: backup integrity check "
+                        f"failed for {destination}"
+                    )
 
             validated.append(
                 (
