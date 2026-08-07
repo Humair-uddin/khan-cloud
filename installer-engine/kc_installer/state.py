@@ -241,3 +241,17 @@ class InstallerState:
             ).fetchall()
 
         return [dict(row) for row in rows]
+
+    def installations(self, limit: int = 20) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT *
+                FROM installations
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
