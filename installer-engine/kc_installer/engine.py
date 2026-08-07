@@ -13,7 +13,7 @@ from kc_installer.lock import InstallerLock
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.models import Manifest
 from kc_installer.paths import InstallerPaths
-from kc_installer.preflight import run_preflight
+from kc_installer.preflight import classify_dependencies, run_preflight
 from kc_installer.state import InstallerState
 
 
@@ -181,11 +181,79 @@ def prepare_context(
             "Preflight compatibility check failed: " + message
         )
 
+    dependency_results = classify_dependencies(manifest)
+
+    dependency_failures: list[str] = []
+
+    for dependency in dependency_results:
+        if dependency.available:
+            state.record(
+                transaction_id,
+                "dependency",
+                "success",
+                (
+                    f"{dependency.name}: available "
+                    f"({dependency.command})"
+                ),
+            )
+            continue
+
+        if dependency.classification == "remediable":
+            state.record(
+                transaction_id,
+                "dependency",
+                "remediable",
+                (
+                    f"{dependency.name}: missing but approved "
+                    "for future automatic remediation."
+                ),
+            )
+            continue
+
+        if dependency.classification == "manual":
+            message = (
+                f"{dependency.name}: manual administrator "
+                "action required."
+            )
+            state.record(
+                transaction_id,
+                "dependency",
+                "manual_required",
+                message,
+            )
+            dependency_failures.append(message)
+            continue
+
+        message = (
+            f"{dependency.name}: required dependency is missing."
+        )
+        state.record(
+            transaction_id,
+            "dependency",
+            "failed",
+            message,
+        )
+        dependency_failures.append(message)
+
+    if dependency_failures:
+        message = "; ".join(dependency_failures)
+
+        state.finish(
+            transaction_id,
+            status="dependency_blocked",
+            stage="dependency",
+            error_message=message,
+        )
+
+        raise InstallError(
+            "Dependency validation failed: " + message
+        )
+
     state.record(
         transaction_id,
         "preflight",
         "success",
-        "All compatibility checks passed.",
+        "All compatibility and dependency checks passed.",
     )
 
     return InstallContext(

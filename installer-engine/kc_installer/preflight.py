@@ -124,3 +124,33 @@ def run_preflight(
         )
 
     return results
+
+
+@dataclass(frozen=True)
+class DependencyResult:
+    name: str
+    classification: str
+    available: bool
+    command: str
+    description: str
+
+
+def classify_dependencies(
+    manifest: Manifest,
+) -> list[DependencyResult]:
+    results: list[DependencyResult] = []
+
+    for dependency in manifest.preflight.dependencies:
+        available = shutil.which(dependency.command) is not None
+
+        results.append(
+            DependencyResult(
+                name=dependency.name,
+                classification=dependency.classification,
+                available=available,
+                command=dependency.command,
+                description=dependency.description,
+            )
+        )
+
+    return results

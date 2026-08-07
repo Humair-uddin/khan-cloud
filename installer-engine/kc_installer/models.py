@@ -37,8 +37,20 @@ class CompatibilitySpec(BaseModel):
     minimum_disk_mb: int | None = Field(default=None, ge=1)
 
 
+class DependencySpec(BaseModel):
+    name: str
+    command: str
+    classification: Literal[
+        "required",
+        "remediable",
+        "manual",
+    ] = "required"
+    description: str = ""
+
+
 class PreflightSpec(BaseModel):
     required_commands: list[str] = []
+    dependencies: list[DependencySpec] = []
 
 
 class TestsSpec(BaseModel):
