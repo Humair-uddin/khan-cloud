@@ -105,3 +105,37 @@ def resolve(
         allowed_services=profile.allowed_services,
         resource_policy=profile.resource_policy,
     )
+
+
+
+# Operational/support view is derived from existing node + telemetry state.
+# It intentionally exposes no enrollment secret or customer contact data.
+from app.schemas.deployment_operations import DeploymentOperationsSummary
+from app.services.deployment_operations_service import (
+    get_deployment_operations_summary,
+)
+
+
+@router.get(
+    "/{profile_id}/operations",
+    response_model=DeploymentOperationsSummary,
+)
+def deployment_operations(
+    profile_id: UUID,
+    stale_after_seconds: int = 300,
+    user: User = Depends(require_permission("deployments.read")),
+    db: Session = Depends(get_db),
+):
+    profile = db.get(DeploymentProfile, profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Deployment profile not found.")
+    if stale_after_seconds < 30 or stale_after_seconds > 86400:
+        raise HTTPException(
+            status_code=422,
+            detail="stale_after_seconds must be between 30 and 86400.",
+        )
+    return get_deployment_operations_summary(
+        db,
+        profile,
+        stale_after_seconds=stale_after_seconds,
+    )
