@@ -196,3 +196,61 @@ def build_remediation_plan(
         )
 
     return plan
+
+
+@dataclass(frozen=True)
+class RemediationPolicyDecision:
+    dependency_name: str
+    action_type: str
+    command: list[str]
+    description: str
+    eligible: bool
+    reason: str
+
+
+def evaluate_remediation_policy(
+    manifest: Manifest,
+    *,
+    dry_run: bool,
+    trusted_package: bool = False,
+) -> list[RemediationPolicyDecision]:
+    """
+    Evaluate whether manifest-approved remediation actions would be
+    eligible for future execution.
+
+    This function DOES NOT execute remediation.
+
+    `trusted_package` must come from an external trust/signature
+    verification mechanism. The manifest's self-declared `signed`
+    field is intentionally not treated as proof of trust.
+    """
+
+    plan = build_remediation_plan(manifest)
+    decisions: list[RemediationPolicyDecision] = []
+
+    for action in plan:
+        if dry_run:
+            eligible = False
+            reason = "dry-run prohibits remediation execution"
+        elif not manifest.operations.allow_dependency_install:
+            eligible = False
+            reason = "dependency installation is not permitted"
+        elif not trusted_package:
+            eligible = False
+            reason = "package trust has not been verified"
+        else:
+            eligible = True
+            reason = "eligible"
+
+        decisions.append(
+            RemediationPolicyDecision(
+                dependency_name=action.dependency_name,
+                action_type=action.action_type,
+                command=list(action.command),
+                description=action.description,
+                eligible=eligible,
+                reason=reason,
+            )
+        )
+
+    return decisions
