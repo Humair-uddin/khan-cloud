@@ -4,10 +4,16 @@ import argparse
 import json
 from pathlib import Path
 
-from kc_installer.engine import install, recover_transaction
+from kc_installer.engine import (
+    RemediationExecutionError,
+    execute_remediation_attempt,
+    install,
+    recover_transaction,
+)
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.paths import InstallerPaths
 from kc_installer.preflight import (
+    RemediationPolicyDecision,
     build_remediation_plan,
     classify_dependencies,
     run_preflight,
@@ -46,6 +52,15 @@ def parser() -> argparse.ArgumentParser:
 
     show = sub.add_parser("show")
     show.add_argument("transaction_id")
+
+    remediate = sub.add_parser("remediate")
+    remediate.add_argument("transaction_id")
+    remediate.add_argument("position", type=int)
+    remediate.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300.0,
+    )
 
     recovery_status = sub.add_parser("recovery-status")
     recovery_status.add_argument(
@@ -192,6 +207,159 @@ def main() -> None:
                 "remediation_attempts": state.remediation_attempts(
                     args.transaction_id
                 ),
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if args.command == "remediate":
+        state = InstallerState(paths.database_path)
+
+        installation = state.installation(args.transaction_id)
+
+        if installation is None:
+            raise SystemExit(
+                f"Transaction not found: {args.transaction_id}"
+            )
+
+        actions = state.remediation_plan(args.transaction_id)
+
+        action = next(
+            (
+                item
+                for item in actions
+                if item["position"] == args.position
+            ),
+            None,
+        )
+
+        if action is None:
+            raise SystemExit(
+                (
+                    "Remediation action not found: "
+                    f"transaction={args.transaction_id}, "
+                    f"position={args.position}"
+                )
+            )
+
+        if action["eligible"] is not True:
+            raise SystemExit(
+                (
+                    "Remediation blocked: "
+                    f"{action.get('policy_reason') or 'not eligible'}"
+                )
+            )
+
+        package_path = Path(installation["package_path"])
+        target_path = Path(installation["target_path"])
+
+        manifest = load_manifest(package_path)
+
+        if (
+            manifest.feature_pack.id
+            != installation["feature_pack_id"]
+            or manifest.feature_pack.version
+            != installation["feature_pack_version"]
+        ):
+            raise SystemExit(
+                "Stored transaction and package manifest no longer match."
+            )
+
+        dependency = next(
+            (
+                item
+                for item in manifest.preflight.dependencies
+                if item.name == action["dependency_name"]
+            ),
+            None,
+        )
+
+        if (
+            dependency is None
+            or dependency.classification != "remediable"
+            or dependency.remediation is None
+            or dependency.remediation.type != action["action_type"]
+            or list(dependency.remediation.command)
+            != list(action["command"])
+        ):
+            raise SystemExit(
+                (
+                    "Persisted remediation plan and package manifest "
+                    "no longer match; refusing execution."
+                )
+            )
+
+        decision = RemediationPolicyDecision(
+            dependency_name=action["dependency_name"],
+            action_type=action["action_type"],
+            command=list(action["command"]),
+            description=action["description"],
+            eligible=True,
+            reason=action.get("policy_reason") or "eligible",
+        )
+
+        try:
+            result = execute_remediation_attempt(
+                state=state,
+                transaction_id=args.transaction_id,
+                position=args.position,
+                decision=decision,
+                manifest=manifest,
+                cwd=target_path,
+                timeout_seconds=args.timeout_seconds,
+            )
+        except RemediationExecutionError as exc:
+            attempts = [
+                item
+                for item in state.remediation_attempts(
+                    args.transaction_id
+                )
+                if item["position"] == args.position
+            ]
+
+            output = {
+                "transaction_id": args.transaction_id,
+                "position": args.position,
+                "dependency_name": action["dependency_name"],
+                "status": (
+                    attempts[-1]["status"]
+                    if attempts
+                    else "failed"
+                ),
+                "verified": False,
+                "error": str(exc),
+                "attempt": attempts[-1] if attempts else None,
+            }
+
+            print(
+                json.dumps(
+                    output,
+                    indent=2,
+                    default=str,
+                )
+            )
+
+            raise SystemExit(1) from exc
+
+        attempts = [
+            item
+            for item in state.remediation_attempts(
+                args.transaction_id
+            )
+            if item["position"] == args.position
+        ]
+
+        print(
+            json.dumps(
+                {
+                    "transaction_id": args.transaction_id,
+                    "position": args.position,
+                    "dependency_name": result.dependency_name,
+                    "status": "success",
+                    "verified": result.verified,
+                    "attempt": attempts[-1],
                 },
                 indent=2,
                 default=str,
