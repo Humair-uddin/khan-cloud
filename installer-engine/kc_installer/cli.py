@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from kc_installer.engine import install
+from kc_installer.engine import install, recover_transaction
 from kc_installer.manifest import load_manifest, validate_manifest_files
 from kc_installer.paths import InstallerPaths
 from kc_installer.state import InstallerState
@@ -48,6 +48,11 @@ def parser() -> argparse.ArgumentParser:
         "--stale-after-seconds",
         type=int,
         default=300,
+    )
+    recover.add_argument(
+        "--rollback",
+        action="store_true",
+        help="Restore the recorded pre-installation state.",
     )
 
     sub.add_parser("self-test")
@@ -169,6 +174,25 @@ def main() -> None:
             raise SystemExit(
                 "Recovery refused: transaction is not safely recoverable."
             )
+
+        if args.rollback:
+            try:
+                result = recover_transaction(
+                    args.transaction_id,
+                    stale_after_seconds=args.stale_after_seconds,
+                    paths=paths,
+                )
+            except Exception as exc:
+                raise SystemExit(str(exc)) from exc
+
+            print(
+                json.dumps(
+                    result,
+                    indent=2,
+                    default=str,
+                )
+            )
+            return
 
         state.mark_recovery_requested(args.transaction_id)
 

@@ -451,3 +451,158 @@ def install(
             dry_run=dry_run,
             paths=active_paths,
         )
+
+
+def recover_transaction(
+    transaction_id: str,
+    *,
+    stale_after_seconds: int = 300,
+    paths: InstallerPaths | None = None,
+) -> dict[str, object]:
+    active_paths = paths or InstallerPaths.from_environment()
+    active_paths.ensure_directories()
+
+    state = InstallerState(active_paths.database_path)
+
+    with InstallerLock(active_paths.installation_lock_path):
+        matches = [
+            item
+            for item in state.classify_incomplete(
+                stale_after_seconds=stale_after_seconds,
+            )
+            if item["transaction_id"] == transaction_id
+        ]
+
+        if not matches:
+            raise InstallError(
+                "Transaction is not currently incomplete or was not found."
+            )
+
+        transaction = matches[0]
+
+        if transaction["classification"] == "active":
+            raise InstallError(
+                "Recovery refused: transaction is still active."
+            )
+
+        if transaction["classification"] not in {
+            "interrupted",
+            "stale",
+        }:
+            raise InstallError(
+                "Recovery refused: transaction is not safely recoverable."
+            )
+
+        target_root = Path(
+            transaction["target_path"]
+        ).resolve()
+
+        backup_root = Path(
+            transaction["backup_path"]
+        ).resolve()
+
+        destinations = state.destinations(transaction_id)
+
+        if not destinations:
+            raise InstallError(
+                "Recovery refused: transaction has no recorded destinations."
+            )
+
+        validated: list[tuple[Path, Path, bool]] = []
+
+        for item in destinations:
+            destination = Path(
+                item["destination_path"]
+            ).resolve()
+
+            try:
+                relative = destination.relative_to(target_root)
+            except ValueError as exc:
+                raise InstallError(
+                    "Recovery refused: recorded destination is "
+                    f"outside target root: {destination}"
+                ) from exc
+
+            backup = (backup_root / relative).resolve()
+
+            try:
+                backup.relative_to(backup_root)
+            except ValueError as exc:
+                raise InstallError(
+                    "Recovery refused: computed backup path is unsafe."
+                ) from exc
+
+            existed_before = bool(item["existed_before"])
+
+            if existed_before and not backup.exists():
+                raise InstallError(
+                    "Recovery refused: required backup is missing for "
+                    f"{destination}"
+                )
+
+            validated.append(
+                (
+                    destination,
+                    backup,
+                    existed_before,
+                )
+            )
+
+        state.mark_recovery_requested(transaction_id)
+
+        state.record(
+            transaction_id,
+            "recovery_started",
+            "started",
+            "Validated rollback recovery started.",
+        )
+
+        try:
+            for destination, backup, existed_before in reversed(
+                validated
+            ):
+                if destination.exists():
+                    if destination.is_dir():
+                        shutil.rmtree(destination)
+                    else:
+                        destination.unlink()
+
+                if existed_before:
+                    destination.parent.mkdir(
+                        parents=True,
+                        exist_ok=True,
+                    )
+
+                    if backup.is_dir():
+                        shutil.copytree(
+                            backup,
+                            destination,
+                        )
+                    else:
+                        shutil.copy2(
+                            backup,
+                            destination,
+                        )
+
+            state.finish(
+                transaction_id,
+                status="recovered",
+                stage="recovered",
+            )
+
+        except Exception as exc:
+            state.finish(
+                transaction_id,
+                status="recovery_failed",
+                stage="recovery_failed",
+                error_message=str(exc),
+            )
+            raise
+
+        return {
+            "status": "recovered",
+            "transaction_id": transaction_id,
+            "restored_destinations": len(validated),
+            "target_path": str(target_root),
+            "backup_path": str(backup_root),
+        }
