@@ -12,6 +12,9 @@ from app.api.v1.system import router as system_router
 from app.api.v1.organizations import router as organizations_router
 from app.api.v1.support import router as support_router
 from app.api.v1.operations import router as operations_router
+from app.api.v1.provider import router as provider_router
+from app.api.v1.compute import router as compute_router
+from app.api.v1.node_runtime import router as node_runtime_router
 from app.core.config import settings
 from app.db.database import check_database
 
@@ -24,6 +27,9 @@ app.include_router(system_router)
 app.include_router(organizations_router,prefix=settings.API_PREFIX)
 app.include_router(support_router,prefix=settings.API_PREFIX)
 app.include_router(operations_router,prefix=settings.API_PREFIX)
+app.include_router(provider_router,prefix=settings.API_PREFIX)
+app.include_router(compute_router,prefix=settings.API_PREFIX)
+app.include_router(node_runtime_router,prefix=settings.API_PREFIX)
 
 @app.get("/")
 def root():

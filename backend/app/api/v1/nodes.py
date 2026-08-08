@@ -19,6 +19,7 @@ from app.services.node_service import (
     heartbeat_node,
     register_node,
     transition_node,
+    auto_approve_enrolled_node,
 )
 
 router=APIRouter(prefix="/nodes",tags=["nodes"])
@@ -63,6 +64,8 @@ def register(
         )
         if profile is not None:
             consume_profile_code(db, profile, commit=False)
+            if bool((profile.resource_policy or {}).get("auto_approve_node")):
+                auto_approve_enrolled_node(db, node)
             db.commit()
             db.refresh(node)
     except (NodeLifecycleError, DeploymentProfileError) as exc:
@@ -80,7 +83,11 @@ def register(
 
 @router.post("/heartbeat",response_model=NodeRead)
 def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated_node),db: Session=Depends(get_db)):
-    try: return heartbeat_node(db,node,payload)
+    try:
+        updated = heartbeat_node(db,node,payload)
+        from app.services.compute_service import sync_node_capacity
+        sync_node_capacity(db, updated)
+        return updated
     except NodeLifecycleError as exc: raise HTTPException(status_code=409,detail=str(exc)) from exc
 
 @router.get("",response_model=list[NodeRead],dependencies=[Depends(require_permission("nodes.read"))])

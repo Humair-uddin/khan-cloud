@@ -67,3 +67,32 @@ export function loadDashboard(options = {}) {
 export function loadCurrentUser(options = {}) {
   return authenticatedGet("/api/v1/auth/me", options);
 }
+
+export function loadOrganizations(options = {}) {
+  return authenticatedGet("/api/v1/organizations", options);
+}
+
+export async function createNodeInstaller(payload, { token = getToken(), apiBase = getApiBase() } = {}) {
+  if (!token) throw new Error("Authentication required.");
+  const response = await fetch(apiUrl("/api/v1/provider/node-installers", apiBase), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  return parseResponse(response);
+}
+
+export function loadAccess(options = {}) {
+  return authenticatedGet("/api/v1/rbac/me", options);
+}
+
+export function loadComputeHosts(options = {}) {
+  return authenticatedGet("/api/v1/compute/hosts", options);
+}
+
+export function loadVPSInstances(options = {}) {
+  return authenticatedGet("/api/v1/compute/vps", options);
+}

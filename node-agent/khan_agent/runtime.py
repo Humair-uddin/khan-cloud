@@ -14,6 +14,7 @@ from khan_agent.identity import IdentityStore
 from khan_agent.inventory import collect_safe_inventory
 from khan_agent.installer_telemetry import read_latest_installer_snapshot
 from khan_agent.plugins import PluginManager
+from khan_agent.virtualization import execute_virtualization_job
 from khan_agent.state import AgentState, StateMachine
 
 logger = logging.getLogger("khan_agent")
@@ -39,6 +40,13 @@ class AgentRuntime:
         self.plugin_manager = PluginManager(settings.agent.plugin_directory)
         self._last_installer_telemetry_key: tuple[str, str, str] | None = None
 
+    def _inventory_payload(self) -> dict[str, object]:
+        inventory = collect_safe_inventory()
+        inventory.setdefault("virtualization", {})["execution_enabled"] = (
+            self.settings.virtualization.execution_enabled
+        )
+        return inventory
+
     def _registration_payload(self) -> dict[str, object]:
         return {
             "name": self.settings.agent.node_name,
@@ -49,7 +57,7 @@ class AgentRuntime:
             "agent_version": __version__,
             "management_ip": "",
             "production_ip": "",
-            "inventory": collect_safe_inventory(),
+            "inventory": self._inventory_payload(),
         }
 
     def _heartbeat_payload(self) -> dict[str, object]:
@@ -140,6 +148,33 @@ class AgentRuntime:
             )
         )
 
+    async def _process_one_node_job(self, credentials: NodeCredentials) -> None:
+        next_job = getattr(self.client, "next_job", None)
+        if next_job is None:
+            return
+
+        job = await next_job(credentials)
+        if not job:
+            return
+        result = execute_virtualization_job(
+            job, execution_enabled=self.settings.virtualization.execution_enabled
+        )
+        await self.client.report_job_result(
+            str(job["id"]),
+            {
+                "status": result.status,
+                "result": result.result,
+                "error_message": result.error_message,
+            },
+            credentials,
+        )
+        logger.info(json.dumps({
+            "event": "node_job_completed",
+            "job_id": str(job["id"]),
+            "job_type": job.get("job_type"),
+            "status": result.status,
+        }))
+
     async def heartbeat_once(self) -> None:
         configure_logging(self.settings.agent.log_level)
 
@@ -154,6 +189,7 @@ class AgentRuntime:
             credentials,
         )
         await self._report_installer_telemetry(credentials)
+        await self._process_one_node_job(credentials)
 
         logger.info(
             json.dumps(
@@ -222,6 +258,7 @@ class AgentRuntime:
                     credentials,
                 )
                 await self._report_installer_telemetry(credentials)
+                await self._process_one_node_job(credentials)
                 self.state.transition(AgentState.CONNECTED)
                 logger.info(
                     json.dumps(

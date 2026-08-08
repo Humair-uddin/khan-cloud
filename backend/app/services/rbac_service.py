@@ -16,6 +16,9 @@ DEFAULT_PERMISSIONS: dict[str,str] = {
 "organizations.read":"View organizations.","organizations.manage":"Manage organizations and memberships.",
 "support.read":"View support cases.","support.manage":"Create and manage support cases.",
 "deployments.read":"View deployments.","deployments.manage":"Manage deployments.",
+"node_installers.manage":"Generate scoped node installers.",
+"compute.hosts.read":"View compute host capacity.",
+"vps.read":"View VPS instances.","vps.manage":"Create and manage VPS instances.",
 "settings.read":"View settings.","settings.manage":"Modify settings.",
 }
 DEFAULT_ROLES: dict[str,set[str]] = {
@@ -23,12 +26,12 @@ DEFAULT_ROLES: dict[str,set[str]] = {
 "platform_admin": set(DEFAULT_PERMISSIONS),
 "operator":{"users.read","roles.read","nodes.read","nodes.approve","nodes.disable",
 "nodes.maintenance","nodes.inventory.read","audit.read","deployments.read",
-"deployments.manage","organizations.read","support.read","support.manage","settings.read"},
+"deployments.manage","node_installers.manage","compute.hosts.read","vps.read","vps.manage","organizations.read","support.read","support.manage","settings.read"},
 "security_officer":{"users.read","roles.read","nodes.read","nodes.disable",
 "nodes.credentials.rotate","nodes.inventory.read","audit.read","settings.read"},
-"marketplace_manager":{"nodes.read","nodes.approve","nodes.inventory.read","audit.read","deployments.read"},
+"marketplace_manager":{"nodes.read","nodes.approve","nodes.inventory.read","audit.read","deployments.read","node_installers.manage"},
 "support_engineer":{"users.read","nodes.read","nodes.inventory.read","audit.read","deployments.read","organizations.read","support.read","support.manage"},
-"customer":{"nodes.read","deployments.read","deployments.manage","organizations.read","support.read","support.manage"},
+"customer":{"nodes.read","deployments.read","deployments.manage","node_installers.manage","vps.read","vps.manage","organizations.read","support.read","support.manage"},
 "viewer":{"users.read","roles.read","nodes.read","nodes.inventory.read","audit.read","deployments.read","settings.read"},
 }
 class RBACConflictError(ValueError): pass

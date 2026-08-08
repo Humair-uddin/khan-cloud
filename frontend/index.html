@@ -39,6 +39,7 @@
         </div>
         <div class="topbar-actions">
           <span id="user-label" class="user-label"></span>
+          <button id="add-node-button" class="primary compact" type="button" hidden>Add Node</button>
           <button id="refresh-button" class="secondary" type="button">Refresh</button>
           <button id="logout-button" class="ghost" type="button">Sign out</button>
         </div>
@@ -78,8 +79,58 @@
             <div id="attention-list" class="attention-list"></div>
           </section>
         </div>
+
+        <section class="panel compute-panel">
+          <div class="panel-header">
+            <div><p class="eyebrow">COMPUTE</p><h2>VPS hosts & capacity</h2></div>
+            <span id="compute-host-count" class="badge"></span>
+          </div>
+          <div id="compute-hosts" class="compute-hosts"></div>
+        </section>
+
+        <section class="panel compute-panel">
+          <div class="panel-header">
+            <div><p class="eyebrow">VPS</p><h2>Virtual machines</h2></div>
+            <span id="vps-count" class="badge"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Status</th><th>vCPU</th><th>Memory</th><th>Disk</th><th>Host</th></tr></thead>
+              <tbody id="vps-body"><tr><td colspan="6" class="empty">No VPS instances.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
       </main>
     </section>
+      <div id="node-modal" class="modal-backdrop" hidden>
+        <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="node-modal-title">
+          <div class="modal-head">
+            <div><p class="eyebrow">PROVIDER ONBOARDING</p><h2 id="node-modal-title">Add compute node</h2></div>
+            <button id="node-modal-close" class="ghost" type="button">Close</button>
+          </div>
+          <form id="node-installer-form" class="node-form">
+            <label>Organization<select id="node-organization" required></select></label>
+            <label>Node name<input id="node-name" value="KC-NODE-01" pattern="[A-Za-z0-9_.-]+" required></label>
+            <label>Node role<select id="node-role" required>
+              <option value="private_compute">Private compute</option>
+              <option value="gpu_host">GPU host</option>
+              <option value="vps_host">VPS infrastructure (Khan Cloud operators)</option>
+            </select></label>
+            <div class="info-box">The installer detects Ubuntu/Debian, installs only safe prerequisites, enrolls once, removes its enrollment credential, installs the persistent agent, and sends inventory/heartbeat automatically.</div>
+            <button id="generate-installer" class="primary" type="submit">Generate installer</button>
+            <p id="node-form-error" class="error"></p>
+          </form>
+          <div id="installer-result" class="installer-result" hidden>
+            <div class="success-mark">✓</div>
+            <h3>Installer ready</h3>
+            <p id="installer-expiry" class="muted"></p>
+            <a id="installer-download" class="primary button-link" href="#">Download .run installer</a>
+            <div class="command-box"><div><strong>Or run on the node</strong><button id="copy-command" class="secondary" type="button">Copy</button></div><code id="installer-command"></code></div>
+            <p class="muted small-text">No Khan Cloud server password is used. The node initiates the outbound connection to the Control Plane.</p>
+          </div>
+        </section>
+      </div>
+
   </div>
   <script type="module" src="./src/app.js"></script>
 </body>

@@ -1,4 +1,4 @@
-import { clearSession, getApiBase, getToken, loadCurrentUser, loadDashboard, login, saveSession } from "./api.js";
+import { clearSession, createNodeInstaller, getApiBase, getToken, loadAccess, loadComputeHosts, loadCurrentUser, loadDashboard, loadOrganizations, loadVPSInstances, login, saveSession } from "./api.js";
 import { CARD_DEFINITIONS, dashboardSeverity, formatDate, healthClass, priorityClass } from "./dashboard.js";
 
 const $ = (id) => document.getElementById(id);
@@ -66,6 +66,55 @@ function renderBanner(data) {
   else banner.textContent = "Fleet healthy";
 }
 
+function formatBytes(value) {
+  const n = Number(value || 0);
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GiB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MiB`;
+  return `${n} B`;
+}
+
+function renderComputeHosts(hosts) {
+  const root = $("compute-hosts");
+  $("compute-host-count").textContent = hosts.length;
+  root.innerHTML = hosts.length ? hosts.map((host) => {
+    const c = host.capacity;
+    const readiness = c.scheduling_enabled ? "Schedulable" : `Not ready: ${(c.readiness_reasons || []).join(", ")}`;
+    return `<article class="compute-host-card">
+      <div><strong>${escapeHtml(host.name)}</strong><small>${escapeHtml(host.hostname)}</small></div>
+      <span class="status ${c.scheduling_enabled ? "healthy" : "attention"}">${escapeHtml(readiness)}</span>
+      <div class="capacity-grid">
+        <span>CPU <strong>${escapeHtml(c.cpu_allocated)} / ${escapeHtml(c.cpu_allocatable)}</strong></span>
+        <span>RAM <strong>${escapeHtml(formatBytes(c.memory_allocated_bytes))} / ${escapeHtml(formatBytes(c.memory_allocatable_bytes))}</strong></span>
+        <span>Storage <strong>${escapeHtml(formatBytes(c.storage_allocated_bytes))} / ${escapeHtml(formatBytes(c.storage_allocatable_bytes))}</strong></span>
+        <span>KVM <strong>${c.kvm_available ? "yes" : "no"}</strong></span>
+        <span>libvirt <strong>${c.libvirt_available ? "yes" : "no"}</strong></span>
+      </div>
+    </article>`;
+  }).join("") : `<div class="empty-state"><strong>No VPS hosts</strong><p>Enroll a node with VPS infrastructure purpose.</p></div>`;
+}
+
+function renderVPS(items) {
+  $("vps-count").textContent = items.length;
+  $("vps-body").innerHTML = items.length ? items.map((item) => `<tr>
+    <td><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.image)}</small></td>
+    <td><span class="status">${escapeHtml(item.status)}</span></td>
+    <td>${escapeHtml(item.vcpu)}</td>
+    <td>${escapeHtml(formatBytes(item.memory_bytes))}</td>
+    <td>${escapeHtml(formatBytes(item.disk_bytes))}</td>
+    <td>${escapeHtml(item.node_id || "pending")}</td>
+  </tr>`).join("") : `<tr><td colspan="6" class="empty">No VPS instances.</td></tr>`;
+}
+
+async function refreshCompute() {
+  const perms = new Set(currentAccess?.permissions || []);
+  if (currentAccess?.is_superuser || perms.has("*") || perms.has("compute.hosts.read")) {
+    try { renderComputeHosts(await loadComputeHosts()); } catch (error) { renderComputeHosts([]); }
+  } else { $("compute-hosts").innerHTML = `<div class="empty-state">Host capacity is restricted.</div>`; }
+  if (currentAccess?.is_superuser || perms.has("*") || perms.has("vps.read")) {
+    try { renderVPS(await loadVPSInstances()); } catch (error) { renderVPS([]); }
+  }
+}
+
 async function refreshDashboard() {
   if (refreshing) return;
   refreshing = true;
@@ -77,6 +126,7 @@ async function refreshDashboard() {
     renderAttention(data.attention_queue || []);
     renderBanner(data);
     $("generated-label").textContent = `Updated ${formatDate(data.generated_at)} · auto-refresh 30s`;
+    await refreshCompute();
   } catch (error) {
     if (error.status === 401) {
       clearSession();
@@ -92,6 +142,66 @@ async function refreshDashboard() {
   }
 }
 
+
+
+let currentAccess = null;
+
+async function openNodeModal() {
+  $("node-form-error").textContent = "";
+  $("installer-result").hidden = true;
+  $("node-installer-form").hidden = false;
+  try {
+    const organizations = await loadOrganizations();
+    $("node-organization").innerHTML = organizations.length
+      ? organizations.map((org) => `<option value="${escapeHtml(org.id)}">${escapeHtml(org.name)}</option>`).join("")
+      : `<option value="">No organization available</option>`;
+    $("node-modal").hidden = false;
+  } catch (error) {
+    $("system-banner").hidden = false;
+    $("system-banner").className = "system-banner critical";
+    $("system-banner").textContent = error.message || "Unable to load organizations";
+  }
+}
+
+function closeNodeModal() { $("node-modal").hidden = true; }
+
+$("add-node-button").addEventListener("click", openNodeModal);
+$("node-modal-close").addEventListener("click", closeNodeModal);
+$("node-modal").addEventListener("click", (event) => { if (event.target === $("node-modal")) closeNodeModal(); });
+
+$("node-installer-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("generate-installer");
+  button.disabled = true;
+  button.textContent = "Building installer…";
+  $("node-form-error").textContent = "";
+  try {
+    const result = await createNodeInstaller({
+      organization_id: $("node-organization").value,
+      node_name: $("node-name").value,
+      node_role: $("node-role").value,
+      download_expires_minutes: 60,
+    });
+    $("node-installer-form").hidden = true;
+    $("installer-result").hidden = false;
+    $("installer-download").href = result.download_url;
+    $("installer-download").download = result.filename;
+    $("installer-command").textContent = result.one_command;
+    $("installer-expiry").textContent = `Download link expires ${formatDate(result.expires_at)}. Enrollment is one-use.`;
+  } catch (error) {
+    $("node-form-error").textContent = error.message || "Installer generation failed.";
+  } finally {
+    button.disabled = false;
+    button.textContent = "Generate installer";
+  }
+});
+
+$("copy-command").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("installer-command").textContent);
+  $("copy-command").textContent = "Copied";
+  setTimeout(() => { $("copy-command").textContent = "Copy"; }, 1200);
+});
+
 $("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("login-error").textContent = "";
@@ -103,6 +213,8 @@ $("login-form").addEventListener("submit", async (event) => {
     saveSession(result.access_token, apiBase);
     $("password").value = "";
     $("user-label").textContent = result.user?.username || result.user?.email || "Signed in";
+    currentAccess = await loadAccess();
+    $("add-node-button").hidden = !(currentAccess.is_superuser || currentAccess.permissions.includes("node_installers.manage") || currentAccess.permissions.includes("*"));
     showDashboard();
     await refreshDashboard();
   } catch (error) {
@@ -122,7 +234,9 @@ async function bootstrap() {
   if (!getToken()) return showLogin();
   try {
     const user = await loadCurrentUser();
+    currentAccess = await loadAccess();
     $("user-label").textContent = user.username || user.email || "Signed in";
+    $("add-node-button").hidden = !(currentAccess.is_superuser || currentAccess.permissions.includes("node_installers.manage") || currentAccess.permissions.includes("*"));
     showDashboard();
     await refreshDashboard();
   } catch {

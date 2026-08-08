@@ -17,6 +17,9 @@ TimeoutStopSec=30
 KillSignal=SIGINT
 SyslogIdentifier=khan-cloud-control-plane
 UMask=0027
+StateDirectory=khan-cloud-control-plane
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/khan-cloud-control-plane
 
 NoNewPrivileges=true
 PrivateTmp=true

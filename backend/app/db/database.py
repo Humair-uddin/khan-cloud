@@ -40,3 +40,6 @@ import app.models.installation_event  # noqa: E402,F401
 import app.models.organization  # noqa: E402,F401
 import app.models.support_case  # noqa: E402,F401
 import app.models.deployment_profile  # noqa: E402,F401
+
+import app.models.node_installer_artifact  # noqa: E402,F401
+import app.models.compute  # noqa: E402,F401

@@ -40,12 +40,19 @@ class TelemetryConfig(BaseModel):
     installer_database_path: Path = Path("/opt/khan-cloud/state/installer/installer.db")
 
 
+class VirtualizationConfig(BaseModel):
+    execution_enabled: bool = False
+    jobs_endpoint: str = "/api/v1/node-runtime/jobs/next"
+    job_result_endpoint_prefix: str = "/api/v1/node-runtime/jobs"
+
+
 class AgentSettings(BaseModel):
     agent: AgentConfig
     security: SecurityConfig = SecurityConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     enrollment: EnrollmentConfig = EnrollmentConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
+    virtualization: VirtualizationConfig = VirtualizationConfig()
 
     @classmethod
     def load(cls, path: Path) -> "AgentSettings":

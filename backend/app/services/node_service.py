@@ -143,3 +143,18 @@ def transition_node(db: Session,*,node: Node,new_state: str,actor_user_id: UUID,
         resource_type="node",resource_id=str(node.id),reason=reason,
         details={"old_state":current,"new_state":new_state})
     db.commit(); db.refresh(node); return node
+
+
+def auto_approve_enrolled_node(db: Session, node: Node) -> None:
+    if node.lifecycle_state != "pending_approval":
+        return
+    node.lifecycle_state = "approved"
+    node.is_enabled = True
+    sync_legacy_status(node)
+    record_audit_event(
+        db, actor_user_id=None, action="node.auto_approved",
+        resource_type="node", resource_id=str(node.id),
+        reason="Scoped deployment policy authorized automatic approval.",
+        details={"deployment_profile_id": str(node.deployment_profile_id)},
+    )
+    db.flush()
