@@ -44,6 +44,9 @@ class VirtualizationConfig(BaseModel):
     execution_enabled: bool = False
     jobs_endpoint: str = "/api/v1/node-runtime/jobs/next"
     job_result_endpoint_prefix: str = "/api/v1/node-runtime/jobs"
+    network_name: str = "kc-vps-net"
+    storage_root: Path = Path("/var/lib/khan-cloud/vps")
+    base_image_path: Path = Path("/var/lib/khan-cloud/vps/images/ubuntu-24.04-base.qcow2")
 
 
 class AgentSettings(BaseModel):

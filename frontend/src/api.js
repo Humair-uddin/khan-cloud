@@ -96,3 +96,22 @@ export function loadComputeHosts(options = {}) {
 export function loadVPSInstances(options = {}) {
   return authenticatedGet("/api/v1/compute/vps", options);
 }
+
+export async function createVPSInstance(payload, { token = getToken(), apiBase = getApiBase() } = {}) {
+  if (!token) throw new Error("Authentication required.");
+  const response = await fetch(apiUrl("/api/v1/compute/vps", apiBase), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseResponse(response);
+}
+
+export async function vpsAction(vpsId, action, { token = getToken(), apiBase = getApiBase() } = {}) {
+  const response = await fetch(apiUrl(`/api/v1/compute/vps/${vpsId}/actions`, apiBase), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  return parseResponse(response);
+}

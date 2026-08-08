@@ -1,4 +1,4 @@
-import { clearSession, createNodeInstaller, getApiBase, getToken, loadAccess, loadComputeHosts, loadCurrentUser, loadDashboard, loadOrganizations, loadVPSInstances, login, saveSession } from "./api.js";
+import { clearSession, createNodeInstaller, getApiBase, getToken, loadAccess, loadComputeHosts, loadCurrentUser, loadDashboard, loadOrganizations, loadVPSInstances, createVPSInstance, vpsAction, login, saveSession } from "./api.js";
 import { CARD_DEFINITIONS, dashboardSeverity, formatDate, healthClass, priorityClass } from "./dashboard.js";
 
 const $ = (id) => document.getElementById(id);
@@ -101,7 +101,12 @@ function renderVPS(items) {
     <td>${escapeHtml(item.vcpu)}</td>
     <td>${escapeHtml(formatBytes(item.memory_bytes))}</td>
     <td>${escapeHtml(formatBytes(item.disk_bytes))}</td>
-    <td>${escapeHtml(item.node_id || "pending")}</td>
+    <td>${escapeHtml(item.node_id || "pending")}<small>${escapeHtml(item.primary_ip || "")}</small></td>
+    <td>
+      ${item.status === "running" ? `<button class="secondary vps-action" data-id="${escapeHtml(item.id)}" data-action="stop">Stop</button><button class="secondary vps-action" data-id="${escapeHtml(item.id)}" data-action="reboot">Reboot</button>` : ""}
+      ${item.status === "stopped" ? `<button class="secondary vps-action" data-id="${escapeHtml(item.id)}" data-action="start">Start</button>` : ""}
+      ${!["deleted","provisioning"].includes(item.status) ? `<button class="ghost vps-action" data-id="${escapeHtml(item.id)}" data-action="delete">Delete</button>` : ""}
+    </td>
   </tr>`).join("") : `<tr><td colspan="6" class="empty">No VPS instances.</td></tr>`;
 }
 
@@ -150,17 +155,7 @@ async function openNodeModal() {
   $("node-form-error").textContent = "";
   $("installer-result").hidden = true;
   $("node-installer-form").hidden = false;
-  try {
-    const organizations = await loadOrganizations();
-    $("node-organization").innerHTML = organizations.length
-      ? organizations.map((org) => `<option value="${escapeHtml(org.id)}">${escapeHtml(org.name)}</option>`).join("")
-      : `<option value="">No organization available</option>`;
-    $("node-modal").hidden = false;
-  } catch (error) {
-    $("system-banner").hidden = false;
-    $("system-banner").className = "system-banner critical";
-    $("system-banner").textContent = error.message || "Unable to load organizations";
-  }
+  $("node-modal").hidden = false;
 }
 
 function closeNodeModal() { $("node-modal").hidden = true; }
@@ -177,8 +172,7 @@ $("node-installer-form").addEventListener("submit", async (event) => {
   $("node-form-error").textContent = "";
   try {
     const result = await createNodeInstaller({
-      organization_id: $("node-organization").value,
-      node_name: $("node-name").value,
+      node_name: $("node-name").value || null,
       node_role: $("node-role").value,
       download_expires_minutes: 60,
     });
@@ -200,6 +194,38 @@ $("copy-command").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("installer-command").textContent);
   $("copy-command").textContent = "Copied";
   setTimeout(() => { $("copy-command").textContent = "Copy"; }, 1200);
+});
+
+
+function openVPSModal() { $("vps-form-error").textContent = ""; $("vps-modal").hidden = false; }
+function closeVPSModal() { $("vps-modal").hidden = true; }
+$("create-vps-button").addEventListener("click", openVPSModal);
+$("vps-modal-close").addEventListener("click", closeVPSModal);
+$("vps-modal").addEventListener("click", (event) => { if (event.target === $("vps-modal")) closeVPSModal(); });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { closeNodeModal(); closeVPSModal(); }
+});
+$("vps-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("vps-form-error").textContent = "";
+  try {
+    await createVPSInstance({
+      name: $("vps-name").value,
+      image: $("vps-image").value,
+      vcpu: Number($("vps-cpu").value),
+      memory_mb: Number($("vps-memory").value),
+      disk_gb: Number($("vps-disk").value),
+    });
+    closeVPSModal();
+    await refreshDashboard();
+  } catch (error) { $("vps-form-error").textContent = error.message || "VPS creation failed."; }
+});
+$("vps-body").addEventListener("click", async (event) => {
+  const button = event.target.closest(".vps-action");
+  if (!button) return;
+  button.disabled = true;
+  try { await vpsAction(button.dataset.id, button.dataset.action); await refreshDashboard(); }
+  finally { button.disabled = false; }
 });
 
 $("login-form").addEventListener("submit", async (event) => {

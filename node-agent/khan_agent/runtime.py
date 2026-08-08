@@ -157,7 +157,11 @@ class AgentRuntime:
         if not job:
             return
         result = execute_virtualization_job(
-            job, execution_enabled=self.settings.virtualization.execution_enabled
+            job,
+            execution_enabled=self.settings.virtualization.execution_enabled,
+            storage_root=self.settings.virtualization.storage_root,
+            base_image_path=self.settings.virtualization.base_image_path,
+            network_name=self.settings.virtualization.network_name,
         )
         await self.client.report_job_result(
             str(job["id"]),

@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 
 class NodeInstallerCreate(BaseModel):
-    organization_id: UUID
-    node_name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+    organization_id: UUID | None = None
+    node_name: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     node_role: Literal["vps_host", "gpu_host", "private_compute"]
     download_expires_minutes: int = Field(default=60, ge=10, le=1440)
 
@@ -15,7 +15,7 @@ class NodeInstallerCreate(BaseModel):
 class NodeInstallerCreated(BaseModel):
     artifact_id: UUID
     deployment_profile_id: UUID
-    organization_id: UUID
+    organization_id: UUID | None = None
     node_name: str
     node_role: str
     filename: str

@@ -91,12 +91,12 @@
         <section class="panel compute-panel">
           <div class="panel-header">
             <div><p class="eyebrow">VPS</p><h2>Virtual machines</h2></div>
-            <span id="vps-count" class="badge"></span>
+            <div><button id="create-vps-button" class="primary compact" type="button">Create VPS</button> <span id="vps-count" class="badge"></span></div>
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Name</th><th>Status</th><th>vCPU</th><th>Memory</th><th>Disk</th><th>Host</th></tr></thead>
-              <tbody id="vps-body"><tr><td colspan="6" class="empty">No VPS instances.</td></tr></tbody>
+              <thead><tr><th>Name</th><th>Status</th><th>vCPU</th><th>Memory</th><th>Disk</th><th>Host / IP</th><th>Actions</th></tr></thead>
+              <tbody id="vps-body"><tr><td colspan="7" class="empty">No VPS instances.</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -109,8 +109,7 @@
             <button id="node-modal-close" class="ghost" type="button">Close</button>
           </div>
           <form id="node-installer-form" class="node-form">
-            <label>Organization<select id="node-organization" required></select></label>
-            <label>Node name<input id="node-name" value="KC-NODE-01" pattern="[A-Za-z0-9_.-]+" required></label>
+            <label>Node name <span class="optional">optional</span><input id="node-name" placeholder="generated automatically" pattern="[A-Za-z0-9_.-]+"></label>
             <label>Node role<select id="node-role" required>
               <option value="private_compute">Private compute</option>
               <option value="gpu_host">GPU host</option>
@@ -128,6 +127,22 @@
             <div class="command-box"><div><strong>Or run on the node</strong><button id="copy-command" class="secondary" type="button">Copy</button></div><code id="installer-command"></code></div>
             <p class="muted small-text">No Khan Cloud server password is used. The node initiates the outbound connection to the Control Plane.</p>
           </div>
+        </section>
+      </div>
+
+      <div id="vps-modal" class="modal-backdrop" hidden>
+        <section class="modal-card" role="dialog" aria-modal="true">
+          <div class="modal-head"><div><p class="eyebrow">COMPUTE</p><h2>Create VPS</h2></div><button id="vps-modal-close" class="ghost" type="button">Close</button></div>
+          <form id="vps-form" class="node-form">
+            <label>Name<input id="vps-name" value="KC-VPS-01" required pattern="[A-Za-z0-9_.-]+"></label>
+            <label>vCPU<input id="vps-cpu" type="number" min="1" value="2" required></label>
+            <label>Memory MB<input id="vps-memory" type="number" min="512" value="1024" required></label>
+            <label>Disk GB<input id="vps-disk" type="number" min="8" value="8" required></label>
+            <label>Image<select id="vps-image"><option value="ubuntu-24.04">Ubuntu 24.04 LTS</option></select></label>
+            <div class="info-box">Khan Cloud schedules only on an approved, online, KVM/libvirt-ready host with enough available CPU, RAM and storage.</div>
+            <button class="primary" type="submit">Create VPS</button>
+            <p id="vps-form-error" class="error"></p>
+          </form>
         </section>
       </div>
 

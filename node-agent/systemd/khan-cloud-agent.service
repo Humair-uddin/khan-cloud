@@ -7,6 +7,7 @@ After=network-online.target
 Type=simple
 User=khan-cloud-agent
 Group=khan-cloud-agent
+SupplementaryGroups=kvm libvirt
 WorkingDirectory=/opt/khan-cloud/runtime/node-agent
 ExecStart=/opt/khan-cloud/runtime/node-agent/.venv/bin/python -m khan_agent --config /etc/khan-cloud-agent/config.yaml
 Restart=on-failure
@@ -25,7 +26,7 @@ LockPersonality=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-ReadWritePaths=/var/lib/khan-cloud-agent
+ReadWritePaths=/var/lib/khan-cloud-agent /var/lib/khan-cloud/vps
 ReadOnlyPaths=/etc/khan-cloud-agent /opt/khan-cloud/runtime/node-agent
 
 [Install]

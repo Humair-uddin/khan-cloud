@@ -19,7 +19,7 @@ from app.schemas.deployment_profile import DeploymentProfileCreate
 from app.schemas.provider_onboarding import NodeInstallerCreate
 from app.services.audit_service import record_audit_event
 from app.services.deployment_profile_service import create_profile
-from app.services.organization_service import user_can_access_organization
+from app.services.organization_service import user_can_access_organization, visible_organizations
 from app.services.rbac_service import get_role_names
 
 
@@ -161,27 +161,36 @@ def create_node_installer(
     actor: User,
     control_plane_url: str,
 ) -> tuple[NodeInstallerArtifact, str, datetime | None]:
-    if not user_can_access_organization(db, actor, payload.organization_id):
+    organization_id = payload.organization_id
+    if organization_id is None:
+        organizations = visible_organizations(db, actor)
+        if len(organizations) != 1:
+            raise ProviderOnboardingError(
+                "Account ownership could not be inferred automatically."
+            )
+        organization_id = organizations[0].id
+    if not user_can_access_organization(db, actor, organization_id):
         raise ProviderOnboardingError("Organization access denied.")
 
+    node_name = payload.node_name or ("KC-NODE-" + secrets.token_hex(3).upper())
     settings = _profile_settings_for_role(actor, payload.node_role)
     base_url = control_plane_url.rstrip("/")
     enrollment_expires_at = datetime.now(UTC) + timedelta(hours=24)
     profile, enrollment_code = create_profile(
         db,
         DeploymentProfileCreate(
-            name=f"{payload.node_name} onboarding",
+            name=f"{node_name} onboarding",
             control_plane_url=base_url,
             expires_at=enrollment_expires_at,
             max_uses=1,
-            organization_id=payload.organization_id,
+            organization_id=organization_id,
             **settings,
         ),
         actor.id,
     )
 
     artifact_id = secrets.token_hex(16)
-    filename = f"khan-cloud-node-{payload.node_name.lower()}.run"
+    filename = f"khan-cloud-node-{node_name.lower()}.run"
     artifact_dir = STATE_ROOT / artifact_id
     artifact_dir.mkdir(parents=True, exist_ok=False)
     artifact_dir.chmod(0o700)
@@ -190,7 +199,7 @@ def create_node_installer(
     try:
         _build_installer_run(
             enrollment_code=enrollment_code,
-            node_name=payload.node_name,
+            node_name=node_name,
             control_plane_url=base_url,
             verify_tls=base_url.startswith("https://"),
             output=artifact_path,
@@ -205,9 +214,9 @@ def create_node_installer(
     expires_at = datetime.now(UTC) + timedelta(minutes=payload.download_expires_minutes)
     artifact = NodeInstallerArtifact(
         deployment_profile_id=profile.id,
-        organization_id=payload.organization_id,
+        organization_id=organization_id,
         created_by_user_id=actor.id,
-        node_name=payload.node_name,
+        node_name=node_name,
         node_role=payload.node_role,
         filename=filename,
         artifact_path=str(artifact_path),
@@ -227,8 +236,8 @@ def create_node_installer(
         resource_id=str(artifact.id),
         details={
             "deployment_profile_id": str(profile.id),
-            "organization_id": str(payload.organization_id),
-            "node_name": payload.node_name,
+            "organization_id": str(organization_id),
+            "node_name": node_name,
             "node_role": payload.node_role,
         },
     )

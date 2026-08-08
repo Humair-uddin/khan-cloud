@@ -28,6 +28,7 @@ _ALLOWED_TRANSITIONS: dict[AgentState, set[AgentState]] = {
         AgentState.STOPPED,
     },
     AgentState.CONNECTED: {
+        AgentState.CONNECTING,
         AgentState.DEGRADED,
         AgentState.DISCONNECTED,
         AgentState.MAINTENANCE,
