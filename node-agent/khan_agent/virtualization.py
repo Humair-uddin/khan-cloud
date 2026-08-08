@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import socket
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from khan_agent.inventory import _virtualization_inventory
 
@@ -49,24 +52,27 @@ def _paths(storage_root: Path, runtime_id: str) -> tuple[Path, Path, Path]:
     return instances, instances / "disk.qcow2", instances / "seed.iso"
 
 
-def _write_cloud_init(directory: Path, runtime_id: str) -> tuple[Path, Path]:
+def _write_cloud_init(directory: Path, runtime_id: str, *, access_username: str, ssh_public_key: str) -> tuple[Path, Path]:
     user_data = directory / "user-data"
     meta_data = directory / "meta-data"
-    user_data.write_text(
-        "#cloud-config\n"
-        f"hostname: {runtime_id}\n"
-        "manage_etc_hosts: true\n"
-        "ssh_pwauth: false\n"
-        "disable_root: true\n"
-        "package_update: false\n"
-        "runcmd:\n"
-        "  - [ sh, -c, 'echo Khan Cloud VPS ready > /var/tmp/khan-cloud-ready' ]\n"
-    )
-    meta_data.write_text(
-        f"instance-id: {runtime_id}\nlocal-hostname: {runtime_id}\n"
-    )
+    config = {
+        "hostname": runtime_id,
+        "manage_etc_hosts": True,
+        "ssh_pwauth": False,
+        "disable_root": True,
+        "package_update": False,
+        "users": [{
+            "name": access_username,
+            "groups": ["sudo"],
+            "shell": "/bin/bash",
+            "sudo": "ALL=(ALL) NOPASSWD:ALL",
+            "ssh_authorized_keys": [ssh_public_key],
+        }],
+        "runcmd": [["sh","-c","echo Khan Cloud VPS ready > /var/tmp/khan-cloud-ready"]],
+    }
+    user_data.write_text("#cloud-config\n" + yaml.safe_dump(config, sort_keys=False))
+    meta_data.write_text(f"instance-id: {runtime_id}\nlocal-hostname: {runtime_id}\n")
     return user_data, meta_data
-
 
 def _lease_ip(runtime_id: str, *, timeout_seconds: int = 75) -> str:
     deadline = time.monotonic() + timeout_seconds
@@ -87,6 +93,17 @@ def _lease_ip(runtime_id: str, *, timeout_seconds: int = 75) -> str:
     return ""
 
 
+def _wait_tcp(address: str, port: int, *, timeout_seconds: int = 120) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((address, port), timeout=3):
+                return True
+        except OSError:
+            time.sleep(3)
+    return False
+
+
 def _create(job: dict[str, Any], *, storage_root: Path, base_image: Path, network_name: str) -> JobExecutionResult:
     payload = job.get("payload") or {}
     vps_id = str(payload.get("vps_id", ""))
@@ -94,6 +111,8 @@ def _create(job: dict[str, Any], *, storage_root: Path, base_image: Path, networ
     vcpu = int(payload.get("vcpu", 0))
     memory_bytes = int(payload.get("memory_bytes", 0))
     disk_bytes = int(payload.get("disk_bytes", 0))
+    access_username = str(payload.get("access_username", "ubuntu")).strip() or "ubuntu"
+    ssh_public_key = str(payload.get("ssh_public_key", "")).strip()
     if vcpu < 1 or memory_bytes < 512 * 1024**2 or disk_bytes < 8 * 1024**3:
         raise VirtualizationExecutionError("Invalid VPS resource request.")
     if not base_image.is_file():
@@ -111,7 +130,9 @@ def _create(job: dict[str, Any], *, storage_root: Path, base_image: Path, networ
             "qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
             "-b", str(base_image), str(disk_path), str(disk_bytes),
         ])
-        user_data, meta_data = _write_cloud_init(instance_dir, runtime_id)
+        if not ssh_public_key:
+            raise VirtualizationExecutionError("SSH public key is required for secure VPS provisioning.")
+        user_data, meta_data = _write_cloud_init(instance_dir, runtime_id, access_username=access_username, ssh_public_key=ssh_public_key)
         _run(["cloud-localds", str(seed_path), str(user_data), str(meta_data)])
         for item in (disk_path, seed_path):
             item.chmod(0o644)
@@ -133,9 +154,14 @@ def _create(job: dict[str, Any], *, storage_root: Path, base_image: Path, networ
             "--wait", "0",
         ], timeout=120)
         ip = _lease_ip(runtime_id)
+        if not ip:
+            raise VirtualizationExecutionError("VPS did not receive a DHCP address.")
+        if not _wait_tcp(ip, 22, timeout_seconds=120):
+            raise VirtualizationExecutionError("VPS guest did not become SSH-ready.")
         return JobExecutionResult(
             "succeeded",
-            {"runtime_id": runtime_id, "primary_ip": ip, "network": network_name},
+            {"runtime_id": runtime_id, "primary_ip": ip, "network": network_name,
+             "access_username": access_username, "guest_ready": True},
         )
     except Exception:
         subprocess.run(

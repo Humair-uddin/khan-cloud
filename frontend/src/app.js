@@ -1,4 +1,4 @@
-import { clearSession, createNodeInstaller, getApiBase, getToken, loadAccess, loadComputeHosts, loadCurrentUser, loadDashboard, loadOrganizations, loadVPSInstances, createVPSInstance, vpsAction, login, saveSession } from "./api.js";
+import { clearSession, createNodeInstaller, getApiBase, getToken, loadAccess, loadComputeHosts, loadCurrentUser, loadDashboard, loadOrganizations, loadVPSInstances, loadVPSImages, createVPSInstance, vpsAction, login, saveSession } from "./api.js";
 import { CARD_DEFINITIONS, dashboardSeverity, formatDate, healthClass, priorityClass } from "./dashboard.js";
 
 const $ = (id) => document.getElementById(id);
@@ -102,6 +102,7 @@ function renderVPS(items) {
     <td>${escapeHtml(formatBytes(item.memory_bytes))}</td>
     <td>${escapeHtml(formatBytes(item.disk_bytes))}</td>
     <td>${escapeHtml(item.node_id || "pending")}<small>${escapeHtml(item.primary_ip || "")}</small></td>
+    <td>${item.guest_ready_at ? `<strong>${escapeHtml(item.access_username || "ubuntu")}</strong><small>SSH ready · ${escapeHtml(item.ssh_public_key_fingerprint || "")}</small>` : `<span class="muted">Preparing…</span>`}</td>
     <td>
       ${item.status === "running" ? `<button class="secondary vps-action" data-id="${escapeHtml(item.id)}" data-action="stop">Stop</button><button class="secondary vps-action" data-id="${escapeHtml(item.id)}" data-action="reboot">Reboot</button>` : ""}
       ${item.status === "stopped" ? `<button class="secondary vps-action" data-id="${escapeHtml(item.id)}" data-action="start">Start</button>` : ""}
@@ -197,7 +198,19 @@ $("copy-command").addEventListener("click", async () => {
 });
 
 
-function openVPSModal() { $("vps-form-error").textContent = ""; $("vps-modal").hidden = false; }
+async function openVPSModal() {
+  $("vps-form-error").textContent = "";
+  try {
+    const images = await loadVPSImages();
+    $("vps-image").innerHTML = images.map((item) =>
+      `<option value="${escapeHtml(item.slug)}">${escapeHtml(item.name)}</option>`
+    ).join("");
+    $("vps-modal").hidden = false;
+  } catch (error) {
+    $("vps-form-error").textContent = error.message || "Unable to load VPS images.";
+    $("vps-modal").hidden = false;
+  }
+}
 function closeVPSModal() { $("vps-modal").hidden = true; }
 $("create-vps-button").addEventListener("click", openVPSModal);
 $("vps-modal-close").addEventListener("click", closeVPSModal);
@@ -215,6 +228,7 @@ $("vps-form").addEventListener("submit", async (event) => {
       vcpu: Number($("vps-cpu").value),
       memory_mb: Number($("vps-memory").value),
       disk_gb: Number($("vps-disk").value),
+      ssh_public_key: $("vps-ssh-key").value.trim(),
     });
     closeVPSModal();
     await refreshDashboard();

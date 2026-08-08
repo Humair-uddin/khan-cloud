@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 from app.api.rbac_dependencies import require_permission
 from app.db.database import get_db
 from app.models.user import User
-from app.schemas.compute import ComputeHostRead, VPSAction, VPSCreate, VPSRead
+from app.schemas.compute import ComputeHostRead, VPSAction, VPSCreate, VPSImageRead, VPSRead
 from app.services.compute_service import (
-    ComputeError, create_vps, get_visible_vps, list_compute_hosts, queue_vps_action, visible_vps,
+    ComputeError, create_vps, get_visible_vps, list_compute_hosts, list_vps_images, queue_vps_action, visible_vps,
 )
 
 router = APIRouter(prefix="/compute", tags=["compute"])
@@ -20,6 +20,13 @@ def hosts(
     db: Session = Depends(get_db),
 ):
     return list_compute_hosts(db)
+
+
+@router.get("/images", response_model=list[VPSImageRead])
+def images(
+    user: User = Depends(require_permission("vps.read")),
+):
+    return list_vps_images()
 
 
 @router.get("/vps", response_model=list[VPSRead])

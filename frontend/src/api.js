@@ -115,3 +115,5 @@ export async function vpsAction(vpsId, action, { token = getToken(), apiBase = g
   });
   return parseResponse(response);
 }
+
+export function loadVPSImages(options = {}) { return authenticatedGet("/api/v1/compute/images", options); }

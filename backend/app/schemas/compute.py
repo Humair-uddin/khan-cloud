@@ -42,13 +42,38 @@ class ComputeHostRead(BaseModel):
     capacity: CapacityRead
 
 
+
+class ProvisioningAuthorizationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    organization_id: UUID
+    source: str
+    status: str
+    reference_type: str
+    reference_id: str
+    expires_at: datetime | None
+    consumed_at: datetime | None
+
+
+class VPSImageRead(BaseModel):
+    slug: str
+    name: str
+    operating_system: str
+    version: str
+    access_username: str
+    supports_cloud_init: bool
+
+
 class VPSCreate(BaseModel):
+
     organization_id: UUID | None = None
+    provisioning_authorization_id: UUID | None = None
     name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     image: str = Field(default="ubuntu-24.04", pattern=r"^[A-Za-z0-9_.:-]+$")
     vcpu: int = Field(ge=1, le=128)
     memory_mb: int = Field(ge=512, le=1048576)
     disk_gb: int = Field(ge=8, le=16384)
+    ssh_public_key: str = Field(min_length=40, max_length=4096)
 
 
 class VPSRead(BaseModel):
@@ -65,6 +90,9 @@ class VPSRead(BaseModel):
     desired_state: str
     runtime_id: str
     primary_ip: str
+    access_username: str
+    ssh_public_key_fingerprint: str
+    guest_ready_at: datetime | None
     failure_category: str
     failure_message: str
     created_at: datetime

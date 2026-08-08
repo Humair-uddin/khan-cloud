@@ -95,8 +95,8 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Name</th><th>Status</th><th>vCPU</th><th>Memory</th><th>Disk</th><th>Host / IP</th><th>Actions</th></tr></thead>
-              <tbody id="vps-body"><tr><td colspan="7" class="empty">No VPS instances.</td></tr></tbody>
+              <thead><tr><th>Name</th><th>Status</th><th>vCPU</th><th>Memory</th><th>Disk</th><th>Host / IP</th><th>Access</th><th>Actions</th></tr></thead>
+              <tbody id="vps-body"><tr><td colspan="8" class="empty">No VPS instances.</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -139,6 +139,7 @@
             <label>Memory MB<input id="vps-memory" type="number" min="512" value="1024" required></label>
             <label>Disk GB<input id="vps-disk" type="number" min="8" value="8" required></label>
             <label>Image<select id="vps-image"><option value="ubuntu-24.04">Ubuntu 24.04 LTS</option></select></label>
+            <label>SSH public key<textarea id="vps-ssh-key" rows="4" required placeholder="ssh-ed25519 AAAA..."></textarea></label>
             <div class="info-box">Khan Cloud schedules only on an approved, online, KVM/libvirt-ready host with enough available CPU, RAM and storage.</div>
             <button class="primary" type="submit">Create VPS</button>
             <p id="vps-form-error" class="error"></p>

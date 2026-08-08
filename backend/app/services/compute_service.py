@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.compute import NodeCapacity, NodeJob, ResourceReservation, VPSInstance
+from app.models.compute import NodeCapacity, NodeJob, ProvisioningAuthorization, ResourceReservation, VPSInstance
 from app.models.node import Node
 from app.models.user import User
-from app.schemas.compute import CapacityRead, ComputeHostRead, VPSCreate
+from app.schemas.compute import CapacityRead, ComputeHostRead, VPSCreate, VPSImageRead
 from app.services.audit_service import record_audit_event
 from app.services.organization_service import user_can_access_organization, visible_organizations
 from app.services.rbac_service import get_role_names
@@ -19,6 +19,12 @@ GIB = 1024 ** 3
 STAFF_ROLES = {"platform_owner", "platform_admin", "operator"}
 TERMINAL_VPS_STATES = {"deleted", "failed"}
 ACTIVE_RESERVATION_STATES = {"reserved", "active"}
+SUPPORTED_VPS_IMAGES = {
+    "ubuntu-24.04": VPSImageRead(
+        slug="ubuntu-24.04", name="Ubuntu 24.04 LTS", operating_system="ubuntu",
+        version="24.04", access_username="ubuntu", supports_cloud_init=True,
+    ),
+}
 
 
 class ComputeError(ValueError):
@@ -212,8 +218,57 @@ def select_host(db: Session, *, cpu: int, memory_bytes: int, storage_bytes: int)
     return candidates[0]
 
 
+
+def list_vps_images() -> list[VPSImageRead]:
+    return list(SUPPORTED_VPS_IMAGES.values())
+
+
+def _validate_ssh_public_key(value: str) -> tuple[str, str]:
+    import base64, hashlib
+    key = value.strip()
+    if "\n" in key or "\r" in key:
+        raise ComputeError("SSH public key must be a single line.")
+    parts = key.split()
+    allowed = {"ssh-ed25519","ssh-rsa","ecdsa-sha2-nistp256","ecdsa-sha2-nistp384","ecdsa-sha2-nistp521"}
+    if len(parts) < 2 or parts[0] not in allowed:
+        raise ComputeError("Unsupported SSH public key format.")
+    try:
+        raw = base64.b64decode(parts[1].encode("ascii"), validate=True)
+    except Exception as exc:
+        raise ComputeError("SSH public key is not valid base64.") from exc
+    fp = "SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii").rstrip("=")
+    return key, fp
+
+
+def _resolve_provisioning_authorization(db: Session, *, actor: User, organization_id: UUID, requested_id: UUID | None) -> ProvisioningAuthorization:
+    auth = db.get(ProvisioningAuthorization, requested_id) if requested_id else None
+    if auth is None:
+        if not (actor.is_superuser or STAFF_ROLES.intersection(get_role_names(actor))):
+            raise ComputeError("Provisioning authorization is required before customer resources can be reserved.")
+        auth = ProvisioningAuthorization(
+            organization_id=organization_id, created_by_user_id=actor.id,
+            source="operator", status="authorized", reference_type="internal",
+            reference_id="operator-approved", expires_at=datetime.now(UTC)+timedelta(hours=1),
+        )
+        db.add(auth); db.flush()
+    if auth.organization_id != organization_id or auth.status != "authorized" or auth.consumed_at is not None:
+        raise ComputeError("Provisioning authorization is not usable.")
+    if auth.expires_at is not None:
+        expiry = auth.expires_at if auth.expires_at.tzinfo else auth.expires_at.replace(tzinfo=UTC)
+        if expiry <= datetime.now(UTC):
+            raise ComputeError("Provisioning authorization has expired.")
+    return auth
+
+
 def create_vps(db: Session, *, payload: VPSCreate, actor: User) -> VPSInstance:
     org_id = _resolve_organization(db, actor, payload.organization_id)
+    image = SUPPORTED_VPS_IMAGES.get(payload.image)
+    if image is None:
+        raise ComputeError("Unsupported VPS image.")
+    ssh_public_key, ssh_fingerprint = _validate_ssh_public_key(payload.ssh_public_key)
+    authorization = _resolve_provisioning_authorization(
+        db, actor=actor, organization_id=org_id, requested_id=payload.provisioning_authorization_id
+    )
     memory_bytes = payload.memory_mb * 1024 ** 2
     disk_bytes = payload.disk_gb * GIB
 
@@ -223,9 +278,11 @@ def create_vps(db: Session, *, payload: VPSCreate, actor: User) -> VPSInstance:
 
     vps = VPSInstance(
         organization_id=org_id, node_id=node.id, created_by_user_id=actor.id,
+        provisioning_authorization_id=authorization.id,
         name=payload.name, image=payload.image, vcpu=payload.vcpu,
         memory_bytes=memory_bytes, disk_bytes=disk_bytes,
         status="provisioning", desired_state="running",
+        access_username=image.access_username, ssh_public_key_fingerprint=ssh_fingerprint,
     )
     db.add(vps); db.flush()
 
@@ -244,8 +301,12 @@ def create_vps(db: Session, *, payload: VPSCreate, actor: User) -> VPSInstance:
             "vps_id": str(vps.id), "name": vps.name, "image": vps.image,
             "vcpu": vps.vcpu, "memory_bytes": vps.memory_bytes,
             "disk_bytes": vps.disk_bytes,
+            "access_username": image.access_username,
+            "ssh_public_key": ssh_public_key,
         },
     ))
+    authorization.status = "consumed"
+    authorization.consumed_at = datetime.now(UTC)
     record_audit_event(
         db, actor_user_id=actor.id, action="vps.created",
         resource_type="vps_instance", resource_id=str(vps.id),
@@ -330,6 +391,8 @@ def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: di
             if status == "succeeded":
                 if job.job_type == "vps.create":
                     vps.status = "running"; vps.runtime_id = str(result.get("runtime_id", "")); vps.primary_ip = str(result.get("primary_ip", ""))
+                    vps.access_username = str(result.get("access_username", vps.access_username or "ubuntu"))
+                    if bool(result.get("guest_ready", False)): vps.guest_ready_at = datetime.now(UTC)
                     reservation = db.scalar(select(ResourceReservation).where(ResourceReservation.vps_instance_id == vps.id))
                     if reservation is not None: reservation.status = "active"
                 elif job.job_type == "vps.start": vps.status = "running"
