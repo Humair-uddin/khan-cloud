@@ -15,6 +15,8 @@ from app.api.v1.operations import router as operations_router
 from app.api.v1.provider import router as provider_router
 from app.api.v1.compute import router as compute_router
 from app.api.v1.node_runtime import router as node_runtime_router
+from app.api.v1.network import router as network_router
+from app.api.v1.portal import router as portal_router
 from app.core.config import settings
 from app.db.database import check_database
 
@@ -30,6 +32,8 @@ app.include_router(operations_router,prefix=settings.API_PREFIX)
 app.include_router(provider_router,prefix=settings.API_PREFIX)
 app.include_router(compute_router,prefix=settings.API_PREFIX)
 app.include_router(node_runtime_router,prefix=settings.API_PREFIX)
+app.include_router(network_router,prefix=settings.API_PREFIX)
+app.include_router(portal_router,prefix=settings.API_PREFIX)
 
 @app.get("/")
 def root():
@@ -50,4 +54,12 @@ if FRONTEND_DIR.is_dir():
         "/ui",
         StaticFiles(directory=FRONTEND_DIR, html=True),
         name="control-plane-ui",
+    )
+
+CUSTOMER_PORTAL_DIR = Path(__file__).resolve().parents[2] / "customer-portal"
+if CUSTOMER_PORTAL_DIR.is_dir():
+    app.mount(
+        "/portal",
+        StaticFiles(directory=CUSTOMER_PORTAL_DIR, html=True),
+        name="customer-portal",
     )

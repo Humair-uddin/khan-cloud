@@ -43,3 +43,5 @@ import app.models.deployment_profile  # noqa: E402,F401
 
 import app.models.node_installer_artifact  # noqa: E402,F401
 import app.models.compute  # noqa: E402,F401
+
+import app.models.network  # noqa: E402,F401

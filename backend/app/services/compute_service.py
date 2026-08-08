@@ -13,6 +13,7 @@ from app.models.user import User
 from app.schemas.compute import CapacityRead, ComputeHostRead, VPSCreate, VPSImageRead
 from app.services.audit_service import record_audit_event
 from app.services.organization_service import user_can_access_organization, visible_organizations
+from app.services.network_service import record_runtime_allocation, release_vps_addresses
 from app.services.rbac_service import get_role_names
 
 GIB = 1024 ** 3
@@ -393,13 +394,17 @@ def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: di
                     vps.status = "running"; vps.runtime_id = str(result.get("runtime_id", "")); vps.primary_ip = str(result.get("primary_ip", ""))
                     vps.access_username = str(result.get("access_username", vps.access_username or "ubuntu"))
                     if bool(result.get("guest_ready", False)): vps.guest_ready_at = datetime.now(UTC)
+                    if vps.primary_ip:
+                        record_runtime_allocation(db, vps=vps, address=vps.primary_ip)
                     reservation = db.scalar(select(ResourceReservation).where(ResourceReservation.vps_instance_id == vps.id))
                     if reservation is not None: reservation.status = "active"
                 elif job.job_type == "vps.start": vps.status = "running"
                 elif job.job_type == "vps.stop": vps.status = "stopped"
                 elif job.job_type == "vps.reboot": vps.status = "running"
                 elif job.job_type == "vps.delete":
-                    vps.status = "deleted"; release_reservation(db, vps)
+                    vps.status = "deleted"
+                    release_vps_addresses(db, vps_id=vps.id)
+                    release_reservation(db, vps)
             else:
                 vps.status = "failed"; vps.failure_category = "node_job_failed"; vps.failure_message = error_message[:500]
                 if job.job_type == "vps.create": release_reservation(db, vps)

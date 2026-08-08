@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Khan Cloud</title>
+  <link rel="stylesheet" href="./portal.css">
+</head>
+<body>
+<div class="shell">
+  <section id="login" class="login">
+    <form id="login-form" class="card">
+      <div class="brand">KC</div>
+      <p class="eyebrow">KHAN CLOUD</p>
+      <h1>Customer Portal</h1>
+      <p class="muted">Manage your cloud services.</p>
+      <label>Username or email<input id="username" autocomplete="username" required></label>
+      <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Sign in</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </section>
+
+  <section id="portal" hidden>
+    <header>
+      <div><strong>Khan Cloud</strong><span class="muted">Customer Portal</span></div>
+      <div><span id="user"></span><button id="refresh" class="secondary">Refresh</button><button id="logout" class="ghost">Sign out</button></div>
+    </header>
+    <main>
+      <div class="hero">
+        <div><p class="eyebrow">MY CLOUD</p><h1>Virtual Servers</h1><p class="muted">Your VPS resources and secure access information.</p></div>
+        <button id="new-vps" disabled title="Pricing/payment flow will enable this">Create VPS</button>
+      </div>
+      <div id="notice" class="notice">New VPS ordering will open through the pricing → payment → provisioning flow. Existing VPS management is live.</div>
+      <section id="summary" class="summary"></section>
+      <section class="panel">
+        <div class="panel-head"><h2>My VPS</h2><span id="count"></span></div>
+        <div id="vps-list" class="vps-list"></div>
+      </section>
+    </main>
+  </section>
+</div>
+<script type="module" src="./portal.js"></script>
+</body>
+</html>
