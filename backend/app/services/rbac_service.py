@@ -19,6 +19,7 @@ DEFAULT_PERMISSIONS: dict[str,str] = {
 "node_installers.manage":"Generate scoped node installers.",
 "compute.hosts.read":"View compute host capacity.",
 "network.pools.read":"View network/IPAM pools.",
+"commerce.manage":"Manage product pricing and confirm payments.",
 "vps.read":"View VPS instances.","vps.manage":"Create and manage VPS instances.",
 "settings.read":"View settings.","settings.manage":"Modify settings.",
 }
@@ -27,7 +28,7 @@ DEFAULT_ROLES: dict[str,set[str]] = {
 "platform_admin": set(DEFAULT_PERMISSIONS),
 "operator":{"users.read","roles.read","nodes.read","nodes.approve","nodes.disable",
 "nodes.maintenance","nodes.inventory.read","audit.read","deployments.read",
-"deployments.manage","node_installers.manage","compute.hosts.read","network.pools.read","vps.read","vps.manage","organizations.read","support.read","support.manage","settings.read"},
+"deployments.manage","node_installers.manage","compute.hosts.read","network.pools.read","commerce.manage","vps.read","vps.manage","organizations.read","support.read","support.manage","settings.read"},
 "security_officer":{"users.read","roles.read","nodes.read","nodes.disable",
 "nodes.credentials.rotate","nodes.inventory.read","audit.read","settings.read"},
 "marketplace_manager":{"nodes.read","nodes.approve","nodes.inventory.read","audit.read","deployments.read","node_installers.manage"},

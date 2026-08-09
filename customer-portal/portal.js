@@ -50,3 +50,9 @@ $("logout").addEventListener("click",()=>{localStorage.removeItem(TOKEN);locatio
 if(token()){
   get("/api/v1/auth/me").then(u=>{$("user").textContent=u.username||u.email;$("login").hidden=true;$("portal").hidden=false;return refresh()}).catch(()=>localStorage.removeItem(TOKEN));
 }
+
+let currentQuote=null;
+$("new-vps").addEventListener("click",async()=>{try{const c=await get("/api/v1/commerce/catalog");if(!c.length)throw new Error("VPS pricing has not been published yet.");$("order-modal").hidden=false}catch(e){$("notice").textContent=e.message}});
+$("close-order").addEventListener("click",()=>{$("order-modal").hidden=true});
+$("quote-button").addEventListener("click",async()=>{try{currentQuote=await post("/api/v1/commerce/quotes/vps",{product_code:"vps-configurable",name:$("order-name").value.trim(),image:$("order-image").value,vcpu:Number($("order-cpu").value),memory_gib:Number($("order-ram").value),storage_gib:Number($("order-disk").value),network_tier:"shared_gateway",ssh_public_key:$("order-key").value.trim(),billing_period:"monthly"});$("quote-result").innerHTML=`<strong>Quote</strong><div>${esc(currentQuote.currency)} ${(currentQuote.amount_minor/100).toFixed(2)} / month</div>`;$("quote-result").hidden=false;$("place-order").disabled=false}catch(e){$("order-error").textContent=e.message}});
+$("order-form").addEventListener("submit",async e=>{e.preventDefault();if(!currentQuote)return;try{const o=await post("/api/v1/commerce/orders",{quote_id:currentQuote.id,payment_method:$("payment-method").value});$("order-modal").hidden=true;$("notice").textContent=`Order ${o.id} created. Status: ${o.status}. Payment confirmation is required before provisioning.`}catch(err){$("order-error").textContent=err.message}});

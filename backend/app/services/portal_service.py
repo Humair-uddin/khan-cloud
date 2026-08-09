@@ -7,7 +7,7 @@ from app.services.network_service import visible_vps_network
 
 
 def customer_portal_summary(db: Session, user: User) -> PortalSummaryRead:
-    rows = visible_vps(db, user)
+    rows = [v for v in visible_vps(db, user) if v.status != "deleted"]
     items: list[PortalVPSRead] = []
     for vps in rows:
         net = visible_vps_network(db, user=user, vps=vps)

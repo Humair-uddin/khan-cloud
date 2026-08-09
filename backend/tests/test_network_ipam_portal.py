@@ -44,8 +44,14 @@ def test_customer_portal_schema_never_exposes_host_node_id():
 def test_customer_portal_create_is_payment_gated_in_ui():
     root=Path(__file__).resolve().parents[2]
     html=(root/"customer-portal"/"index.html").read_text()
-    assert 'id="new-vps" disabled' in html
-    assert "pricing → payment → provisioning" in html
+    js=(root/"customer-portal"/"portal.js").read_text()
+
+    # Create VPS is enabled only through the commerce quote/order path.
+    assert 'id="new-vps"' in html
+    assert "/api/v1/commerce/quotes/vps" in js
+    assert "/api/v1/commerce/orders" in js
+    assert 'post("/api/v1/compute/vps"' not in js
+    assert "payment" in html.lower()
 
 
 def test_customer_portal_is_separate_static_surface():

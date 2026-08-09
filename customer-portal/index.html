@@ -29,15 +29,22 @@
     <main>
       <div class="hero">
         <div><p class="eyebrow">MY CLOUD</p><h1>Virtual Servers</h1><p class="muted">Your VPS resources and secure access information.</p></div>
-        <button id="new-vps" disabled title="Pricing/payment flow will enable this">Create VPS</button>
+        <button id="new-vps">Create VPS</button>
       </div>
-      <div id="notice" class="notice">New VPS ordering will open through the pricing → payment → provisioning flow. Existing VPS management is live.</div>
+      <div id="notice" class="notice">VPS ordering uses quote → payment confirmation → provisioning. Prices appear only after Khan Cloud publishes a price book.</div>
       <section id="summary" class="summary"></section>
       <section class="panel">
         <div class="panel-head"><h2>My VPS</h2><span id="count"></span></div>
         <div id="vps-list" class="vps-list"></div>
       </section>
-    </main>
+    </main><div id="order-modal" class="modal" hidden><form id="order-form" class="card order-card">
+<div class="vps-top"><h2>Create VPS</h2><button type="button" id="close-order" class="ghost">Close</button></div>
+<label>VPS name<input id="order-name" value="my-vps" required></label>
+<label>SSH public key<textarea id="order-key" rows="3" required placeholder="ssh-ed25519 AAAA..."></textarea></label>
+<div class="grid"><label>vCPU<input id="order-cpu" type="number" min="1" value="2"></label><label>RAM GiB<input id="order-ram" type="number" min="1" value="2"></label><label>Storage GiB<input id="order-disk" type="number" min="8" value="20"></label><label>OS<select id="order-image"><option value="ubuntu-24.04">Ubuntu 24.04 LTS</option></select></label></div>
+<button type="button" id="quote-button">Calculate price</button><div id="quote-result" class="access" hidden></div>
+<label>Payment method<select id="payment-method"><option value="manual_bank">Bank transfer</option><option value="manual_easypaisa">Easypaisa</option><option value="manual_jazzcash">JazzCash</option></select></label>
+<button id="place-order" type="submit" disabled>Place order</button><p id="order-error" class="error"></p></form></div>
   </section>
 </div>
 <script type="module" src="./portal.js"></script>
