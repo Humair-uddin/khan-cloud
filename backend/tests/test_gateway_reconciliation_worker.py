@@ -234,3 +234,20 @@ def test_candidate_claim_uses_skip_locked():
 
     assert ".with_for_update(skip_locked=True)" in source
     assert ".limit(1)" in source
+
+
+
+def test_worker_query_enforces_retry_eligibility():
+    root = Path(__file__).resolve().parents[1]
+
+    source = (
+        root
+        / "app"
+        / "services"
+        / "gateway_reconciliation_worker.py"
+    ).read_text()
+
+    assert "reconcile_next_attempt_at.is_(None)" in source
+    assert "reconcile_next_attempt_at <= now" in source
+    assert ".with_for_update(skip_locked=True)" in source
+    assert ".limit(1)" in source

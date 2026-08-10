@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule Khan Cloud Gateway Reconciliation
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=khan-cloud-gateway-reconcile.service
+
+[Install]
+WantedBy=timers.target

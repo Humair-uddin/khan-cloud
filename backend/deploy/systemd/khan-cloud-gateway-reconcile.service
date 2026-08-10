@@ -1,0 +1,35 @@
+[Unit]
+Description=Khan Cloud Gateway Reconciliation
+Documentation=file:/opt/khan-cloud/source/backend/README.md
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=khanadmin
+Group=khanadmin
+WorkingDirectory=/opt/khan-cloud/source/backend
+EnvironmentFile=/opt/khan-cloud/source/backend/.env
+
+ExecStart=/opt/khan-cloud/source/backend/.venv/bin/python -m app.cli.reconcile_gateway --limit 100
+
+# Exit 2 means the worker completed but one or more individual
+# mappings failed and were safely scheduled for retry.
+SuccessExitStatus=0 2
+
+SyslogIdentifier=khan-cloud-gateway-reconcile
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+LimitNOFILE=4096

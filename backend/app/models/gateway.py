@@ -199,6 +199,23 @@ class PortMapping(BaseModel):
         nullable=True,
     )
 
+    reconcile_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    reconcile_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    reconcile_next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
     external_id: Mapped[str | None] = mapped_column(
         String(120),
         nullable=True,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -26,12 +27,13 @@ def claim_next_reconciliation_candidate(
     db: Session,
 ) -> PortMapping | None:
     """
-    Claim one reconciliation candidate.
+    Claim one eligible reconciliation candidate.
 
-    The row lock remains held until the reconciliation service commits
-    or rolls back. SKIP LOCKED allows another worker to claim a
-    different mapping concurrently.
+    Failed mappings whose retry delay has not expired are skipped.
+    SKIP LOCKED allows concurrent workers to claim different rows.
     """
+
+    now = datetime.now(UTC)
 
     stmt = (
         select(PortMapping)
@@ -48,6 +50,10 @@ def claim_next_reconciliation_candidate(
                     "apply",
                     "remove",
                 )
+            ),
+            or_(
+                PortMapping.reconcile_next_attempt_at.is_(None),
+                PortMapping.reconcile_next_attempt_at <= now,
             ),
         )
         .order_by(
@@ -68,11 +74,11 @@ def reconcile_gateway_batch(
     limit: int = 100,
 ) -> GatewayReconciliationBatchResult:
     """
-    Reconcile up to ``limit`` mappings, claiming one row at a time.
+    Reconcile up to `limit` eligible mappings.
 
-    Each mapping is locked independently so a commit performed by the
-    reconciliation service cannot prematurely release locks belonging
-    to later mappings in this batch.
+    Each mapping is claimed independently. Failed mappings retain
+    their desired action and are retried only after their backoff
+    period expires.
     """
 
     if limit < 1:

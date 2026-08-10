@@ -57,6 +57,9 @@ def mapping(*, action="apply", status="pending"):
         reconcile_action=action,
         reconcile_error=None,
         reconciled_at=None,
+        reconcile_attempt_count=0,
+        reconcile_last_attempt_at=None,
+        reconcile_next_attempt_at=None,
         released_at=None,
         external_id=None,
     )
@@ -240,3 +243,164 @@ def test_invalid_reconciliation_action_is_rejected(monkeypatch):
         )
 
     assert db.commits == 0
+
+
+
+def test_reconciliation_backoff_is_exponential_and_capped():
+    assert service.reconciliation_backoff_seconds(1) == 30
+    assert service.reconciliation_backoff_seconds(2) == 60
+    assert service.reconciliation_backoff_seconds(3) == 120
+    assert service.reconciliation_backoff_seconds(4) == 240
+    assert service.reconciliation_backoff_seconds(5) == 480
+    assert service.reconciliation_backoff_seconds(6) == 960
+    assert service.reconciliation_backoff_seconds(7) == 1800
+    assert service.reconciliation_backoff_seconds(20) == 1800
+
+
+def test_reconciliation_backoff_rejects_invalid_attempt():
+    with pytest.raises(
+        ValueError,
+        match="attempt_count must be at least 1",
+    ):
+        service.reconciliation_backoff_seconds(0)
+
+
+def test_failure_records_retry_metadata(monkeypatch):
+    disable_real_audit(monkeypatch)
+    db = FakeDB()
+    item = mapping(action="apply")
+
+    with pytest.raises(service.GatewayReconciliationError):
+        service.reconcile_port_mapping(
+            db,
+            mapping=item,
+            gateway=gateway(),
+            adapter=FailingAdapter(),
+        )
+
+    assert item.status == "failed"
+    assert item.reconcile_attempt_count == 1
+    assert item.reconcile_last_attempt_at is not None
+    assert item.reconcile_next_attempt_at is not None
+
+    delay = (
+        item.reconcile_next_attempt_at
+        - item.reconcile_last_attempt_at
+    ).total_seconds()
+
+    assert delay == 30
+
+
+def test_repeated_failure_increases_backoff(monkeypatch):
+    disable_real_audit(monkeypatch)
+    db = FakeDB()
+    item = mapping(action="apply")
+
+    item.reconcile_attempt_count = 1
+
+    with pytest.raises(service.GatewayReconciliationError):
+        service.reconcile_port_mapping(
+            db,
+            mapping=item,
+            gateway=gateway(),
+            adapter=FailingAdapter(),
+        )
+
+    assert item.reconcile_attempt_count == 2
+
+    delay = (
+        item.reconcile_next_attempt_at
+        - item.reconcile_last_attempt_at
+    ).total_seconds()
+
+    assert delay == 60
+
+
+def test_apply_success_clears_retry_metadata(monkeypatch):
+    disable_real_audit(monkeypatch)
+    db = FakeDB()
+
+    item = mapping(
+        action="apply",
+        status="failed",
+    )
+
+    item.reconcile_attempt_count = 4
+    item.reconcile_last_attempt_at = service.datetime.now(
+        service.UTC
+    )
+    item.reconcile_next_attempt_at = (
+        item.reconcile_last_attempt_at
+    )
+    item.reconcile_error = "previous failure"
+
+    result = service.reconcile_port_mapping(
+        db,
+        mapping=item,
+        gateway=gateway(),
+        adapter=SuccessfulAdapter(),
+    )
+
+    assert result.status == "active"
+    assert result.reconcile_error is None
+    assert result.reconcile_attempt_count == 0
+    assert result.reconcile_last_attempt_at is None
+    assert result.reconcile_next_attempt_at is None
+
+
+def test_remove_failure_uses_retry_policy(monkeypatch):
+    disable_real_audit(monkeypatch)
+    db = FakeDB()
+
+    item = mapping(
+        action="remove",
+        status="releasing",
+    )
+
+    item.external_id = "*KC1"
+
+    with pytest.raises(service.GatewayReconciliationError):
+        service.reconcile_port_mapping(
+            db,
+            mapping=item,
+            gateway=gateway(),
+            adapter=FailingAdapter(),
+        )
+
+    assert item.status == "failed"
+    assert item.reconcile_action == "remove"
+    assert item.external_id == "*KC1"
+    assert item.reconcile_attempt_count == 1
+    assert item.reconcile_last_attempt_at is not None
+    assert item.reconcile_next_attempt_at is not None
+
+
+def test_remove_success_clears_retry_metadata(monkeypatch):
+    disable_real_audit(monkeypatch)
+    db = FakeDB()
+
+    item = mapping(
+        action="remove",
+        status="failed",
+    )
+
+    item.external_id = "*KC1"
+    item.reconcile_attempt_count = 3
+    item.reconcile_last_attempt_at = service.datetime.now(
+        service.UTC
+    )
+    item.reconcile_next_attempt_at = (
+        item.reconcile_last_attempt_at
+    )
+
+    result = service.reconcile_port_mapping(
+        db,
+        mapping=item,
+        gateway=gateway(),
+        adapter=SuccessfulAdapter(),
+    )
+
+    assert result.status == "released"
+    assert result.reconcile_attempt_count == 0
+    assert result.reconcile_last_attempt_at is None
+    assert result.reconcile_next_attempt_at is None
