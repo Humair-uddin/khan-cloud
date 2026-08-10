@@ -237,9 +237,13 @@ def allocate_port_mapping(
         public_port=selected_public_port,
         private_ip=private_ip,
         private_port=private_port,
-        status="allocated",
+        status="pending",
         allocation_source="control_plane",
         allocated_at=datetime.now(UTC),
+        reconcile_action="apply",
+        reconcile_error=None,
+        reconciled_at=None,
+        external_id=None,
     )
 
     try:
@@ -282,13 +286,14 @@ def release_port_mapping(
     if mapping.status == "released":
         return mapping
 
-    mapping.status = "released"
-    mapping.released_at = datetime.now(UTC)
+    mapping.status = "releasing"
+    mapping.reconcile_action = "remove"
+    mapping.reconcile_error = None
 
     record_audit_event(
         db,
         actor_user_id=actor.id,
-        action="network.port_mapping.released",
+        action="network.port_mapping.release_requested",
         resource_type="port_mapping",
         resource_id=str(mapping.id),
         details={
@@ -322,16 +327,15 @@ def release_vps_port_mappings(
     if not mappings:
         return 0
 
-    now = datetime.now(UTC)
-
     for mapping in mappings:
-        mapping.status = "released"
-        mapping.released_at = now
+        mapping.status = "releasing"
+        mapping.reconcile_action = "remove"
+        mapping.reconcile_error = None
 
         record_audit_event(
             db,
             actor_user_id=None,
-            action="network.port_mapping.released",
+            action="network.port_mapping.release_requested",
             resource_type="port_mapping",
             resource_id=str(mapping.id),
             reason="VPS lifecycle deletion",
@@ -364,7 +368,7 @@ def list_vps_port_mappings(
 
     if active_only:
         stmt = stmt.where(
-            PortMapping.status != "released"
+            PortMapping.status == "active"
         )
 
     return list(db.scalars(stmt).unique())

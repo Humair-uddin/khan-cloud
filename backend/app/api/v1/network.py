@@ -19,6 +19,11 @@ from app.services.compute_service import (
     ComputeError,
     get_visible_vps,
 )
+from app.services.gateway_orchestration_service import (
+    GatewayOrchestrationError,
+    reconcile_port_mapping_if_enabled,
+    reconcile_port_mapping_now,
+)
 from app.services.gateway_service import (
     GatewayError,
     allocate_port_mapping,
@@ -182,7 +187,7 @@ def create_vps_port_mapping(
             payload.gateway_id,
         )
 
-        return allocate_port_mapping(
+        mapping = allocate_port_mapping(
             db,
             gateway=gateway,
             vps=vps,
@@ -190,6 +195,12 @@ def create_vps_port_mapping(
             private_port=payload.private_port,
             public_port=payload.public_port,
             actor=user,
+        )
+
+        return reconcile_port_mapping_if_enabled(
+            db,
+            mapping=mapping,
+            actor_user_id=user.id,
         )
 
     except ComputeError as exc:
@@ -228,10 +239,16 @@ def delete_port_mapping(
             mapping.vps_instance_id,
         )
 
-        return release_port_mapping(
+        mapping = release_port_mapping(
             db,
             mapping=mapping,
             actor=user,
+        )
+
+        return reconcile_port_mapping_if_enabled(
+            db,
+            mapping=mapping,
+            actor_user_id=user.id,
         )
 
     except ComputeError as exc:
@@ -243,5 +260,59 @@ def delete_port_mapping(
     except GatewayError as exc:
         raise HTTPException(
             status_code=404,
+            detail=str(exc),
+        ) from exc
+
+    except GatewayOrchestrationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/ports/{mapping_id}/reconcile",
+    response_model=PortMappingRead,
+)
+def reconcile_mapping(
+    mapping_id: UUID,
+    user: User = Depends(
+        require_permission("vps.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    try:
+        mapping = get_port_mapping(
+            db,
+            mapping_id,
+        )
+
+        get_visible_vps(
+            db,
+            user,
+            mapping.vps_instance_id,
+        )
+
+        return reconcile_port_mapping_now(
+            db,
+            mapping=mapping,
+            actor_user_id=user.id,
+        )
+
+    except ComputeError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+    except GatewayError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+    except GatewayOrchestrationError as exc:
+        raise HTTPException(
+            status_code=409,
             detail=str(exc),
         ) from exc
