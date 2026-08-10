@@ -29,7 +29,9 @@ def test_private_nat_pool_is_seeded_without_public_routing():
 def test_compute_lifecycle_records_and_releases_ipam():
     from app.services import compute_service
     source=Path(compute_service.__file__).read_text()
-    assert "record_runtime_allocation(db, vps=vps, address=vps.primary_ip)" in source
+    assert "record_runtime_allocation(" in source
+    assert "vps=vps" in source
+    assert "address=vps.primary_ip" in source
     assert "release_vps_addresses(db, vps_id=vps.id)" in source
 
 

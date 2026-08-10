@@ -14,7 +14,12 @@ from app.schemas.compute import CapacityRead, ComputeHostRead, VPSCreate, VPSIma
 from app.services.audit_service import record_audit_event
 from app.services.organization_service import user_can_access_organization, visible_organizations
 from app.services.network_service import record_runtime_allocation, release_vps_addresses
-from app.services.gateway_service import release_vps_port_mappings
+from app.services.gateway_service import (
+    GatewayError,
+    ensure_default_vps_port_mapping,
+    release_vps_port_mappings,
+    select_automatic_public_gateway,
+)
 from app.services.rbac_service import get_role_names
 
 GIB = 1024 ** 3
@@ -396,7 +401,43 @@ def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: di
                     vps.access_username = str(result.get("access_username", vps.access_username or "ubuntu"))
                     if bool(result.get("guest_ready", False)): vps.guest_ready_at = datetime.now(UTC)
                     if vps.primary_ip:
-                        record_runtime_allocation(db, vps=vps, address=vps.primary_ip)
+                        record_runtime_allocation(
+                            db,
+                            vps=vps,
+                            address=vps.primary_ip,
+                        )
+
+                        try:
+                            public_gateway = (
+                                select_automatic_public_gateway(db)
+                            )
+
+                            ensure_default_vps_port_mapping(
+                                db,
+                                gateway=public_gateway,
+                                vps=vps,
+                                protocol="tcp",
+                                private_port=22,
+                            )
+                        except GatewayError as exc:
+                            record_audit_event(
+                                db,
+                                actor_user_id=None,
+                                action=(
+                                    "network.default_endpoint."
+                                    "provisioning_failed"
+                                ),
+                                resource_type="vps_instance",
+                                resource_id=str(vps.id),
+                                result="failure",
+                                reason=str(exc),
+                                details={
+                                    "protocol": "tcp",
+                                    "private_port": 22,
+                                    "primary_ip": vps.primary_ip,
+                                },
+                            )
+
                     reservation = db.scalar(select(ResourceReservation).where(ResourceReservation.vps_instance_id == vps.id))
                     if reservation is not None: reservation.status = "active"
                 elif job.job_type == "vps.start": vps.status = "running"

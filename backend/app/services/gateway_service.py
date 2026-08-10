@@ -374,3 +374,133 @@ def list_vps_port_mappings(
         )
 
     return list(db.scalars(stmt).unique())
+
+
+def select_automatic_public_gateway(
+    db: Session,
+) -> PublicGateway:
+    """Return the only active gateway eligible for automatic provisioning.
+
+    Automatic provisioning must never guess between multiple active
+    public gateways. Explicit routing policy can be added later when
+    multi-WAN gateway selection is introduced.
+    """
+    gateways = list_public_gateways(
+        db,
+        active_only=True,
+    )
+
+    if not gateways:
+        raise GatewayError(
+            "No active public gateway is available for "
+            "automatic endpoint provisioning."
+        )
+
+    if len(gateways) != 1:
+        raise GatewayError(
+            "Automatic endpoint provisioning requires exactly "
+            "one active public gateway until gateway selection "
+            "policy is configured."
+        )
+
+    return gateways[0]
+
+
+def ensure_default_vps_port_mapping(
+    db: Session,
+    *,
+    gateway: PublicGateway,
+    vps: VPSInstance,
+    protocol: str = "tcp",
+    private_port: int = 22,
+) -> PortMapping:
+    """Ensure that a VPS has one active default public port mapping.
+
+    This helper is intended for system-driven provisioning paths. Repeated
+    calls for the same VPS/protocol/private-port tuple return the existing
+    non-released mapping instead of allocating another public endpoint.
+    """
+    normalized_protocol = _normalize_protocol(protocol)
+
+    existing = db.scalar(
+        select(PortMapping).where(
+            PortMapping.gateway_id == gateway.id,
+            PortMapping.vps_instance_id == vps.id,
+            PortMapping.protocol == normalized_protocol,
+            PortMapping.private_port == private_port,
+            PortMapping.status != "released",
+        )
+    )
+
+    if existing is not None:
+        return existing
+
+    if not gateway.is_active:
+        raise GatewayError("Gateway is not active.")
+
+    if vps.status == "deleted":
+        raise GatewayError("Cannot allocate a port to a deleted VPS.")
+
+    if not vps.primary_ip:
+        raise GatewayError("VPS does not have a private IP address.")
+
+    if not 1 <= private_port <= 65535:
+        raise GatewayError(
+            "Private port must be between 1 and 65535."
+        )
+
+    private_ip = _validate_ip(vps.primary_ip)
+
+    selected_public_port = _next_available_port(
+        db,
+        gateway_id=gateway.id,
+        protocol=normalized_protocol,
+    )
+
+    mapping = PortMapping(
+        gateway_id=gateway.id,
+        vps_instance_id=vps.id,
+        organization_id=vps.organization_id,
+        protocol=normalized_protocol,
+        public_port=selected_public_port,
+        private_ip=private_ip,
+        private_port=private_port,
+        status="pending",
+        allocation_source="system_provisioning",
+        allocated_at=datetime.now(UTC),
+        reconcile_action="apply",
+        reconcile_error=None,
+        reconciled_at=None,
+        external_id=None,
+    )
+
+    try:
+        with db.begin_nested():
+            db.add(mapping)
+            db.flush()
+    except IntegrityError as exc:
+        raise GatewayError(
+            "Public endpoint was allocated concurrently."
+        ) from exc
+
+    record_audit_event(
+        db,
+        actor_user_id=None,
+        action="network.port_mapping.allocated",
+        resource_type="port_mapping",
+        resource_id=str(mapping.id),
+        details={
+            "gateway_id": str(gateway.id),
+            "vps_instance_id": str(vps.id),
+            "protocol": mapping.protocol,
+            "public_port": mapping.public_port,
+            "private_ip": mapping.private_ip,
+            "private_port": mapping.private_port,
+            "allocation_source": "system_provisioning",
+        },
+    )
+
+    # The caller owns the transaction. This is important for
+    # node-job completion: VPS state, IPAM allocation, and the
+    # desired public endpoint must commit atomically.
+    return mapping
