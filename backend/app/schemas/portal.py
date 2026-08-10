@@ -9,6 +9,8 @@ class PortalPublicEndpointRead(BaseModel):
     public_ip: str
     public_port: int
     private_port: int
+    status: str
+    display_status: str
 
 
 class PortalVPSRead(BaseModel):

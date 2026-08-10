@@ -16,7 +16,7 @@ def test_network_api_reconciles_create_when_enabled():
     assert '"/ports/{mapping_id}/reconcile"' in source
 
 
-def test_customer_portal_only_receives_active_mappings():
+def test_customer_portal_receives_non_released_mapping_lifecycle():
     root = Path(__file__).resolve().parents[1]
 
     gateway_source = (
@@ -34,7 +34,9 @@ def test_customer_portal_only_receives_active_mappings():
     ).read_text()
 
     assert 'PortMapping.status == "active"' in gateway_source
-    assert "active_only=True" in portal_source
+    assert "active_only=False" in portal_source
+    assert 'mapping.status == "released"' in portal_source
+    assert "_public_endpoint_display_status" in portal_source
 
 
 def test_live_mode_remains_disabled_by_default():

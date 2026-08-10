@@ -14,6 +14,15 @@ from app.services.gateway_service import (
 from app.services.network_service import visible_vps_network
 
 
+def _public_endpoint_display_status(status: str) -> str:
+    return {
+        "pending": "Configuring",
+        "active": "Ready",
+        "failed": "Retrying",
+        "releasing": "Removing",
+    }.get(status, "Unavailable")
+
+
 def customer_portal_summary(
     db: Session,
     user: User,
@@ -38,8 +47,11 @@ def customer_portal_summary(
         for mapping in list_vps_port_mappings(
             db,
             vps_id=vps.id,
-            active_only=True,
+            active_only=False,
         ):
+            if mapping.status == "released":
+                continue
+
             gateway = get_public_gateway(
                 db,
                 mapping.gateway_id,
@@ -51,6 +63,12 @@ def customer_portal_summary(
                     public_ip=gateway.public_ip,
                     public_port=mapping.public_port,
                     private_port=mapping.private_port,
+                    status=mapping.status,
+                    display_status=(
+                        _public_endpoint_display_status(
+                            mapping.status
+                        )
+                    ),
                 )
             )
 

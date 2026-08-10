@@ -150,11 +150,17 @@ def vps_port_mappings(
             vps_id,
         )
 
-        return list_vps_port_mappings(
+        mappings = list_vps_port_mappings(
             db,
             vps_id=vps.id,
-            active_only=True,
+            active_only=False,
         )
+
+        return [
+            mapping
+            for mapping in mappings
+            if mapping.status != "released"
+        ]
     except ComputeError as exc:
         raise HTTPException(
             status_code=404,

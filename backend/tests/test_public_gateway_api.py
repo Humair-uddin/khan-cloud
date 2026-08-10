@@ -73,3 +73,18 @@ def test_port_mapping_create_requires_gateway_id():
     ).read_text()
 
     assert "gateway_id: UUID" in source
+
+
+def test_vps_port_listing_exposes_non_released_lifecycle():
+    root = Path(__file__).resolve().parents[1]
+
+    source = (
+        root
+        / "app"
+        / "api"
+        / "v1"
+        / "network.py"
+    ).read_text()
+
+    assert "active_only=False" in source
+    assert 'mapping.status != "released"' in source

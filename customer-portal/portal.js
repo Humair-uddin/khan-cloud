@@ -32,7 +32,10 @@ async function post(path,payload){
 }
 function sshEndpoint(v){
   return (v.public_endpoints||[]).find(
-    e=>e.protocol==="tcp"&&Number(e.private_port)===22
+    e=>
+      e.protocol==="tcp"&&
+      Number(e.private_port)===22&&
+      e.status==="active"
   );
 }
 function endpointRows(v){
@@ -45,6 +48,9 @@ function endpointRows(v){
       <strong>${esc(e.protocol.toUpperCase())}</strong>
       ${esc(e.public_ip)}:${e.public_port}
       <span class="muted">→ private port ${e.private_port}</span>
+      <span class="status ${esc(e.status)}">
+        ${esc(e.display_status||e.status)}
+      </span>
     </div>
   `).join("");
 }
@@ -89,8 +95,14 @@ async function refresh(){
           ssh
             ? `${sshText}<br><small class="muted">${esc(v.ssh_public_key_fingerprint)}</small>`
             : v.guest_ready_at
-              ? `SSH mapping not assigned yet.<br><small class="muted">${esc(v.ssh_public_key_fingerprint)}</small>`
-              : "Preparing secure access…"
+          ? (v.public_endpoints||[]).some(
+              e=>
+                e.protocol==="tcp"&&
+                Number(e.private_port)===22
+            )
+            ? `SSH endpoint is being configured.<br><small class="muted">${esc(v.ssh_public_key_fingerprint)}</small>`
+            : `SSH mapping not assigned yet.<br><small class="muted">${esc(v.ssh_public_key_fingerprint)}</small>`
+          : "Preparing secure access…"
         }</div>
       </div>
 
