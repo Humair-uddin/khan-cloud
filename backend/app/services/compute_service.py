@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.compute import NodeCapacity, NodeJob, ProvisioningAuthorization, ResourceReservation, VPSInstance
+from app.models.commercial import CustomerOrder
 from app.models.node import Node
 from app.models.user import User
 from app.schemas.compute import CapacityRead, ComputeHostRead, VPSCreate, VPSImageRead
@@ -385,6 +386,36 @@ def claim_next_job(db: Session, node: Node) -> NodeJob | None:
     return job
 
 
+def _synchronize_commercial_order_for_vps_job(
+    db: Session,
+    *,
+    vps: VPSInstance,
+    job: NodeJob,
+) -> None:
+    """Synchronize a commercial order with authoritative VPS job state."""
+
+    order = db.scalar(
+        select(CustomerOrder).where(
+            CustomerOrder.vps_instance_id == vps.id
+        )
+    )
+
+    if order is None:
+        return
+
+    if job.job_type == "vps.create":
+        if job.status == "succeeded":
+            order.status = "active"
+        else:
+            order.status = "provisioning_failed"
+
+    elif job.job_type == "vps.delete":
+        if job.status == "succeeded":
+            order.status = "deleted"
+        else:
+            order.status = "delete_failed"
+
+
 def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: dict, error_message: str) -> NodeJob:
     job = db.get(NodeJob, job_id)
     if job is None or job.node_id != node.id:
@@ -451,5 +482,12 @@ def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: di
             else:
                 vps.status = "failed"; vps.failure_category = "node_job_failed"; vps.failure_message = error_message[:500]
                 if job.job_type == "vps.create": release_reservation(db, vps)
+
+            _synchronize_commercial_order_for_vps_job(
+                db,
+                vps=vps,
+                job=job,
+            )
+
     db.commit(); db.refresh(job)
     return job
