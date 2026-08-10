@@ -35,5 +35,12 @@ class Settings(BaseSettings):
 
     NODE_ENROLLMENT_TOKEN: str
 
+    MIKROTIK_BASE_URL: str = "https://10.10.20.1"
+    MIKROTIK_USERNAME: str = ""
+    MIKROTIK_PASSWORD: str = ""
+    MIKROTIK_VERIFY_TLS: bool = True
+    MIKROTIK_TIMEOUT_SECONDS: float = 10.0
+    MIKROTIK_LIVE_ENABLED: bool = False
+
 
 settings = Settings()
