@@ -305,6 +305,48 @@ def release_port_mapping(
     return mapping
 
 
+def release_vps_port_mappings(
+    db: Session,
+    *,
+    vps_id: UUID,
+) -> int:
+    mappings = list(
+        db.scalars(
+            select(PortMapping).where(
+                PortMapping.vps_instance_id == vps_id,
+                PortMapping.status != "released",
+            )
+        ).unique()
+    )
+
+    if not mappings:
+        return 0
+
+    now = datetime.now(UTC)
+
+    for mapping in mappings:
+        mapping.status = "released"
+        mapping.released_at = now
+
+        record_audit_event(
+            db,
+            actor_user_id=None,
+            action="network.port_mapping.released",
+            resource_type="port_mapping",
+            resource_id=str(mapping.id),
+            reason="VPS lifecycle deletion",
+            details={
+                "gateway_id": str(mapping.gateway_id),
+                "vps_instance_id": str(mapping.vps_instance_id),
+                "protocol": mapping.protocol,
+                "public_port": mapping.public_port,
+                "release_source": "vps_delete",
+            },
+        )
+
+    return len(mappings)
+
+
 def list_vps_port_mappings(
     db: Session,
     *,

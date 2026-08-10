@@ -14,6 +14,7 @@ from app.schemas.compute import CapacityRead, ComputeHostRead, VPSCreate, VPSIma
 from app.services.audit_service import record_audit_event
 from app.services.organization_service import user_can_access_organization, visible_organizations
 from app.services.network_service import record_runtime_allocation, release_vps_addresses
+from app.services.gateway_service import release_vps_port_mappings
 from app.services.rbac_service import get_role_names
 
 GIB = 1024 ** 3
@@ -404,6 +405,7 @@ def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: di
                 elif job.job_type == "vps.delete":
                     vps.status = "deleted"
                     release_vps_addresses(db, vps_id=vps.id)
+                    release_vps_port_mappings(db, vps_id=vps.id)
                     release_reservation(db, vps)
             else:
                 vps.status = "failed"; vps.failure_category = "node_job_failed"; vps.failure_message = error_message[:500]
