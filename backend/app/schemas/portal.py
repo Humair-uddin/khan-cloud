@@ -1,6 +1,14 @@
 from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel
+
+
+class PortalPublicEndpointRead(BaseModel):
+    protocol: str
+    public_ip: str
+    public_port: int
+    private_port: int
 
 
 class PortalVPSRead(BaseModel):
@@ -15,6 +23,7 @@ class PortalVPSRead(BaseModel):
     primary_ip: str
     private_addresses: list[str]
     public_addresses: list[str]
+    public_endpoints: list[PortalPublicEndpointRead]
     access_username: str
     ssh_public_key_fingerprint: str
     guest_ready_at: datetime | None
