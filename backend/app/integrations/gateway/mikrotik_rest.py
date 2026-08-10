@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ class MikroTikRESTAdapter:
         username: str,
         password: str,
         verify_tls: bool = True,
+        ca_file: str | None = None,
         timeout_seconds: float = 10.0,
         live_enabled: bool = False,
         client: httpx.Client | None = None,
@@ -31,10 +33,19 @@ class MikroTikRESTAdapter:
 
         self._owns_client = client is None
 
+        verify: bool | ssl.SSLContext
+
+        if verify_tls:
+            verify = ssl.create_default_context(
+                cafile=ca_file,
+            ) if ca_file else True
+        else:
+            verify = False
+
         self.client = client or httpx.Client(
             base_url=self.base_url,
             auth=(username, password),
-            verify=verify_tls,
+            verify=verify,
             timeout=timeout_seconds,
             headers={
                 "Accept": "application/json",

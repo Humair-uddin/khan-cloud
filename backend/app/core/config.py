@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     MIKROTIK_USERNAME: str = ""
     MIKROTIK_PASSWORD: str = ""
     MIKROTIK_VERIFY_TLS: bool = True
+    MIKROTIK_CA_FILE: str = "/etc/ssl/certs/ca-certificates.crt"
     MIKROTIK_TIMEOUT_SECONDS: float = 10.0
     MIKROTIK_LIVE_ENABLED: bool = False
 

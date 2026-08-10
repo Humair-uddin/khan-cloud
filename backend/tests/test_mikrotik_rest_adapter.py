@@ -141,3 +141,32 @@ def test_remove_is_idempotent_when_absent():
     result = adapter.remove_port_mapping(rule())
 
     assert result.changed is False
+
+
+
+def test_adapter_accepts_explicit_ca_file(monkeypatch):
+    calls = []
+    real_create_default_context = __import__("ssl").create_default_context
+
+    def recording_context(*args, **kwargs):
+        calls.append(kwargs.get("cafile"))
+        return real_create_default_context(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "app.integrations.gateway.mikrotik_rest.ssl.create_default_context",
+        recording_context,
+    )
+
+    adapter = MikroTikRESTAdapter(
+        base_url="https://router.invalid",
+        username="test",
+        password="test",
+        verify_tls=True,
+        ca_file="/etc/ssl/certs/ca-certificates.crt",
+        live_enabled=False,
+    )
+
+    try:
+        assert "/etc/ssl/certs/ca-certificates.crt" in calls
+    finally:
+        adapter.close()
