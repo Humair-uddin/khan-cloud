@@ -9,6 +9,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -82,6 +83,10 @@ class PortMapping(BaseModel):
         CheckConstraint(
             "private_port BETWEEN 1 AND 65535",
             name="ck_port_mapping_private_port",
+        ),
+        CheckConstraint(
+            "reconcile_action IN ('apply', 'remove')",
+            name="ck_port_mapping_reconcile_action",
         ),
         Index(
             "uq_port_mapping_active_endpoint",
@@ -157,5 +162,26 @@ class PortMapping(BaseModel):
 
     released_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+
+    reconcile_action: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="apply",
+    )
+
+    reconcile_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    external_id: Mapped[str | None] = mapped_column(
+        String(120),
         nullable=True,
     )
