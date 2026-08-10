@@ -8,6 +8,8 @@ def make_rule() -> GatewayNatRule:
     return GatewayNatRule(
         mapping_id=uuid4(),
         public_ip="203.0.113.10",
+        ingress_mode="direct",
+        wan_interface=None,
         protocol="tcp",
         public_port=22001,
         private_ip="192.168.250.10",
@@ -44,6 +46,8 @@ def test_dry_run_updates_desired_mapping():
     changed = GatewayNatRule(
         mapping_id=rule.mapping_id,
         public_ip=rule.public_ip,
+        ingress_mode="direct",
+        wan_interface=None,
         protocol=rule.protocol,
         public_port=rule.public_port,
         private_ip=rule.private_ip,

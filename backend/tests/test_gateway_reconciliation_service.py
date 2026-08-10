@@ -66,6 +66,8 @@ def gateway():
     return SimpleNamespace(
         id=uuid4(),
         public_ip="203.0.113.10",
+        ingress_mode="direct",
+        wan_interface=None,
     )
 
 

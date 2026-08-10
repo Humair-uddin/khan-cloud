@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +41,8 @@ class PublicGatewayCreate(BaseModel):
     provider: str = Field(default="", max_length=80)
     region: str = Field(default="pk-local", max_length=80)
     gateway_type: str = Field(default="mikrotik", max_length=40)
+    ingress_mode: Literal["direct", "upstream_nat"] = "direct"
+    wan_interface: str | None = Field(default=None, max_length=80)
 
 
 class PublicGatewayRead(BaseModel):
@@ -52,6 +55,8 @@ class PublicGatewayRead(BaseModel):
     provider: str
     region: str
     gateway_type: str
+    ingress_mode: Literal["direct", "upstream_nat"]
+    wan_interface: str | None
     is_active: bool
 
 

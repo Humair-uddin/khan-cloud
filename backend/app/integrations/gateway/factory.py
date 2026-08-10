@@ -12,6 +12,8 @@ def nat_rule_from_models(
     return GatewayNatRule(
         mapping_id=mapping.id,
         public_ip=gateway.public_ip,
+        ingress_mode=gateway.ingress_mode,
+        wan_interface=gateway.wan_interface,
         protocol=mapping.protocol,
         public_port=mapping.public_port,
         private_ip=mapping.private_ip,

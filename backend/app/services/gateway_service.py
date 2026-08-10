@@ -108,6 +108,8 @@ def create_public_gateway(
         provider=payload.provider,
         region=payload.region,
         gateway_type=payload.gateway_type,
+        ingress_mode=payload.ingress_mode,
+        wan_interface=payload.wan_interface,
         is_active=True,
     )
 

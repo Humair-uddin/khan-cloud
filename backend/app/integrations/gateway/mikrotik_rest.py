@@ -116,16 +116,31 @@ class MikroTikRESTAdapter:
     def _desired_payload(
         rule: GatewayNatRule,
     ) -> dict[str, str]:
-        return {
+        payload = {
             "chain": "dstnat",
             "action": "dst-nat",
             "protocol": rule.protocol,
-            "dst-address": rule.public_ip,
             "dst-port": str(rule.public_port),
             "to-addresses": rule.private_ip,
             "to-ports": str(rule.private_port),
             "comment": rule.ownership_tag,
         }
+
+        if rule.ingress_mode == "direct":
+            payload["dst-address"] = rule.public_ip
+        elif rule.ingress_mode == "upstream_nat":
+            if not rule.wan_interface:
+                raise MikroTikGatewayError(
+                    "upstream_nat gateway requires wan_interface."
+                )
+            payload["in-interface"] = rule.wan_interface
+        else:
+            raise MikroTikGatewayError(
+                f"Unsupported gateway ingress mode: "
+                f"{rule.ingress_mode}"
+            )
+
+        return payload
 
     def ensure_port_mapping(
         self,
@@ -171,11 +186,57 @@ class MikroTikRESTAdapter:
             for key, value in desired.items()
         )
 
-        if matches:
+        # Desired payload must also not leave behind an obsolete
+        # mutually-exclusive ingress selector.
+        if rule.ingress_mode == "direct":
+            selector_matches = not existing.get("in-interface")
+        else:
+            selector_matches = not existing.get("dst-address")
+
+        if matches and selector_matches:
             return GatewayApplyResult(
                 changed=False,
                 external_id=external_id,
                 message="RouterOS NAT mapping already matches desired state.",
+            )
+
+        existing_direct = bool(existing.get("dst-address"))
+        existing_upstream = bool(existing.get("in-interface"))
+
+        topology_changed = (
+            rule.ingress_mode == "direct"
+            and existing_upstream
+        ) or (
+            rule.ingress_mode == "upstream_nat"
+            and existing_direct
+        )
+
+        if topology_changed:
+            # RouterOS PATCH/set cannot safely express removal of an
+            # obsolete selector by assigning an empty string. Replace
+            # the Khan Cloud-owned rule instead.
+            self._request(
+                "DELETE",
+                f"/rest/ip/firewall/nat/{external_id}",
+            )
+
+            created = self._request(
+                "PUT",
+                "/rest/ip/firewall/nat",
+                json=desired,
+            )
+
+            replacement_id = None
+            if isinstance(created, dict):
+                replacement_id = created.get(".id")
+
+            return GatewayApplyResult(
+                changed=True,
+                external_id=replacement_id,
+                message=(
+                    "RouterOS NAT mapping replaced for "
+                    "ingress topology change."
+                ),
             )
 
         updated = self._request(

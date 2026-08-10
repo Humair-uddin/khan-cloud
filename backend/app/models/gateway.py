@@ -21,6 +21,13 @@ from app.models.base import BaseModel
 class PublicGateway(BaseModel):
     __tablename__ = "public_gateways"
 
+    __table_args__ = (
+        CheckConstraint(
+            "ingress_mode IN ('direct', 'upstream_nat')",
+            name="ck_public_gateway_ingress_mode",
+        ),
+    )
+
     name: Mapped[str] = mapped_column(
         String(120),
         nullable=False,
@@ -58,6 +65,17 @@ class PublicGateway(BaseModel):
         nullable=False,
         default="mikrotik",
         index=True,
+    )
+
+    ingress_mode: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="direct",
+    )
+
+    wan_interface: Mapped[str | None] = mapped_column(
+        String(80),
+        nullable=True,
     )
 
     is_active: Mapped[bool] = mapped_column(

@@ -9,6 +9,8 @@ from uuid import UUID
 class GatewayNatRule:
     mapping_id: UUID
     public_ip: str
+    ingress_mode: str
+    wan_interface: str | None
     protocol: str
     public_port: int
     private_ip: str

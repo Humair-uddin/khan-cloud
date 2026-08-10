@@ -1,10 +1,12 @@
+import pytest
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
 from app.integrations.gateway.base import GatewayNatRule
 from app.integrations.gateway.mikrotik_rest import (
+    MikroTikGatewayError,
     MikroTikRESTAdapter,
 )
 
@@ -13,6 +15,8 @@ def rule() -> GatewayNatRule:
     return GatewayNatRule(
         mapping_id=uuid4(),
         public_ip="203.0.113.10",
+        ingress_mode="direct",
+        wan_interface=None,
         protocol="tcp",
         public_port=22001,
         private_ip="192.168.250.10",
@@ -170,3 +174,222 @@ def test_adapter_accepts_explicit_ca_file(monkeypatch):
         assert "/etc/ssl/certs/ca-certificates.crt" in calls
     finally:
         adapter.close()
+
+
+def test_direct_ingress_matches_public_destination():
+    rule = GatewayNatRule(
+        mapping_id=uuid4(),
+        public_ip="203.0.113.10",
+        ingress_mode="direct",
+        wan_interface=None,
+        protocol="tcp",
+        public_port=22001,
+        private_ip="10.10.10.50",
+        private_port=22,
+    )
+
+    payload = MikroTikRESTAdapter._desired_payload(rule)
+
+    assert payload["dst-address"] == "203.0.113.10"
+    assert "in-interface" not in payload
+
+
+def test_upstream_nat_ingress_matches_wan_interface():
+    rule = GatewayNatRule(
+        mapping_id=uuid4(),
+        public_ip="124.29.197.4",
+        ingress_mode="upstream_nat",
+        wan_interface="WAN1",
+        protocol="tcp",
+        public_port=29998,
+        private_ip="10.10.20.100",
+        private_port=18080,
+    )
+
+    payload = MikroTikRESTAdapter._desired_payload(rule)
+
+    assert payload["in-interface"] == "WAN1"
+    assert "dst-address" not in payload
+    assert payload["dst-port"] == "29998"
+    assert payload["to-addresses"] == "10.10.20.100"
+    assert payload["to-ports"] == "18080"
+
+
+def test_upstream_nat_requires_wan_interface():
+    rule = GatewayNatRule(
+        mapping_id=uuid4(),
+        public_ip="124.29.197.4",
+        ingress_mode="upstream_nat",
+        wan_interface=None,
+        protocol="tcp",
+        public_port=29998,
+        private_ip="10.10.20.100",
+        private_port=18080,
+    )
+
+    with pytest.raises(
+        MikroTikGatewayError,
+        match="requires wan_interface",
+    ):
+        MikroTikRESTAdapter._desired_payload(rule)
+
+
+def test_direct_to_upstream_nat_replaces_owned_rule():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (
+                request.method,
+                request.url.path,
+            )
+        )
+
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        ".id": "*9",
+                        "chain": "dstnat",
+                        "action": "dst-nat",
+                        "protocol": "tcp",
+                        "dst-address": "124.29.197.4",
+                        "dst-port": "29998",
+                        "to-addresses": "10.10.20.100",
+                        "to-ports": "18080",
+                        "comment": (
+                            "khan-cloud:port-mapping:"
+                            "00000000-0000-0000-0000-000000000009"
+                        ),
+                    }
+                ],
+            )
+
+        if request.method == "DELETE":
+            return httpx.Response(204)
+
+        if request.method == "PUT":
+            return httpx.Response(
+                201,
+                json={".id": "*A"},
+            )
+
+        return httpx.Response(
+            500,
+            json={"error": "unexpected request"},
+        )
+
+    client = httpx.Client(
+        base_url="https://router.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+
+    adapter = MikroTikRESTAdapter(
+        base_url="https://router.invalid",
+        username="test",
+        password="test",
+        live_enabled=True,
+        client=client,
+    )
+
+    rule = GatewayNatRule(
+        mapping_id=UUID(
+            "00000000-0000-0000-0000-000000000009"
+        ),
+        public_ip="124.29.197.4",
+        ingress_mode="upstream_nat",
+        wan_interface="WAN1",
+        protocol="tcp",
+        public_port=29998,
+        private_ip="10.10.20.100",
+        private_port=18080,
+    )
+
+    try:
+        result = adapter.ensure_port_mapping(rule)
+    finally:
+        client.close()
+
+    methods = [method for method, _ in requests]
+
+    assert result.changed is True
+    assert result.external_id == "*A"
+    assert "DELETE" in methods
+    assert "PUT" in methods
+    assert "PATCH" not in methods
+
+
+def test_same_topology_change_uses_patch():
+    requests = []
+
+    mapping_id = UUID(
+        "00000000-0000-0000-0000-000000000010"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.method)
+
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        ".id": "*B",
+                        "chain": "dstnat",
+                        "action": "dst-nat",
+                        "protocol": "tcp",
+                        "in-interface": "WAN1",
+                        "dst-port": "29998",
+                        "to-addresses": "10.10.20.100",
+                        "to-ports": "18080",
+                        "comment": (
+                            f"khan-cloud:port-mapping:{mapping_id}"
+                        ),
+                    }
+                ],
+            )
+
+        if request.method == "PATCH":
+            return httpx.Response(
+                200,
+                json={".id": "*B"},
+            )
+
+        return httpx.Response(
+            500,
+            json={"error": "unexpected request"},
+        )
+
+    client = httpx.Client(
+        base_url="https://router.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+
+    adapter = MikroTikRESTAdapter(
+        base_url="https://router.invalid",
+        username="test",
+        password="test",
+        live_enabled=True,
+        client=client,
+    )
+
+    rule = GatewayNatRule(
+        mapping_id=mapping_id,
+        public_ip="124.29.197.4",
+        ingress_mode="upstream_nat",
+        wan_interface="WAN1",
+        protocol="tcp",
+        public_port=29998,
+        private_ip="10.10.20.100",
+        private_port=18081,
+    )
+
+    try:
+        result = adapter.ensure_port_mapping(rule)
+    finally:
+        client.close()
+
+    assert result.changed is True
+    assert "PATCH" in requests
+    assert "DELETE" not in requests
