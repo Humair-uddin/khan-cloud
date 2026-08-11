@@ -42,3 +42,23 @@ class PaymentConfirm(BaseModel):
 
 class OperatorPricingPublish(BaseModel):
     cpu_monthly_minor:int=Field(gt=0); memory_gib_monthly_minor:int=Field(gt=0); storage_gib_monthly_minor:int=Field(gt=0)
+# ===== CATALOG / BILLING V2 =====
+class WalletTopUpCreate(BaseModel):
+    currency: Literal["PKR","USD"]
+    amount_minor: int = Field(gt=0)
+    provider: str = Field(default="manual_bank", max_length=60)
+    provider_reference: str = Field(default="", max_length=160)
+
+class WalletRead(BaseModel):
+    model_config=ConfigDict(from_attributes=True)
+    id:UUID; currency:str; wallet_type:str; balance_minor:int
+    auto_recharge_enabled:bool; auto_recharge_threshold_minor:int; auto_recharge_amount_minor:int
+    low_balance_threshold_minor:int; critical_balance_threshold_minor:int
+
+class ResellerPricePreview(BaseModel):
+    list_price_minor:int=Field(gt=0)
+    wholesale_discount_bps:int=Field(ge=0,le=9000)
+    customer_discount_bps:int=Field(ge=0,le=9000)
+
+class ResellerPriceResult(BaseModel):
+    customer_charge_minor:int; khan_cloud_floor_minor:int; reseller_earning_minor:int

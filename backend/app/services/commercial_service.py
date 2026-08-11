@@ -78,3 +78,36 @@ def confirm_payment_and_provision(db,*,actor,order_id,provider_reference=""):
 def visible_orders(db,u):
     rows=list(db.scalars(select(CustomerOrder).order_by(CustomerOrder.created_at.desc())).unique())
     return rows if _can_manage_commerce(u) else [x for x in rows if x.user_id==u.id]
+# ===== CATALOG / BILLING V2 =====
+def minute_rate_from_hourly(hourly_minor:int)->int:
+    if hourly_minor<=0: raise CommercialError("Hourly price must be positive.")
+    return max(1,(hourly_minor+30)//60)
+
+def reseller_price_preview(*,list_price_minor:int,wholesale_discount_bps:int,customer_discount_bps:int)->dict:
+    if customer_discount_bps>wholesale_discount_bps:
+        raise CommercialError("Customer discount cannot exceed reseller wholesale discount.")
+    floor=list_price_minor*(10000-wholesale_discount_bps)//10000
+    charge=list_price_minor*(10000-customer_discount_bps)//10000
+    return {"customer_charge_minor":charge,"khan_cloud_floor_minor":floor,"reseller_earning_minor":max(0,charge-floor)}
+
+def calculate_marketplace_split(*,customer_charge_minor:int,host_payout_minor:int=0,reseller_earning_minor:int=0,payment_cost_minor:int=0,minimum_khan_margin_minor:int=0)->dict:
+    margin=customer_charge_minor-host_payout_minor-reseller_earning_minor-payment_cost_minor
+    if margin<minimum_khan_margin_minor:
+        raise CommercialError("Transaction violates Khan Cloud minimum margin floor.")
+    return {"customer_charge_minor":customer_charge_minor,"host_payout_minor":host_payout_minor,"reseller_earning_minor":reseller_earning_minor,"payment_cost_minor":payment_cost_minor,"khan_cloud_margin_minor":margin}
+
+def get_or_create_wallet(db,*,actor,currency:str):
+    from app.models.commercial import BillingWallet
+    org_id=_org(db,actor)
+    w=db.scalar(select(BillingWallet).where(BillingWallet.organization_id==org_id,BillingWallet.currency==currency,BillingWallet.wallet_type=="customer"))
+    if w is None:
+        w=BillingWallet(organization_id=org_id,user_id=actor.id,currency=currency,wallet_type="customer",balance_minor=0)
+        db.add(w);db.commit();db.refresh(w)
+    return w
+
+def wallet_topup(db,*,actor,currency:str,amount_minor:int,provider:str,provider_reference:str=""):
+    from app.models.commercial import WalletLedgerEntry
+    w=get_or_create_wallet(db,actor=actor,currency=currency)
+    w.balance_minor+=amount_minor
+    e=WalletLedgerEntry(wallet_id=w.id,entry_type="topup",amount_minor=amount_minor,balance_after_minor=w.balance_minor,reference_type="payment_provider",reference_id=provider_reference,description=f"Wallet top-up via {provider}")
+    db.add(e);db.commit();db.refresh(w);return w

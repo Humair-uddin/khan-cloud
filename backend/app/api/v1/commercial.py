@@ -7,6 +7,10 @@ from app.db.database import get_db
 from app.models.user import User
 from app.schemas.commercial import *
 from app.services.commercial_service import *
+from app.services.commercial_service import (
+    _can_manage_commerce,
+    _org,
+)
 
 router=APIRouter(prefix="/commerce",tags=["commerce"])
 
@@ -42,4 +46,14 @@ def operator_publish_pricing(payload:OperatorPricingPublish,user:User=Depends(re
 @router.post("/operator/orders/{order_id}/confirm-payment",response_model=OrderRead)
 def operator_confirm_payment(order_id:UUID,payload:PaymentConfirm,user:User=Depends(require_permission("commerce.manage")),db:Session=Depends(get_db)):
     try:return confirm_payment_and_provision(db,actor=user,order_id=order_id,provider_reference=payload.provider_reference)
+    except CommercialError as e: raise HTTPException(status_code=400,detail=str(e))
+# ===== CATALOG / BILLING V2 =====
+@router.post("/operator/wallets/top-up",response_model=WalletRead)
+def billing_wallet_topup(payload:WalletTopUpCreate,user:User=Depends(require_permission("commerce.manage")),db:Session=Depends(get_db)):
+    try:return wallet_topup(db,actor=user,currency=payload.currency,amount_minor=payload.amount_minor,provider=payload.provider,provider_reference=payload.provider_reference)
+    except CommercialError as e: raise HTTPException(status_code=400,detail=str(e))
+
+@router.post("/operator/reseller/preview",response_model=ResellerPriceResult)
+def billing_reseller_preview(payload:ResellerPricePreview,user:User=Depends(require_permission("commerce.manage"))):
+    try:return reseller_price_preview(list_price_minor=payload.list_price_minor,wholesale_discount_bps=payload.wholesale_discount_bps,customer_discount_bps=payload.customer_discount_bps)
     except CommercialError as e: raise HTTPException(status_code=400,detail=str(e))
