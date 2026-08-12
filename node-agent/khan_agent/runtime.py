@@ -14,7 +14,7 @@ from khan_agent.identity import IdentityStore
 from khan_agent.inventory import collect_safe_inventory
 from khan_agent.installer_telemetry import read_latest_installer_snapshot
 from khan_agent.plugins import PluginManager
-from khan_agent.virtualization import execute_virtualization_job
+from khan_agent.job_dispatch import execute_node_job
 from khan_agent.state import AgentState, StateMachine
 
 logger = logging.getLogger("khan_agent")
@@ -156,12 +156,12 @@ class AgentRuntime:
         job = await next_job(credentials)
         if not job:
             return
-        result = execute_virtualization_job(
+        result = execute_node_job(
             job,
-            execution_enabled=self.settings.virtualization.execution_enabled,
-            storage_root=self.settings.virtualization.storage_root,
-            base_image_path=self.settings.virtualization.base_image_path,
-            network_name=self.settings.virtualization.network_name,
+            virtualization_execution_enabled=self.settings.virtualization.execution_enabled,
+            virtualization_storage_root=self.settings.virtualization.storage_root,
+            virtualization_base_image_path=self.settings.virtualization.base_image_path,
+            virtualization_network_name=self.settings.virtualization.network_name,
         )
         await self.client.report_job_result(
             str(job["id"]),
