@@ -90,3 +90,12 @@ def test_customer_cannot_generate_khan_cloud_gaming_host_profile():
         match="gaming-host onboarding is restricted",
     ):
         _profile_settings_for_role(user("customer"), "gaming_host")
+
+
+def test_provider_installer_propagates_node_role():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "app" / "services" / "provider_onboarding_service.py").read_text()
+
+    assert "node_role: str" in source
+    assert '"node_role": node_role' in source
+    assert "node_role=payload.node_role" in source

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class AgentConfig(BaseModel):
     node_name: str = Field(min_length=1, max_length=128)
+    node_role: str = "generic"
     control_plane_url: HttpUrl
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=3600)
     request_timeout_seconds: int = Field(default=10, ge=1, le=120)

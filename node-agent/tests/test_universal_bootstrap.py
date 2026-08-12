@@ -52,3 +52,26 @@ def test_builder_creates_self_extracting_run_without_external_zip(tmp_path):
     data = output.read_text(errors="ignore")
     assert "__KC_PAYLOAD_BELOW__" in data
     assert output.stat().st_mode & 0o111
+
+
+def test_runtime_installer_has_role_aware_gaming_service_policy():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.sh").read_text()
+
+    assert 'NODE_ROLE=' in source
+    assert 'if [[ "$NODE_ROLE" == "gaming_host" ]]' in source
+    assert "SupplementaryGroups=kvm libvirt" in source
+    assert "SupplementaryGroups=kvm" in source
+    assert "/var/lib/khan-cloud/vps" in source
+    assert "ReadWritePaths=/var/lib/khan-cloud-agent" in source
+
+
+def test_default_systemd_template_retains_vps_requirements():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "systemd" / "khan-cloud-agent.service").read_text()
+
+    assert "SupplementaryGroups=kvm libvirt" in source
+    assert (
+        "ReadWritePaths=/var/lib/khan-cloud-agent /var/lib/khan-cloud/vps"
+        in source
+    )

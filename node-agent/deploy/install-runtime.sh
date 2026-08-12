@@ -136,6 +136,29 @@ if ! stage_done systemd_unit; then
   install -o root -g root -m 0644 \
     "$RUNTIME/systemd/khan-cloud-agent.service" \
     "$SERVICE"
+
+  NODE_ROLE="$("$RUNTIME/.venv/bin/python" - "$ETC/config.yaml" <<'PYCONFIG'
+import sys
+from pathlib import Path
+import yaml
+
+raw = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+print(raw.get("agent", {}).get("node_role", "generic"))
+PYCONFIG
+)"
+
+  if [[ "$NODE_ROLE" == "gaming_host" ]]; then
+    # Proxmox gaming hosts do not require libvirt, and they must not
+    # inherit the VPS storage namespace requirement.
+    sed -i \
+      's/^SupplementaryGroups=kvm libvirt$/SupplementaryGroups=kvm/' \
+      "$SERVICE"
+
+    sed -i \
+      's#^ReadWritePaths=/var/lib/khan-cloud-agent /var/lib/khan-cloud/vps$#ReadWritePaths=/var/lib/khan-cloud-agent#' \
+      "$SERVICE"
+  fi
+
   systemctl daemon-reload
   systemd-analyze verify "$SERVICE"
   mark_done systemd_unit

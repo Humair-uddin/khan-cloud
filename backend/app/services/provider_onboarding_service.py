@@ -110,6 +110,7 @@ def _build_installer_run(
     *,
     enrollment_code: str,
     node_name: str,
+    node_role: str,
     control_plane_url: str,
     verify_tls: bool,
     output: Path,
@@ -134,6 +135,7 @@ def _build_installer_run(
         config = {
             "agent": {
                 "node_name": node_name,
+                "node_role": node_role,
                 "control_plane_url": control_plane_url,
                 "heartbeat_interval_seconds": 30,
                 "request_timeout_seconds": 15,
@@ -225,6 +227,7 @@ def create_node_installer(
         _build_installer_run(
             enrollment_code=enrollment_code,
             node_name=node_name,
+            node_role=payload.node_role,
             control_plane_url=base_url,
             verify_tls=base_url.startswith("https://"),
             output=artifact_path,
