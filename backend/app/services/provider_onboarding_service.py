@@ -97,8 +97,9 @@ def _profile_settings_for_role(user: User, role: str) -> dict:
             "resource_policy": {
                 "role": "gaming_host",
                 "gpu_required": True,
-                "virtualization_backend": "proxmox",
+                "execution_backend": "proxmox_vm",
                 "streaming_backend": "sunshine",
+                "backend_policy": "profile_defined",
                 "auto_approve_node": True,
             },
         }

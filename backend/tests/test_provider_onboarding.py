@@ -79,8 +79,9 @@ def test_operator_can_generate_gaming_host_profile():
 
     assert settings["resource_policy"]["role"] == "gaming_host"
     assert settings["resource_policy"]["gpu_required"] is True
-    assert settings["resource_policy"]["virtualization_backend"] == "proxmox"
+    assert settings["resource_policy"]["execution_backend"] == "proxmox_vm"
     assert settings["resource_policy"]["streaming_backend"] == "sunshine"
+    assert settings["resource_policy"]["backend_policy"] == "profile_defined"
     assert settings["resource_policy"]["auto_approve_node"] is True
 
 
