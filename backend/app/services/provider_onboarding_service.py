@@ -78,6 +78,31 @@ def _profile_settings_for_role(user: User, role: str) -> dict:
                 "auto_approve_node": True,
             },
         }
+    if role == "gaming_host":
+        if not staff:
+            raise ProviderOnboardingError(
+                "Khan Cloud gaming-host onboarding is restricted to Khan Cloud operators."
+            )
+        return {
+            "purpose": "gaming_host",
+            "ownership_type": "khan_cloud",
+            "visibility": "internal_only",
+            "allowed_services": {
+                "gaming": True,
+                "streaming": True,
+                "vps": False,
+                "enterprise_vm": False,
+                "gpu_compute": False,
+            },
+            "resource_policy": {
+                "role": "gaming_host",
+                "gpu_required": True,
+                "virtualization_backend": "proxmox",
+                "streaming_backend": "sunshine",
+                "auto_approve_node": True,
+            },
+        }
+
     raise ProviderOnboardingError(f"Unsupported node role: {role}")
 
 

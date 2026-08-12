@@ -63,3 +63,30 @@ def test_live_validation_script_uses_public_bootstrap_download():
     assert "/api/v1/provider/bootstrap/{token}" in source
     assert "response.content.startswith" in source
     assert "validation_cleanup" in source
+
+def test_operator_can_generate_gaming_host_profile():
+    settings = _profile_settings_for_role(user("operator"), "gaming_host")
+
+    assert settings["purpose"] == "gaming_host"
+    assert settings["ownership_type"] == "khan_cloud"
+    assert settings["visibility"] == "internal_only"
+
+    assert settings["allowed_services"]["gaming"] is True
+    assert settings["allowed_services"]["streaming"] is True
+    assert settings["allowed_services"]["vps"] is False
+    assert settings["allowed_services"]["enterprise_vm"] is False
+    assert settings["allowed_services"]["gpu_compute"] is False
+
+    assert settings["resource_policy"]["role"] == "gaming_host"
+    assert settings["resource_policy"]["gpu_required"] is True
+    assert settings["resource_policy"]["virtualization_backend"] == "proxmox"
+    assert settings["resource_policy"]["streaming_backend"] == "sunshine"
+    assert settings["resource_policy"]["auto_approve_node"] is True
+
+
+def test_customer_cannot_generate_khan_cloud_gaming_host_profile():
+    with pytest.raises(
+        ProviderOnboardingError,
+        match="gaming-host onboarding is restricted",
+    ):
+        _profile_settings_for_role(user("customer"), "gaming_host")
