@@ -53,11 +53,22 @@ systemctl stop "$SERVICE"
 
 echo "===== UPDATE RUNTIME ====="
 
-rm -rf "$RUNTIME/khan_agent"
-cp -a "$SOURCE_DIR/khan_agent" "$RUNTIME/khan_agent"
+for component in khan_agent deploy tests; do
+  test -d "$SOURCE_DIR/$component" || {
+    echo "ERROR: update payload missing required component: $component"
+    exit 1
+  }
+done
 
-chown -R root:root "$RUNTIME/khan_agent"
-chmod -R go-w "$RUNTIME/khan_agent"
+rm -rf   "$RUNTIME/khan_agent"   "$RUNTIME/deploy"   "$RUNTIME/tests"
+
+cp -a "$SOURCE_DIR/khan_agent" "$RUNTIME/khan_agent"
+cp -a "$SOURCE_DIR/deploy" "$RUNTIME/deploy"
+cp -a "$SOURCE_DIR/tests" "$RUNTIME/tests"
+
+chown -R root:root   "$RUNTIME/khan_agent"   "$RUNTIME/deploy"   "$RUNTIME/tests"
+
+chmod -R go-w   "$RUNTIME/khan_agent"   "$RUNTIME/deploy"   "$RUNTIME/tests"
 
 echo "===== UPDATE CONFIG ====="
 

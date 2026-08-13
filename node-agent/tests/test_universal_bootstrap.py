@@ -104,7 +104,21 @@ def test_runtime_update_replaces_agent_code_not_whole_state():
     root = Path(__file__).resolve().parents[1]
     source = (root / "deploy" / "apply-runtime-update.sh").read_text()
 
-    assert 'rm -rf "$RUNTIME/khan_agent"' in source
+    assert '"$RUNTIME/khan_agent"' in source
+    assert '"$RUNTIME/deploy"' in source
+    assert '"$RUNTIME/tests"' in source
     assert 'cp -a "$SOURCE_DIR/khan_agent" "$RUNTIME/khan_agent"' in source
+    assert 'cp -a "$SOURCE_DIR/deploy" "$RUNTIME/deploy"' in source
+    assert 'cp -a "$SOURCE_DIR/tests" "$RUNTIME/tests"' in source
     assert 'rm -rf "$STATE"' not in source
     assert 'rm -f "$STATE/credentials.json"' not in source
+
+
+def test_runtime_update_deploys_matching_runtime_components():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.sh").read_text()
+
+    assert "for component in khan_agent deploy tests" in source
+    assert 'cp -a "$SOURCE_DIR/khan_agent" "$RUNTIME/khan_agent"' in source
+    assert 'cp -a "$SOURCE_DIR/deploy" "$RUNTIME/deploy"' in source
+    assert 'cp -a "$SOURCE_DIR/tests" "$RUNTIME/tests"' in source
