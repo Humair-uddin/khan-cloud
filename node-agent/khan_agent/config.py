@@ -41,6 +41,12 @@ class TelemetryConfig(BaseModel):
     installer_database_path: Path = Path("/opt/khan-cloud/state/installer/installer.db")
 
 
+class GamingConfig(BaseModel):
+    enabled: bool = False
+    execution_backend: str = "none"
+    streaming_backend: str = "none"
+
+
 class VirtualizationConfig(BaseModel):
     execution_enabled: bool = False
     jobs_endpoint: str = "/api/v1/node-runtime/jobs/next"
@@ -57,6 +63,7 @@ class AgentSettings(BaseModel):
     enrollment: EnrollmentConfig = EnrollmentConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
     virtualization: VirtualizationConfig = VirtualizationConfig()
+    gaming: GamingConfig = GamingConfig()
 
     @classmethod
     def load(cls, path: Path) -> "AgentSettings":

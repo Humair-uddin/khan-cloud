@@ -112,6 +112,8 @@ def _build_installer_run(
     enrollment_code: str,
     node_name: str,
     node_role: str,
+    gaming_execution_backend: str,
+    gaming_streaming_backend: str,
     control_plane_url: str,
     verify_tls: bool,
     output: Path,
@@ -151,6 +153,11 @@ def _build_installer_run(
                 "verify_tls": verify_tls,
             },
             "enrollment": {"endpoint": "/api/v1/nodes/register"},
+            "gaming": {
+                "enabled": node_role == "gaming_host",
+                "execution_backend": gaming_execution_backend,
+                "streaming_backend": gaming_streaming_backend,
+            },
             "heartbeat": {"enabled": True, "endpoint": "/api/v1/nodes/heartbeat"},
             "telemetry": {
                 "enabled": True,
@@ -229,6 +236,12 @@ def create_node_installer(
             enrollment_code=enrollment_code,
             node_name=node_name,
             node_role=payload.node_role,
+            gaming_execution_backend=str(
+                settings.get("resource_policy", {}).get("execution_backend", "none")
+            ),
+            gaming_streaming_backend=str(
+                settings.get("resource_policy", {}).get("streaming_backend", "none")
+            ),
             control_plane_url=base_url,
             verify_tls=base_url.startswith("https://"),
             output=artifact_path,

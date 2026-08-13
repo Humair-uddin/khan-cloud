@@ -23,7 +23,9 @@ def test_gaming_probe_routes_to_gaming_executor():
     assert result.status == "succeeded"
     assert result.result["workload_family"] == "gaming"
     assert result.result["executor"] == "khan_agent.gaming"
-    assert result.result["probe"] == "ok"
+    assert result.result["execution_backend"] == "none"
+    assert result.result["streaming_backend"] == "none"
+    assert result.result["backend"]["available"] is False
     assert result.error_message == ""
 
 
@@ -66,3 +68,93 @@ def test_gaming_executor_rejects_unknown_gaming_operation():
 
     assert result.status == "failed"
     assert "Unsupported gaming job type" in result.error_message
+
+
+def test_gaming_probe_receives_profile_selected_backend(monkeypatch):
+    from khan_agent import gaming
+
+    monkeypatch.setattr(
+        gaming,
+        "probe_gaming_backend",
+        lambda backend: {
+            "backend": backend,
+            "available": True,
+            "qm_installed": True,
+        },
+    )
+
+    result = execute_node_job(
+        {
+            "job_type": "gaming.probe",
+            "payload": {},
+        },
+        gaming_execution_backend="proxmox_vm",
+        gaming_streaming_backend="sunshine",
+        **COMMON,
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["execution_backend"] == "proxmox_vm"
+    assert result.result["streaming_backend"] == "sunshine"
+    assert result.result["backend"]["backend"] == "proxmox_vm"
+    assert result.result["backend"]["available"] is True
+
+
+def test_gaming_probe_inspects_requested_proxmox_vm(monkeypatch):
+    from khan_agent import gaming
+
+    monkeypatch.setattr(
+        gaming,
+        "probe_gaming_backend",
+        lambda backend: {
+            "backend": backend,
+            "available": True,
+        },
+    )
+
+    seen = []
+
+    def fake_vm_probe(vm_id):
+        seen.append(vm_id)
+        return {
+            "vm_id": vm_id,
+            "exists": True,
+            "state": "stopped",
+            "running": False,
+            "gpu_passthrough_configured": True,
+        }
+
+    monkeypatch.setattr(gaming, "probe_proxmox_vm", fake_vm_probe)
+
+    result = execute_node_job(
+        {
+            "job_type": "gaming.probe",
+            "payload": {"vm_id": 200},
+        },
+        gaming_execution_backend="proxmox_vm",
+        gaming_streaming_backend="sunshine",
+        **COMMON,
+    )
+
+    assert result.status == "succeeded"
+    assert seen == [200]
+    assert result.result["vm"]["vm_id"] == 200
+    assert result.result["vm"]["exists"] is True
+    assert result.result["vm"]["state"] == "stopped"
+    assert result.result["vm"]["gpu_passthrough_configured"] is True
+
+
+def test_gaming_probe_rejects_invalid_vm_id():
+    result = execute_node_job(
+        {
+            "job_type": "gaming.probe",
+            "payload": {"vm_id": "not-a-vmid"},
+        },
+        gaming_execution_backend="proxmox_vm",
+        gaming_streaming_backend="sunshine",
+        **COMMON,
+    )
+
+    assert result.status == "failed"
+    assert result.result == {}
+    assert "vm_id must be an integer" in result.error_message

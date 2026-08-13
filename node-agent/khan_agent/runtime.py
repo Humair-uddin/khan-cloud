@@ -162,6 +162,8 @@ class AgentRuntime:
             virtualization_storage_root=self.settings.virtualization.storage_root,
             virtualization_base_image_path=self.settings.virtualization.base_image_path,
             virtualization_network_name=self.settings.virtualization.network_name,
+            gaming_execution_backend=self.settings.gaming.execution_backend,
+            gaming_streaming_backend=self.settings.gaming.streaming_backend,
         )
         await self.client.report_job_result(
             str(job["id"]),
