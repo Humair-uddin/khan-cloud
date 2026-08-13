@@ -75,3 +75,36 @@ def test_default_systemd_template_retains_vps_requirements():
         "ReadWritePaths=/var/lib/khan-cloud-agent /var/lib/khan-cloud/vps"
         in source
     )
+
+
+def test_runtime_update_preserves_existing_node_identity():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.sh").read_text()
+
+    assert 'test -f "$STATE/credentials.json"' in source
+    assert '"$STATE/credentials.json"' in source
+    assert "--enroll" not in source
+    assert "credentials.json" not in source.split('echo "===== UPDATE RUNTIME ====="')[1].split(
+        'echo "===== UPDATE CONFIG ====="'
+    )[0]
+
+
+def test_runtime_update_has_backup_validation_and_heartbeat():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.sh").read_text()
+
+    assert 'tar -czf "$BACKUP"' in source
+    assert 'python" -m compileall' in source
+    assert 'python" -m pytest -q' in source
+    assert 'systemctl start "$SERVICE"' in source
+    assert "--heartbeat-once" in source
+
+
+def test_runtime_update_replaces_agent_code_not_whole_state():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.sh").read_text()
+
+    assert 'rm -rf "$RUNTIME/khan_agent"' in source
+    assert 'cp -a "$SOURCE_DIR/khan_agent" "$RUNTIME/khan_agent"' in source
+    assert 'rm -rf "$STATE"' not in source
+    assert 'rm -f "$STATE/credentials.json"' not in source
