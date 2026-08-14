@@ -122,3 +122,52 @@ def test_runtime_update_deploys_matching_runtime_components():
     assert 'cp -a "$SOURCE_DIR/khan_agent" "$RUNTIME/khan_agent"' in source
     assert 'cp -a "$SOURCE_DIR/deploy" "$RUNTIME/deploy"' in source
     assert 'cp -a "$SOURCE_DIR/tests" "$RUNTIME/tests"' in source
+
+
+def test_windows_runtime_updater_exists():
+    root = Path(__file__).resolve().parents[1]
+    updater = root / "deploy" / "apply-runtime-update.ps1"
+
+    assert updater.is_file()
+
+
+def test_windows_runtime_update_preserves_existing_node_identity():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.ps1").read_text()
+
+    assert "credentials.json" in source
+    assert "identity.json" in source
+    assert "--enroll" not in source
+
+
+def test_windows_runtime_update_uses_programdata_agent_state():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.ps1").read_text()
+
+    assert "ProgramData" in source
+    assert "KhanCloud" in source
+    assert "Agent" in source
+
+
+def test_windows_runtime_update_deploys_matching_runtime_components():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.ps1").read_text()
+
+    assert "khan_agent" in source
+    assert "deploy" in source
+    assert "tests" in source
+
+
+def test_windows_runtime_update_validates_runtime_before_restart():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.ps1").read_text()
+
+    assert "compileall" in source
+    assert "pytest" in source
+
+
+def test_windows_runtime_update_verifies_heartbeat():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "apply-runtime-update.ps1").read_text()
+
+    assert "--heartbeat-once" in source
