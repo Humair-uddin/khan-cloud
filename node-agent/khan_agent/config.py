@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import os
+import platform
+
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, HttpUrl
+
+
+def _default_state_directory() -> Path:
+    if platform.system() == "Windows":
+        program_data = Path(os.environ.get("ProgramData", r"C:\\ProgramData"))
+        return program_data / "KhanCloud" / "Agent"
+
+    return Path("/var/lib/khan-cloud-agent")
+
+
+def _default_plugin_directory() -> Path:
+    if platform.system() == "Windows":
+        return _default_state_directory() / "plugins"
+
+    return Path("/etc/khan-cloud-agent/plugins")
 
 
 class AgentConfig(BaseModel):
@@ -14,8 +32,8 @@ class AgentConfig(BaseModel):
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=3600)
     request_timeout_seconds: int = Field(default=10, ge=1, le=120)
     log_level: str = "INFO"
-    state_directory: Path = Path("/var/lib/khan-cloud-agent")
-    plugin_directory: Path = Path("/etc/khan-cloud-agent/plugins")
+    state_directory: Path = Field(default_factory=lambda: _default_state_directory())
+    plugin_directory: Path = Field(default_factory=lambda: _default_plugin_directory())
     observation_only: bool = True
 
 
