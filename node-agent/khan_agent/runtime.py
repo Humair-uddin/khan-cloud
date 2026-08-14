@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import platform
 import signal
 from dataclasses import asdict
 
@@ -32,6 +33,7 @@ class AgentRuntime:
         self.settings = settings
         self.state = StateMachine()
         self.stop_event = asyncio.Event()
+        self._event_loop: asyncio.AbstractEventLoop | None = None
         self.identity = IdentityStore(
             settings.agent.state_directory
         ).load_or_create()
@@ -209,6 +211,7 @@ class AgentRuntime:
         )
 
     async def run(self, once: bool = False) -> None:
+        self._event_loop = asyncio.get_running_loop()
         configure_logging(self.settings.agent.log_level)
         self._install_signal_handlers()
         self.state.transition(AgentState.CONFIGURED)
@@ -294,7 +297,20 @@ class AgentRuntime:
             except TimeoutError:
                 pass
 
+    def request_stop(self) -> None:
+        """Request runtime shutdown safely from any thread."""
+        loop = self._event_loop
+
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self.stop_event.set)
+            return
+
+        self.stop_event.set()
+
     def _install_signal_handlers(self) -> None:
+        if platform.system() == "Windows":
+            return
+
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:

@@ -171,3 +171,102 @@ def test_windows_runtime_update_verifies_heartbeat():
     source = (root / "deploy" / "apply-runtime-update.ps1").read_text()
 
     assert "--heartbeat-once" in source
+
+
+def test_windows_runtime_installer_exists():
+    root = Path(__file__).resolve().parents[1]
+    installer = root / "deploy" / "install-runtime.ps1"
+
+    assert installer.is_file()
+
+
+def test_windows_runtime_installer_uses_programdata_layout():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "ProgramData" in source
+    assert "KhanCloud" in source
+    assert "Agent" in source
+    assert "config.yaml" in source
+
+
+def test_windows_runtime_installer_creates_python_environment():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "-m venv" in source
+    assert "requirements.txt" in source
+    assert "pip" in source
+
+
+def test_windows_runtime_installer_preserves_existing_credentials():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "credentials.json" in source
+    assert "identity.json" in source
+    assert "Existing credentials" in source
+
+
+def test_windows_runtime_installer_enrolls_only_when_credentials_missing():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "--enroll" in source
+    assert "Test-Path $Credentials" in source
+
+
+def test_windows_runtime_installer_scrubs_one_time_enrollment_code():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "deployment_enrollment_code" in source
+    assert 'deployment_enrollment_code"] = ""' in source
+
+
+def test_windows_runtime_installer_registers_persistent_service():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "KhanCloudAgent" in source
+    assert "windows_service" in source
+    assert "--startup auto" in source
+    assert "install" in source
+    assert "start" in source
+    assert "New-Service" not in source
+
+
+def test_windows_runtime_installer_runs_validation_and_heartbeat():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "compileall" in source
+    assert "pytest" in source
+    assert "--heartbeat-once" in source
+
+
+def test_windows_runtime_installer_configures_gaming_profile():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert "gaming_host" in source
+    assert "windows_native" in source
+    assert "sunshine" in source
+
+
+def test_windows_runtime_installer_scrubs_security_enrollment_code_not_deployment_section():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    assert 'setdefault("security", {})' in source
+    assert 'security["deployment_enrollment_code"] = ""' in source
+    assert 'setdefault("deployment", {})' not in source
+
+
+def test_windows_runtime_installer_uses_real_windows_service_host():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "deploy" / "install-runtime.ps1").read_text()
+
+    # Plain python.exe is not sufficient as an SCM service executable.
+    assert "windows_service" in source
+    assert "New-Service" not in source
