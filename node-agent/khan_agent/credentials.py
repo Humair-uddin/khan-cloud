@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from khan_agent.file_security import secure_private_file
+
 
 @dataclass(frozen=True)
 class NodeCredentials:
@@ -26,6 +28,6 @@ class CredentialStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_suffix(".tmp")
         temp.write_text(json.dumps(asdict(credentials), indent=2))
-        temp.chmod(0o600)
+        secure_private_file(temp)
         temp.replace(self.path)
-        self.path.chmod(0o600)
+        secure_private_file(self.path)

@@ -7,6 +7,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from khan_agent.file_security import secure_private_file
+
 
 @dataclass(frozen=True)
 class NodeIdentity:
@@ -37,5 +39,5 @@ class IdentityStore:
             machine=platform.machine(),
         )
         self.path.write_text(json.dumps(asdict(identity), indent=2))
-        self.path.chmod(0o600)
+        secure_private_file(self.path)
         return identity
