@@ -23,16 +23,60 @@ def _run(command: list[str], timeout: float = 5.0) -> subprocess.CompletedProces
 
 
 def _cpu_model() -> str:
+    if platform.system() == "Windows":
+        powershell = (
+            shutil.which("powershell")
+            or shutil.which("powershell.exe")
+            or shutil.which("pwsh")
+            or "powershell.exe"
+        )
+        if powershell:
+            result = _run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)",
+                ]
+            )
+            if result and result.returncode == 0:
+                value = result.stdout.strip()
+                if value:
+                    return value
+
     try:
         for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
             if line.lower().startswith("model name") and ":" in line:
                 return line.split(":", 1)[1].strip()
     except OSError:
         pass
+
     return platform.processor() or platform.machine()
 
 
 def _memory_total_bytes() -> int:
+    if platform.system() == "Windows":
+        powershell = (
+            shutil.which("powershell")
+            or shutil.which("powershell.exe")
+            or shutil.which("pwsh")
+            or "powershell.exe"
+        )
+        if powershell:
+            result = _run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+                ]
+            )
+            if result and result.returncode == 0:
+                try:
+                    return int(result.stdout.strip())
+                except ValueError:
+                    pass
+
     try:
         for line in Path("/proc/meminfo").read_text(errors="replace").splitlines():
             if line.startswith("MemTotal:"):
@@ -40,6 +84,7 @@ def _memory_total_bytes() -> int:
                 return int(parts[1]) * 1024
     except (OSError, ValueError, IndexError):
         pass
+
     return 0
 
 
@@ -123,8 +168,14 @@ def _nvidia_inventory() -> dict[str, Any]:
 
 
 def _filesystem_inventory() -> dict[str, Any]:
+    path = "/"
+
+    if platform.system() == "Windows":
+        system_drive = os.environ.get("SystemDrive", "C:")
+        path = system_drive.rstrip("\\/") + "\\"
+
     try:
-        root = shutil.disk_usage("/")
+        root = shutil.disk_usage(path)
         return {
             "root_total_bytes": root.total,
             "root_used_bytes": root.used,
@@ -151,18 +202,29 @@ def collect_safe_inventory() -> dict[str, Any]:
 
 
 def _virtualization_inventory() -> dict[str, Any]:
+    if platform.system() == "Windows":
+        return {
+            "kvm_available": False,
+            "libvirt_available": False,
+            "virsh_installed": False,
+            "qemu_installed": False,
+            "libvirt_active": False,
+        }
+
     kvm_device = Path("/dev/kvm")
     kvm_available = kvm_device.exists() and os.access(kvm_device, os.R_OK | os.W_OK)
     virsh = shutil.which("virsh")
     qemu = shutil.which("qemu-system-x86_64") or shutil.which("qemu-kvm")
     libvirt_active = False
     systemctl = shutil.which("systemctl")
+
     if systemctl:
         for unit in ("libvirtd", "virtqemud"):
             result = _run([systemctl, "is-active", unit])
             if result and result.returncode == 0 and result.stdout.strip() == "active":
                 libvirt_active = True
                 break
+
     return {
         "kvm_available": bool(kvm_available),
         "libvirt_available": bool(virsh and libvirt_active),
