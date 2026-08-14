@@ -1,18 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import asyncio
 from pathlib import Path
 
-from khan_agent.config import AgentSettings
+from khan_agent.config import AgentSettings, _default_state_directory
 from khan_agent.runtime import AgentRuntime
+
+
+
+def _default_config_path() -> Path:
+    state_directory = _default_state_directory()
+
+    if platform.system() == "Windows":
+        return state_directory / "config.yaml"
+
+    return Path("/etc/khan-cloud-agent/config.yaml")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Khan Cloud Universal Agent")
     parser.add_argument(
         "--config",
-        default="/etc/khan-cloud-agent/config.yaml",
+        default=str(_default_config_path()),
         help="Path to YAML configuration file.",
     )
     action = parser.add_mutually_exclusive_group()
