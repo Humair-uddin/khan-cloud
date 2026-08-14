@@ -151,3 +151,40 @@ def test_proxmox_vm_probe_reports_missing_vm(monkeypatch):
 
     assert result["exists"] is False
     assert result["error"] == "vm_not_found"
+
+
+def test_windows_native_backend_detects_sunshine(monkeypatch):
+    def fake_which(command):
+        mapping = {
+            "sunshine": r"C:\Program Files\Sunshine\sunshine.exe",
+            "nvidia-smi": r"C:\Windows\System32\nvidia-smi.exe",
+        }
+        return mapping.get(command)
+
+    monkeypatch.setattr(gaming_backends.shutil, "which", fake_which)
+
+    result = gaming_backends.probe_gaming_backend("windows_native")
+
+    assert result["backend"] == "windows_native"
+    assert result["available"] is True
+    assert result["sunshine_installed"] is True
+    assert result["nvidia_smi_installed"] is True
+
+
+def test_windows_native_backend_is_unavailable_without_sunshine(monkeypatch):
+    monkeypatch.setattr(
+        gaming_backends.shutil,
+        "which",
+        lambda command: (
+            r"C:\Windows\System32\nvidia-smi.exe"
+            if command == "nvidia-smi"
+            else None
+        ),
+    )
+
+    result = gaming_backends.probe_gaming_backend("windows_native")
+
+    assert result["backend"] == "windows_native"
+    assert result["available"] is False
+    assert result["sunshine_installed"] is False
+    assert result["nvidia_smi_installed"] is True

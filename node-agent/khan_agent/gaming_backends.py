@@ -73,6 +73,17 @@ def probe_gaming_backend(execution_backend: str) -> dict[str, Any]:
             "wolf_installed": bool(shutil.which("wolf")),
         }
 
+    if backend == "windows_native":
+        sunshine = shutil.which("sunshine")
+        nvidia_smi = shutil.which("nvidia-smi")
+
+        return {
+            "backend": "windows_native",
+            "available": bool(sunshine),
+            "sunshine_installed": bool(sunshine),
+            "nvidia_smi_installed": bool(nvidia_smi),
+        }
+
     return {
         "backend": backend or "unknown",
         "available": False,
