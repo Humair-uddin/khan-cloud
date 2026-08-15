@@ -22,6 +22,30 @@ class DeploymentSpec(BaseModel):
     streaming_backend: str | None = None
 
 
+class GPUQualificationSpec(BaseModel):
+    required: bool = False
+    qualification_mode: Literal["allowlist"] = "allowlist"
+    approved_models: list[str] = []
+
+
+class DriverQualificationSpec(BaseModel):
+    vendor: str | None = None
+    required: bool = False
+    minimum_version: str | None = None
+    approved_branches: list[str] = []
+
+
+class WorkloadQualificationSpec(BaseModel):
+    primary: list[str] = []
+    optional_interruptible: list[str] = []
+
+
+class QualificationSpec(BaseModel):
+    gpu: GPUQualificationSpec = GPUQualificationSpec()
+    driver: DriverQualificationSpec = DriverQualificationSpec()
+    workloads: WorkloadQualificationSpec = WorkloadQualificationSpec()
+
+
 class ComponentSpec(BaseModel):
     enabled: bool = False
     source: Path | None = None
@@ -88,6 +112,7 @@ class CommandHealthCheck(BaseModel):
 class Manifest(BaseModel):
     feature_pack: FeaturePackInfo
     deployment: DeploymentSpec | None = None
+    qualification: QualificationSpec | None = None
     components: dict[str, ComponentSpec]
     operations: OperationsSpec = OperationsSpec()
     compatibility: CompatibilitySpec = CompatibilitySpec()

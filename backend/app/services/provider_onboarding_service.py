@@ -158,6 +158,100 @@ def _profile_settings_for_role(
     raise ProviderOnboardingError(f"Unsupported node role: {role}")
 
 
+def _build_installer_manifest(
+    *,
+    node_role: str,
+    target_platform: str,
+    settings: dict,
+) -> dict:
+    resource_policy = settings.get("resource_policy", {})
+
+    gpu_policy = resource_policy.get("gpu_policy", {})
+    driver_policy = resource_policy.get("driver_policy", {})
+    workload_policy = resource_policy.get("workload_policy", {})
+
+    feature_pack_ids = {
+        ("gaming_host", "windows"): "FP-GAMING-WINDOWS",
+    }
+
+    feature_pack_id = feature_pack_ids.get(
+        (node_role, target_platform),
+        (
+            "FP-"
+            + node_role.replace("_", "-").upper()
+            + "-"
+            + target_platform.upper()
+        ),
+    )
+
+    manifest = {
+        "feature_pack": {
+            "id": feature_pack_id,
+            "name": (
+                f"Khan Cloud {node_role.replace('_', ' ').title()} "
+                f"({target_platform.title()})"
+            ),
+            "version": "1.0.0",
+        },
+        "deployment": {
+            "purpose": settings.get("purpose", node_role),
+            "platform": target_platform,
+            "execution_backend": resource_policy.get(
+                "execution_backend"
+            ),
+            "streaming_backend": resource_policy.get(
+                "streaming_backend"
+            ),
+        },
+        "qualification": {
+            "gpu": {
+                "required": bool(
+                    gpu_policy.get(
+                        "required",
+                        resource_policy.get("gpu_required", False),
+                    )
+                ),
+                "qualification_mode": gpu_policy.get(
+                    "qualification_mode",
+                    "allowlist",
+                ),
+                "approved_models": list(
+                    gpu_policy.get("approved_models", [])
+                ),
+            },
+            "driver": {
+                "vendor": driver_policy.get("vendor"),
+                "required": bool(
+                    driver_policy.get("required", False)
+                ),
+                "minimum_version": driver_policy.get(
+                    "minimum_version"
+                ),
+                "approved_branches": list(
+                    driver_policy.get("approved_branches", [])
+                ),
+            },
+            "workloads": {
+                "primary": list(
+                    workload_policy.get("primary", [])
+                ),
+                "optional_interruptible": list(
+                    workload_policy.get(
+                        "optional_interruptible",
+                        [],
+                    )
+                ),
+            },
+        },
+        "compatibility": {
+            "operating_systems": [target_platform],
+        },
+        "components": {},
+    }
+
+    return manifest
+
+
 def _build_installer_run(
     *,
     enrollment_code: str,
@@ -168,6 +262,7 @@ def _build_installer_run(
     control_plane_url: str,
     verify_tls: bool,
     output: Path,
+    installer_manifest: dict | None = None,
 ) -> None:
     if not AGENT_SOURCE.is_dir():
         raise ProviderOnboardingError("Khan Cloud Node Agent source is unavailable.")
@@ -216,7 +311,18 @@ def _build_installer_run(
                 "installer_database_path": "/opt/khan-cloud/state/installer/installer.db",
             },
         }
-        (stage / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        (stage / "config.yaml").write_text(
+            yaml.safe_dump(config, sort_keys=False)
+        )
+
+        if installer_manifest is not None:
+            (stage / "installer-manifest.yaml").write_text(
+                yaml.safe_dump(
+                    installer_manifest,
+                    sort_keys=False,
+                )
+            )
+
         install = stage / "install.sh"
         install.write_text(
             "#!/usr/bin/env bash\n"
@@ -252,6 +358,7 @@ def _build_windows_installer(
     control_plane_url: str,
     verify_tls: bool,
     output: Path,
+    installer_manifest: dict | None = None,
 ) -> None:
     if not AGENT_SOURCE.is_dir():
         raise ProviderOnboardingError(
@@ -318,6 +425,14 @@ def _build_windows_installer(
         (stage / "config.yaml").write_text(
             yaml.safe_dump(config, sort_keys=False)
         )
+
+        if installer_manifest is not None:
+            (stage / "installer-manifest.yaml").write_text(
+                yaml.safe_dump(
+                    installer_manifest,
+                    sort_keys=False,
+                )
+            )
 
         install_ps1 = stage / "install.ps1"
         install_ps1.write_text(
@@ -403,6 +518,12 @@ def create_node_installer(
             else _build_installer_run
         )
 
+        installer_manifest = _build_installer_manifest(
+            node_role=payload.node_role,
+            target_platform=payload.target_platform,
+            settings=settings,
+        )
+
         installer_builder(
             enrollment_code=enrollment_code,
             node_name=node_name,
@@ -422,6 +543,7 @@ def create_node_installer(
             control_plane_url=base_url,
             verify_tls=base_url.startswith("https://"),
             output=artifact_path,
+            installer_manifest=installer_manifest,
         )
     except Exception:
         shutil.rmtree(artifact_dir, ignore_errors=True)

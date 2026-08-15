@@ -332,3 +332,117 @@ def test_gaming_host_rejects_unsupported_platform_policy():
             "gaming_host",
             target_platform="linux",
         )
+
+
+def test_gaming_policy_builds_universal_installer_manifest():
+    from app.services.provider_onboarding_service import (
+        _build_installer_manifest,
+    )
+
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    manifest = _build_installer_manifest(
+        node_role="gaming_host",
+        target_platform="windows",
+        settings=settings,
+    )
+
+    assert manifest["feature_pack"]["id"] == "FP-GAMING-WINDOWS"
+
+    assert manifest["deployment"] == {
+        "purpose": "gaming_host",
+        "platform": "windows",
+        "execution_backend": "windows_native",
+        "streaming_backend": "sunshine",
+    }
+
+    assert manifest["qualification"]["gpu"]["required"] is True
+    assert (
+        manifest["qualification"]["gpu"]["qualification_mode"]
+        == "allowlist"
+    )
+    assert (
+        "NVIDIA GeForce RTX 3080"
+        in manifest["qualification"]["gpu"]["approved_models"]
+    )
+
+    assert manifest["qualification"]["driver"]["vendor"] == "nvidia"
+    assert manifest["qualification"]["driver"]["required"] is True
+
+    assert manifest["qualification"]["workloads"]["primary"] == [
+        "gaming"
+    ]
+    assert (
+        "ai"
+        in manifest["qualification"]["workloads"][
+            "optional_interruptible"
+        ]
+    )
+
+
+def test_windows_bundle_contains_universal_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    import zipfile
+    import yaml
+
+    from app.services import provider_onboarding_service as service
+
+    fake_agent = tmp_path / "node-agent"
+    deploy = fake_agent / "deploy"
+    deploy.mkdir(parents=True)
+
+    (deploy / "install-runtime.ps1").write_text(
+        'Write-Host "Khan Cloud Windows installer"\n'
+    )
+    (fake_agent / "requirements.txt").write_text("pyyaml\n")
+
+    monkeypatch.setattr(service, "AGENT_SOURCE", fake_agent)
+
+    settings = service._profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    output = tmp_path / "gaming-host.zip"
+
+    service._build_windows_installer(
+        enrollment_code="kc-test-enrollment",
+        node_name="KC-GAMING-TEST",
+        node_role="gaming_host",
+        gaming_execution_backend="windows_native",
+        gaming_streaming_backend="sunshine",
+        control_plane_url="http://10.10.20.100:8000",
+        verify_tls=False,
+        output=output,
+        installer_manifest=service._build_installer_manifest(
+            node_role="gaming_host",
+            target_platform="windows",
+            settings=settings,
+        ),
+    )
+
+    with zipfile.ZipFile(output) as archive:
+        names = set(archive.namelist())
+
+        assert "installer-manifest.yaml" in names
+
+        manifest = yaml.safe_load(
+            archive.read(
+                "installer-manifest.yaml"
+            ).decode("utf-8")
+        )
+
+    assert manifest["deployment"]["purpose"] == "gaming_host"
+    assert manifest["deployment"]["platform"] == "windows"
+
+    assert (
+        manifest["qualification"]["gpu"]["approved_models"]
+        == ["NVIDIA GeForce RTX 3080"]
+    )

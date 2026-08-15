@@ -81,3 +81,81 @@ def test_manifest_deployment_metadata_is_optional_for_existing_feature_packs():
     })
 
     assert manifest.deployment is None
+
+
+def test_manifest_accepts_qualification_policy_snapshot():
+    from kc_installer.models import Manifest
+
+    manifest = Manifest.model_validate({
+        "feature_pack": {
+            "id": "FP-GAMING-WINDOWS",
+            "name": "Windows Gaming Host",
+            "version": "1.0.0",
+        },
+        "deployment": {
+            "purpose": "gaming_host",
+            "platform": "windows",
+            "execution_backend": "windows_native",
+            "streaming_backend": "sunshine",
+        },
+        "qualification": {
+            "gpu": {
+                "required": True,
+                "qualification_mode": "allowlist",
+                "approved_models": [
+                    "NVIDIA GeForce RTX 3080",
+                ],
+            },
+            "driver": {
+                "vendor": "nvidia",
+                "required": True,
+                "minimum_version": None,
+                "approved_branches": [],
+            },
+            "workloads": {
+                "primary": ["gaming"],
+                "optional_interruptible": [
+                    "ai",
+                    "rendering",
+                    "editing",
+                ],
+            },
+        },
+        "components": {},
+    })
+
+    assert manifest.qualification is not None
+
+    assert manifest.qualification.gpu.required is True
+    assert (
+        manifest.qualification.gpu.qualification_mode
+        == "allowlist"
+    )
+    assert (
+        "NVIDIA GeForce RTX 3080"
+        in manifest.qualification.gpu.approved_models
+    )
+
+    assert manifest.qualification.driver.vendor == "nvidia"
+    assert manifest.qualification.driver.required is True
+
+    assert manifest.qualification.workloads.primary == ["gaming"]
+    assert (
+        "ai"
+        in manifest.qualification.workloads.optional_interruptible
+    )
+
+
+def test_manifest_qualification_snapshot_is_optional_for_legacy_packs():
+    from kc_installer.models import Manifest
+
+    manifest = Manifest.model_validate({
+        "feature_pack": {
+            "id": "FP-LEGACY",
+            "name": "Legacy Pack",
+            "version": "1.0.0",
+        },
+        "components": {},
+    })
+
+    assert manifest.qualification is None
