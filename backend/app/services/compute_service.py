@@ -381,12 +381,11 @@ def claim_next_job(db: Session, node: Node) -> NodeJob | None:
     )
     if job is None:
         return None
-    job.status = "running"; job.claimed_at = datetime.now(UTC); job.attempt_count += 1
-    if job.gaming_session_id is not None:
-        from app.services.gaming_service import finish_gaming_job
-        finish_gaming_job(db, job=job, status=status, result=result, error_message=error_message)
-
-    db.commit(); db.refresh(job)
+    job.status = "running"
+    job.claimed_at = datetime.now(UTC)
+    job.attempt_count += 1
+    db.commit()
+    db.refresh(job)
     return job
 
 
@@ -427,6 +426,17 @@ def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: di
     if job.status not in {"running", "pending"}:
         return job
     job.status = status; job.result = result; job.error_message = error_message[:500]; job.completed_at = datetime.now(UTC)
+    if job.gaming_session_id is not None:
+        from app.services.gaming_service import finish_gaming_job
+
+        finish_gaming_job(
+            db,
+            job=job,
+            status=status,
+            result=result,
+            error_message=error_message,
+        )
+
     if job.vps_instance_id is not None:
         vps = db.get(VPSInstance, job.vps_instance_id)
         if vps is not None:

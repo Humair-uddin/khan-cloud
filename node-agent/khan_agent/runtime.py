@@ -158,17 +158,44 @@ class AgentRuntime:
         job = await next_job(credentials)
         if not job:
             return
-        result = execute_node_job(
-            job,
-            virtualization_execution_enabled=self.settings.virtualization.execution_enabled,
-            virtualization_storage_root=self.settings.virtualization.storage_root,
-            virtualization_base_image_path=self.settings.virtualization.base_image_path,
-            virtualization_network_name=self.settings.virtualization.network_name,
-            gaming_execution_enabled=self.settings.gaming.enabled,
-            gaming_execution_backend=self.settings.gaming.execution_backend,
-            gaming_streaming_backend=self.settings.gaming.streaming_backend,
-            gaming_state_root=self.settings.agent.state_directory / "gaming",
-        )
+        try:
+            result = execute_node_job(
+                job,
+                virtualization_execution_enabled=(
+                    self.settings.virtualization.execution_enabled
+                ),
+                virtualization_storage_root=(
+                    self.settings.virtualization.storage_root
+                ),
+                virtualization_base_image_path=(
+                    self.settings.virtualization.base_image_path
+                ),
+                virtualization_network_name=(
+                    self.settings.virtualization.network_name
+                ),
+                gaming_execution_enabled=self.settings.gaming.enabled,
+                gaming_execution_backend=(
+                    self.settings.gaming.execution_backend
+                ),
+                gaming_streaming_backend=(
+                    self.settings.gaming.streaming_backend
+                ),
+                gaming_state_root=(
+                    self.settings.agent.state_directory / "gaming"
+                ),
+            )
+        except Exception:  # defensive boundary around workload executors
+            logger.exception(
+                "Unexpected node job executor failure for job %s",
+                job.get("id"),
+            )
+            from khan_agent.virtualization import JobExecutionResult
+
+            result = JobExecutionResult(
+                "failed",
+                {},
+                "Node job execution failed unexpectedly.",
+            )
         await self.client.report_job_result(
             str(job["id"]),
             {

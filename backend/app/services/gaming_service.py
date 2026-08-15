@@ -152,24 +152,85 @@ def queue_gaming_action(db: Session, *, session: GamingSession, action: str) -> 
     return session
 
 
-def finish_gaming_job(db: Session, *, job: NodeJob, status: str, result: dict, error_message: str) -> None:
+def finish_gaming_job(
+    db: Session,
+    *,
+    job: NodeJob,
+    status: str,
+    result: dict,
+    error_message: str,
+) -> None:
+    """Reconcile an authoritative node-job result into gaming state.
+
+    Creation failures are terminal because no usable runtime was established.
+    Start/stop/delete failures are recoverable errors: the reservation is kept
+    until Khan Cloud can retry or reconcile the real host state. This avoids
+    releasing a GPU that may still have a live runtime on the provider machine.
+    """
+
     if job.gaming_session_id is None:
         return
+
     session = db.get(GamingSession, job.gaming_session_id)
     if session is None:
         return
-    reservation = db.scalar(select(GamingReservation).where(GamingReservation.gaming_session_id == session.id))
+
+    reservation = db.scalar(
+        select(GamingReservation).where(
+            GamingReservation.gaming_session_id == session.id
+        )
+    )
+
     if status == "succeeded":
+        session.failure_category = ""
+        session.failure_message = ""
+
         if job.job_type == "gaming.session.create":
-            session.status = "running"; session.runtime_id = str(result.get("runtime_id", "")); session.connection_info = dict(result.get("connection_info") or {}); session.started_at = datetime.now(UTC)
-            if reservation is not None: reservation.status = "active"
+            runtime_id = str(result.get("runtime_id") or "").strip()
+            if not runtime_id:
+                session.status = "failed"
+                session.failure_category = "invalid_node_result"
+                session.failure_message = (
+                    "Gaming runtime creation succeeded without a runtime_id."
+                )
+                release_gaming_reservation(db, session)
+                return
+
+            session.status = "running"
+            session.runtime_id = runtime_id
+            session.connection_info = dict(
+                result.get("connection_info") or {}
+            )
+            session.started_at = datetime.now(UTC)
+            if reservation is not None:
+                reservation.status = "active"
+
         elif job.job_type == "gaming.session.start":
-            session.status = "running"; session.started_at = session.started_at or datetime.now(UTC)
+            session.status = "running"
+            session.started_at = session.started_at or datetime.now(UTC)
+            session.connection_info = dict(
+                result.get("connection_info") or {}
+            )
+
         elif job.job_type == "gaming.session.stop":
             session.status = "stopped"
+            session.connection_info = {}
+
         elif job.job_type == "gaming.session.delete":
-            session.status = "terminated"; session.ended_at = datetime.now(UTC); session.connection_info = {}; release_gaming_reservation(db, session)
-    else:
-        session.status = "failed"; session.failure_category = "node_job_failed"; session.failure_message = error_message[:500]
-        if job.job_type in {"gaming.session.create", "gaming.session.delete"}:
+            session.status = "terminated"
+            session.ended_at = datetime.now(UTC)
+            session.connection_info = {}
             release_gaming_reservation(db, session)
+
+        return
+
+    session.failure_category = "node_job_failed"
+    session.failure_message = error_message[:500]
+
+    if job.job_type == "gaming.session.create":
+        session.status = "failed"
+        release_gaming_reservation(db, session)
+    else:
+        # The real machine may still own the runtime/GPU after a failed
+        # start/stop/delete operation. Keep the reservation and allow retry.
+        session.status = "error"
