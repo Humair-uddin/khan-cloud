@@ -1,3 +1,6 @@
+import pytest
+import platform
+import sys
 from pathlib import Path
 
 from khan_agent import inventory
@@ -32,6 +35,10 @@ def test_runtime_is_checkpointed_and_enrollment_is_idempotent():
     assert "mark_done completed" in source
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="Linux self-extracting .run contract",
+)
 def test_builder_creates_self_extracting_run_without_external_zip(tmp_path):
     import subprocess
     root = Path(__file__).resolve().parents[1]
@@ -41,7 +48,7 @@ def test_builder_creates_self_extracting_run_without_external_zip(tmp_path):
     output = tmp_path / "node.run"
     subprocess.run(
         [
-            "python3",
+            sys.executable,
             str(root / "deploy" / "build-universal-run.py"),
             "--bootstrap", str(root / "deploy" / "universal-bootstrap.sh"),
             "--payload", str(payload),
@@ -66,6 +73,10 @@ def test_runtime_installer_has_role_aware_gaming_service_policy():
     assert "ReadWritePaths=/var/lib/khan-cloud-agent" in source
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="systemd service template is Linux-only",
+)
 def test_default_systemd_template_retains_vps_requirements():
     root = Path(__file__).resolve().parents[1]
     source = (root / "systemd" / "khan-cloud-agent.service").read_text()

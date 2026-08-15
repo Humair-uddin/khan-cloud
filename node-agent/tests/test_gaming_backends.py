@@ -172,6 +172,7 @@ def test_windows_native_backend_detects_sunshine(monkeypatch):
 
 
 def test_windows_native_backend_is_unavailable_without_sunshine(monkeypatch):
+    monkeypatch.delenv("KHAN_SUNSHINE_EXECUTABLE", raising=False)
     monkeypatch.setattr(
         gaming_backends.shutil,
         "which",
@@ -181,6 +182,10 @@ def test_windows_native_backend_is_unavailable_without_sunshine(monkeypatch):
             else None
         ),
     )
+
+    # Keep this unit test independent from Sunshine actually installed
+    # on the machine running pytest.
+    monkeypatch.setattr(gaming_backends.platform, "system", lambda: "Linux")
 
     result = gaming_backends.probe_gaming_backend("windows_native")
 

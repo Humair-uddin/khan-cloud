@@ -1,9 +1,13 @@
+import os
 from pathlib import Path
 
 from khan_agent import file_security
 
 
 def test_posix_private_file_uses_mode_0600(monkeypatch, tmp_path):
+    if os.name == "nt":
+        return
+
     path = tmp_path / "secret.json"
     path.write_text("secret")
 

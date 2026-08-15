@@ -5,6 +5,8 @@ from khan_agent.virtualization import execute_virtualization_job
 
 
 def test_virtualization_inventory_requires_kvm_and_active_libvirt(monkeypatch):
+    monkeypatch.setattr(inventory.platform, "system", lambda: "Linux")
+
     class FakePath:
         def exists(self): return True
     monkeypatch.setattr(inventory, "Path", lambda *_: FakePath())

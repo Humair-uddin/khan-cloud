@@ -1,3 +1,5 @@
+import platform
+
 from khan_agent.credentials import CredentialStore, NodeCredentials
 
 
@@ -8,4 +10,9 @@ def test_credentials_are_persisted_with_private_permissions(tmp_path) -> None:
 
     loaded = store.load()
     assert loaded == credentials
-    assert (store.path.stat().st_mode & 0o777) == 0o600
+
+    # POSIX agents protect credentials with mode 0600.
+    # Windows agents use icacls instead; that contract is covered
+    # independently by test_file_security.py.
+    if platform.system() != "Windows":
+        assert (store.path.stat().st_mode & 0o777) == 0o600
