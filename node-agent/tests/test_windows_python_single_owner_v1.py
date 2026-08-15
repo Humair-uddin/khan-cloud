@@ -82,3 +82,12 @@ def test_bootstrap_passes_exact_interpreter():
     source = _bootstrap()
 
     assert "-PythonExecutable $Python.Path" in source
+
+
+def test_runtime_requires_bootstrap_authorization():
+    bootstrap = _bootstrap()
+    runtime = _runtime()
+
+    assert "-BootstrapAuthorized" in bootstrap
+    assert "[switch]$BootstrapAuthorized" in runtime
+    assert "Direct install-runtime.ps1 invocation is unsupported" in runtime

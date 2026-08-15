@@ -5,8 +5,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ConfigFile,
 
-    [Parameter(Mandatory = $true)]
-    [string]$PythonExecutable
+    [string]$PythonExecutable = "",
+
+    [switch]$BootstrapAuthorized
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +18,21 @@ $Credentials = Join-Path $AgentRoot "credentials.json"
 $Identity = Join-Path $AgentRoot "identity.json"
 $InstalledConfig = Join-Path $AgentRoot "config.yaml"
 $ServiceName = "KhanCloudAgent"
+
+
+# ------------------------------------------------------------
+# INTERNAL ENTRYPOINT GUARD
+# ------------------------------------------------------------
+# install-runtime.ps1 is an internal execution engine. Provider
+# bundles and operators must enter through universal-bootstrap.ps1,
+# which owns prerequisite discovery/remediation and supplies the
+# exact validated Python interpreter.
+if (-not $BootstrapAuthorized) {
+    throw (
+        "Direct install-runtime.ps1 invocation is unsupported. " +
+        "Run universal-bootstrap.ps1 instead."
+    )
+}
 
 Write-Host "===== KHAN CLOUD WINDOWS AGENT INSTALLER ====="
 

@@ -215,16 +215,12 @@ Install a supported Python 3.12+ runtime and rerun this bootstrap.
     }
 
     # Refresh machine PATH for this PowerShell process.
-    $MachinePath = [
-        Environment
-    ]::GetEnvironmentVariable(
+    $MachinePath = [Environment]::GetEnvironmentVariable(
         "Path",
         [EnvironmentVariableTarget]::Machine
     )
 
-    $UserPath = [
-        Environment
-    ]::GetEnvironmentVariable(
+    $UserPath = [Environment]::GetEnvironmentVariable(
         "Path",
         [EnvironmentVariableTarget]::User
     )
@@ -384,7 +380,8 @@ Write-Stage "INSTALL KHAN CLOUD RUNTIME"
 & $InstallRuntime `
     -SourceDir $SourceDir `
     -ConfigFile $ConfigFile `
-    -PythonExecutable $Python.Path
+    -PythonExecutable $Python.Path `
+    -BootstrapAuthorized
 
 if ($LASTEXITCODE -ne 0) {
     throw "Khan Cloud Windows runtime installation failed."
