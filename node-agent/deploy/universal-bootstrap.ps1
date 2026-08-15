@@ -124,7 +124,7 @@ function Get-CompatiblePython {
 
     foreach ($Candidate in $Candidates) {
         try {
-            if ($Candidate.Name -like "py*") {
+            if ($Candidate.Name -in @("py.exe", "py")) {
                 $Executable = $Candidate.Source
                 $VersionText = & $Executable -3 `
                     -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"

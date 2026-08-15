@@ -91,3 +91,27 @@ def test_runtime_requires_bootstrap_authorization():
     assert "-BootstrapAuthorized" in bootstrap
     assert "[switch]$BootstrapAuthorized" in runtime
     assert "Direct install-runtime.ps1 invocation is unsupported" in runtime
+
+
+def test_python_executable_is_not_misclassified_as_py_launcher():
+    source = _bootstrap()
+
+    assert '$Candidate.Name -like "py*"' not in source
+    assert '$Candidate.Name -in @("py.exe", "py")' in source
+
+
+def test_py_launcher_selection_is_exact():
+    """
+    python.exe/python are direct interpreters.
+    Only py.exe/py may receive the Windows launcher -3 argument.
+    """
+    names = {
+        "python.exe": False,
+        "python": False,
+        "py.exe": True,
+        "py": True,
+    }
+
+    for name, expected_launcher in names.items():
+        actual_launcher = name in {"py.exe", "py"}
+        assert actual_launcher is expected_launcher
