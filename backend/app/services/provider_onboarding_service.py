@@ -366,6 +366,7 @@ def _build_windows_installer(
         )
 
     windows_installer = AGENT_SOURCE / "deploy" / "install-runtime.ps1"
+    windows_bootstrap = AGENT_SOURCE / "deploy" / "universal-bootstrap.ps1"
     if not windows_installer.is_file():
         raise ProviderOnboardingError(
             "Windows runtime installer is unavailable."
@@ -438,9 +439,9 @@ def _build_windows_installer(
         install_ps1.write_text(
             '$ErrorActionPreference = "Stop"\n'
             '$Here = Split-Path -Parent $MyInvocation.MyCommand.Path\n'
-            '& "$Here\\agent\\deploy\\install-runtime.ps1" '
+            '& "$Here\\agent\\deploy\\universal-bootstrap.ps1" '
             '-SourceDir "$Here\\agent" '
-            '-ConfigFile "$Here\\config.yaml"\n'
+            '-ConfigFile "$Here\\config.yaml" -InstallerManifest "$Here\\installer-manifest.yaml"\n'
         )
 
         archive_base = Path(temp) / "windows-installer"

@@ -236,7 +236,13 @@ def test_windows_installer_builder_creates_complete_bundle(monkeypatch, tmp_path
 
         install_script = archive.read("install.ps1").decode("utf-8")
 
-        assert "install-runtime.ps1" in install_script
+        assert "universal-bootstrap.ps1" in install_script
+        assert '-SourceDir "$Here\\agent"' in install_script
+        assert '-ConfigFile "$Here\\config.yaml"' in install_script
+        assert (
+            '-InstallerManifest "$Here\\installer-manifest.yaml"'
+            in install_script
+        )
         assert "-SourceDir" in install_script
         assert "-ConfigFile" in install_script
 
@@ -446,3 +452,166 @@ def test_windows_bundle_contains_universal_manifest(
         manifest["qualification"]["gpu"]["approved_models"]
         == ["NVIDIA GeForce RTX 3080"]
     )
+
+
+def test_windows_provider_bundle_uses_universal_bootstrap_source():
+    from app.services import provider_onboarding_service as service
+
+    bootstrap = (
+        service.AGENT_SOURCE
+        / "deploy"
+        / "universal-bootstrap.ps1"
+    )
+
+    assert bootstrap.is_file()
+
+    text = bootstrap.read_text()
+
+    assert "KHAN CLOUD UNIVERSAL WINDOWS BOOTSTRAP" in text
+    assert "Install-PythonSafely" in text
+    assert "[string]$InstallerManifest" in text
+    assert 'Test-Path $InstallerManifest -PathType Leaf' in text
+    assert "installer_manifest_present" in text
+
+
+def test_windows_universal_bootstrap_is_policy_neutral():
+    from app.services import provider_onboarding_service as service
+
+    bootstrap = (
+        service.AGENT_SOURCE
+        / "deploy"
+        / "universal-bootstrap.ps1"
+    ).read_text().lower()
+
+    # Machine bootstrap is generic. Gaming policy belongs to the
+    # manifest/control-plane/installer qualification layer.
+    assert "rtx 3080" not in bootstrap
+    assert "rtx 5070" not in bootstrap
+    assert "gaming price" not in bootstrap
+
+
+def test_windows_gaming_bundle_is_self_contained_for_universal_bootstrap(
+    monkeypatch,
+    tmp_path,
+):
+    import zipfile
+    import yaml
+
+    from app.services import provider_onboarding_service as service
+
+    fake_agent = tmp_path / "node-agent"
+    deploy = fake_agent / "deploy"
+    deploy.mkdir(parents=True)
+
+    (deploy / "install-runtime.ps1").write_text(
+        'Write-Host "runtime installer"\n'
+    )
+
+    # The universal bootstrap must be included in the actual bundle.
+    source_bootstrap = (
+        service.AGENT_SOURCE
+        / "deploy"
+        / "universal-bootstrap.ps1"
+    )
+
+    (deploy / "universal-bootstrap.ps1").write_text(
+        source_bootstrap.read_text()
+    )
+
+    (fake_agent / "requirements.txt").write_text("pyyaml\n")
+    (fake_agent / "agent-marker.txt").write_text("agent payload\n")
+
+    monkeypatch.setattr(service, "AGENT_SOURCE", fake_agent)
+
+    settings = service._profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    manifest = service._build_installer_manifest(
+        node_role="gaming_host",
+        target_platform="windows",
+        settings=settings,
+    )
+
+    output = tmp_path / "gaming-universal.zip"
+
+    service._build_windows_installer(
+        enrollment_code="kc-test-enrollment",
+        node_name="KC-GAMING-UNIVERSAL",
+        node_role="gaming_host",
+        gaming_execution_backend="windows_native",
+        gaming_streaming_backend="sunshine",
+        control_plane_url="http://10.10.20.100:8000",
+        verify_tls=False,
+        output=output,
+        installer_manifest=manifest,
+    )
+
+    with zipfile.ZipFile(output) as archive:
+        names = set(archive.namelist())
+
+        assert "install.ps1" in names
+        assert "config.yaml" in names
+        assert "installer-manifest.yaml" in names
+
+        assert (
+            "agent/deploy/universal-bootstrap.ps1"
+            in names
+        )
+
+        assert (
+            "agent/deploy/install-runtime.ps1"
+            in names
+        )
+
+        wrapper = archive.read(
+            "install.ps1"
+        ).decode("utf-8")
+
+        assert "universal-bootstrap.ps1" in wrapper
+
+        assert (
+            '-InstallerManifest '
+            '"$Here\\installer-manifest.yaml"'
+            in wrapper
+        )
+
+        packaged_manifest = yaml.safe_load(
+            archive.read(
+                "installer-manifest.yaml"
+            ).decode("utf-8")
+        )
+
+        assert (
+            packaged_manifest["deployment"]["purpose"]
+            == "gaming_host"
+        )
+
+        assert (
+            packaged_manifest["deployment"]["platform"]
+            == "windows"
+        )
+
+        assert (
+            packaged_manifest["deployment"]["execution_backend"]
+            == "windows_native"
+        )
+
+        assert (
+            packaged_manifest["deployment"]["streaming_backend"]
+            == "sunshine"
+        )
+
+        assert (
+            packaged_manifest["qualification"]["gpu"]["required"]
+            is True
+        )
+
+        assert (
+            packaged_manifest["qualification"]["gpu"][
+                "qualification_mode"
+            ]
+            == "allowlist"
+        )
