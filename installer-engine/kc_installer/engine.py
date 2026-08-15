@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import platform
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -802,13 +803,80 @@ def run_health_checks(context: InstallContext) -> None:
 def restart_declared_services(context: InstallContext) -> None:
     if not context.manifest.operations.restart_services:
         return
+
+    system = platform.system()
+
     for service in context.manifest.operations.services:
         name = service.name.strip()
-        if not name or any(ch.isspace() for ch in name) or "/" in name:
-            raise InstallError(f"Invalid service name: {service.name!r}")
-        execute_command(["systemctl", "restart", name], cwd=context.target_dir)
-        execute_command(["systemctl", "is-active", "--quiet", name], cwd=context.target_dir)
-        context.state.record(context.transaction_id, "service_restart", "success", name)
+
+        # Service names are manifest-controlled but still validated before
+        # being passed to an operating-system service manager.
+        if (
+            not name
+            or any(ch.isspace() for ch in name)
+            or "/" in name
+            or "\\" in name
+            or "'" in name
+            or '"' in name
+            or ";" in name
+            or "`" in name
+            or "$" in name
+        ):
+            raise InstallError(
+                f"Invalid service name: {service.name!r}"
+            )
+
+        if system == "Windows":
+            execute_command(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    (
+                        f"Restart-Service -Name '{name}' "
+                        "-ErrorAction Stop"
+                    ),
+                ],
+                cwd=context.target_dir,
+            )
+
+            execute_command(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    (
+                        f"$s = Get-Service -Name '{name}' "
+                        "-ErrorAction Stop; "
+                        "if ($s.Status -ne 'Running') { exit 1 }"
+                    ),
+                ],
+                cwd=context.target_dir,
+            )
+
+        else:
+            execute_command(
+                ["systemctl", "restart", name],
+                cwd=context.target_dir,
+            )
+            execute_command(
+                [
+                    "systemctl",
+                    "is-active",
+                    "--quiet",
+                    name,
+                ],
+                cwd=context.target_dir,
+            )
+
+        context.state.record(
+            context.transaction_id,
+            "service_restart",
+            "success",
+            name,
+        )
 
 
 def create_report(

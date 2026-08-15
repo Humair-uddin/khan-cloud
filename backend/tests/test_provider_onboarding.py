@@ -65,7 +65,11 @@ def test_live_validation_script_uses_public_bootstrap_download():
     assert "validation_cleanup" in source
 
 def test_operator_can_generate_gaming_host_profile():
-    settings = _profile_settings_for_role(user("operator"), "gaming_host")
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
 
     assert settings["purpose"] == "gaming_host"
     assert settings["ownership_type"] == "khan_cloud"
@@ -79,7 +83,7 @@ def test_operator_can_generate_gaming_host_profile():
 
     assert settings["resource_policy"]["role"] == "gaming_host"
     assert settings["resource_policy"]["gpu_required"] is True
-    assert settings["resource_policy"]["execution_backend"] == "proxmox_vm"
+    assert settings["resource_policy"]["execution_backend"] == "windows_native"
     assert settings["resource_policy"]["streaming_backend"] == "sunshine"
     assert settings["resource_policy"]["backend_policy"] == "profile_defined"
     assert settings["resource_policy"]["auto_approve_node"] is True
@@ -114,15 +118,19 @@ def test_gaming_host_can_target_windows_native():
     assert settings["resource_policy"]["streaming_backend"] == "sunshine"
 
 
-def test_gaming_host_linux_default_remains_proxmox():
-    settings = _profile_settings_for_role(
-        user("operator"),
-        "gaming_host",
-    )
+def test_gaming_host_linux_is_rejected():
+    import pytest
+    from app.services.provider_onboarding_service import ProviderOnboardingError
 
-    assert settings["resource_policy"]["execution_backend"] == "proxmox_vm"
-    assert settings["resource_policy"]["streaming_backend"] == "sunshine"
-
+    with pytest.raises(
+        ProviderOnboardingError,
+        match="Windows",
+    ):
+        _profile_settings_for_role(
+            user("operator"),
+            "gaming_host",
+            target_platform="linux",
+        )
 
 def test_windows_installer_target_is_supported_by_schema():
     from app.schemas.provider_onboarding import NodeInstallerCreate
@@ -253,3 +261,74 @@ def test_provider_api_keeps_linux_one_command():
 
     assert "/tmp/khan-cloud-node.run" in source
     assert "chmod +x" in source
+
+
+def test_gaming_host_policy_is_windows_only():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    policy = settings["resource_policy"]
+
+    assert policy["role"] == "gaming_host"
+    assert policy["supported_platforms"] == ["windows"]
+
+
+def test_gaming_host_policy_uses_curated_gpu_allowlist():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    gpu = settings["resource_policy"]["gpu_policy"]
+
+    assert gpu["required"] is True
+    assert gpu["qualification_mode"] == "allowlist"
+    assert "NVIDIA GeForce RTX 3080" in gpu["approved_models"]
+
+
+def test_gaming_host_policy_defines_driver_qualification():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    driver = settings["resource_policy"]["driver_policy"]
+
+    assert driver["vendor"] == "nvidia"
+    assert driver["required"] is True
+    assert "approved_branches" in driver
+
+
+def test_gaming_host_policy_allows_interruptible_auxiliary_workloads():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    workloads = settings["resource_policy"]["workload_policy"]
+
+    assert workloads["primary"] == ["gaming"]
+    assert "ai" in workloads["optional_interruptible"]
+    assert "rendering" in workloads["optional_interruptible"]
+    assert "editing" in workloads["optional_interruptible"]
+
+
+def test_gaming_host_rejects_unsupported_platform_policy():
+    import pytest
+    from app.services.provider_onboarding_service import ProviderOnboardingError
+
+    with pytest.raises(
+        ProviderOnboardingError,
+        match="Windows",
+    ):
+        _profile_settings_for_role(
+            user("operator"),
+            "gaming_host",
+            target_platform="linux",
+        )

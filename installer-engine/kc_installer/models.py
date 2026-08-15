@@ -15,6 +15,13 @@ class FeaturePackInfo(BaseModel):
     signed: bool = False
 
 
+class DeploymentSpec(BaseModel):
+    purpose: str
+    platform: Literal["linux", "windows"]
+    execution_backend: str | None = None
+    streaming_backend: str | None = None
+
+
 class ComponentSpec(BaseModel):
     enabled: bool = False
     source: Path | None = None
@@ -80,6 +87,7 @@ class CommandHealthCheck(BaseModel):
 
 class Manifest(BaseModel):
     feature_pack: FeaturePackInfo
+    deployment: DeploymentSpec | None = None
     components: dict[str, ComponentSpec]
     operations: OperationsSpec = OperationsSpec()
     compatibility: CompatibilitySpec = CompatibilitySpec()

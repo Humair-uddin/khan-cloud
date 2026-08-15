@@ -82,3 +82,90 @@ def test_release_version_is_1_0():
     import tomllib
     project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
     assert project["project"]["version"] == "1.0.0"
+
+
+
+def test_windows_service_restart_and_verification(tmp_path, monkeypatch):
+    import kc_installer.engine as engine
+
+    m = manifest({
+        "operations": {
+            "restart_services": True,
+            "services": [
+                {"name": "KhanCloudAgent"},
+            ],
+        },
+    })
+    c = context(tmp_path, m)
+
+    calls = []
+
+    def fake_execute(command, *, cwd, timeout_seconds=300.0):
+        calls.append(command)
+        return CommandExecutionResult(
+            command,
+            0,
+            "",
+            "",
+        )
+
+    monkeypatch.setattr(engine, "execute_command", fake_execute)
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+
+    restart_declared_services(c)
+
+    assert calls == [
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Restart-Service -Name 'KhanCloudAgent' -ErrorAction Stop",
+        ],
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s = Get-Service -Name 'KhanCloudAgent' "
+                "-ErrorAction Stop; "
+                "if ($s.Status -ne 'Running') { exit 1 }"
+            ),
+        ],
+    ]
+
+
+def test_linux_service_restart_still_uses_systemd(tmp_path, monkeypatch):
+    import kc_installer.engine as engine
+
+    m = manifest({
+        "operations": {
+            "restart_services": True,
+            "services": [
+                {"name": "demo.service"},
+            ],
+        },
+    })
+    c = context(tmp_path, m)
+
+    calls = []
+
+    def fake_execute(command, *, cwd, timeout_seconds=300.0):
+        calls.append(command)
+        return CommandExecutionResult(
+            command,
+            0,
+            "",
+            "",
+        )
+
+    monkeypatch.setattr(engine, "execute_command", fake_execute)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    restart_declared_services(c)
+
+    assert calls == [
+        ["systemctl", "restart", "demo.service"],
+        ["systemctl", "is-active", "--quiet", "demo.service"],
+    ]

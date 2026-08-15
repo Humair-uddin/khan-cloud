@@ -88,6 +88,14 @@ def _profile_settings_for_role(
             raise ProviderOnboardingError(
                 "Khan Cloud gaming-host onboarding is restricted to Khan Cloud operators."
             )
+
+        # Gaming hosts are intentionally Windows-only until another platform
+        # has passed Khan Cloud qualification for the complete gaming stack.
+        if target_platform != "windows":
+            raise ProviderOnboardingError(
+                "Khan Cloud gaming hosts currently require Windows."
+            )
+
         return {
             "purpose": "gaming_host",
             "ownership_type": "khan_cloud",
@@ -101,12 +109,46 @@ def _profile_settings_for_role(
             },
             "resource_policy": {
                 "role": "gaming_host",
+
+                # Platform qualification is policy, not an installer guess.
+                "supported_platforms": ["windows"],
+
+                # Keep the existing compatibility field while moving hardware
+                # qualification into an explicit policy object.
                 "gpu_required": True,
-                "execution_backend": (
-                    "windows_native"
-                    if target_platform == "windows"
-                    else "proxmox_vm"
-                ),
+                "gpu_policy": {
+                    "required": True,
+                    "qualification_mode": "allowlist",
+
+                    # Start only with hardware actually qualified by Khan Cloud.
+                    # Add models after they pass the gaming-host qualification
+                    # suite rather than accepting every GPU automatically.
+                    "approved_models": [
+                        "NVIDIA GeForce RTX 3080",
+                    ],
+                },
+
+                "driver_policy": {
+                    "vendor": "nvidia",
+                    "required": True,
+
+                    # Do not invent a minimum/branch until Khan Cloud has
+                    # qualified one. The installer can still detect/report
+                    # the installed driver during preflight.
+                    "minimum_version": None,
+                    "approved_branches": [],
+                },
+
+                "workload_policy": {
+                    "primary": ["gaming"],
+                    "optional_interruptible": [
+                        "ai",
+                        "rendering",
+                        "editing",
+                    ],
+                },
+
+                "execution_backend": "windows_native",
                 "streaming_backend": "sunshine",
                 "backend_policy": "profile_defined",
                 "auto_approve_node": True,

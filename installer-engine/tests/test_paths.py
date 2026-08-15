@@ -24,3 +24,19 @@ def test_installer_paths_can_be_overridden(
     assert paths.history_dir.is_dir()
     assert paths.checkpoint_dir.is_dir()
     assert paths.lock_dir.is_dir()
+
+
+
+def test_windows_default_platform_root():
+    from kc_installer.paths import default_platform_root
+
+    assert (
+        default_platform_root("nt")
+        == r"C:\ProgramData\KhanCloud"
+    )
+
+
+def test_linux_default_platform_root():
+    from kc_installer.paths import default_platform_root
+
+    assert default_platform_root("posix") == "/opt/khan-cloud"

@@ -5,6 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def default_platform_root(platform_name: str | None = None) -> str:
+    detected_platform = platform_name or os.name
+
+    if detected_platform == "nt":
+        return r"C:\ProgramData\KhanCloud"
+
+    return "/opt/khan-cloud"
+
+
 @dataclass(frozen=True)
 class InstallerPaths:
     source_root: Path
@@ -17,7 +26,10 @@ class InstallerPaths:
     @classmethod
     def from_environment(cls) -> "InstallerPaths":
         platform_root = Path(
-            os.environ.get("KHAN_CLOUD_ROOT", "/opt/khan-cloud")
+            os.environ.get(
+                "KHAN_CLOUD_ROOT",
+                default_platform_root(),
+            )
         ).resolve()
 
         source_root = Path(

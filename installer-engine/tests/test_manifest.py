@@ -42,3 +42,42 @@ components:
     manifest = load_manifest(tmp_path)
     errors = validate_manifest_files(tmp_path, manifest)
     assert errors
+
+
+def test_manifest_accepts_deployment_target_metadata():
+    from kc_installer.models import Manifest
+
+    manifest = Manifest.model_validate({
+        "feature_pack": {
+            "id": "FP-GAMING-WINDOWS",
+            "name": "Windows Gaming Host",
+            "version": "1.0.0",
+        },
+        "deployment": {
+            "purpose": "gaming_host",
+            "platform": "windows",
+            "execution_backend": "windows_native",
+            "streaming_backend": "sunshine",
+        },
+        "components": {},
+    })
+
+    assert manifest.deployment.purpose == "gaming_host"
+    assert manifest.deployment.platform == "windows"
+    assert manifest.deployment.execution_backend == "windows_native"
+    assert manifest.deployment.streaming_backend == "sunshine"
+
+
+def test_manifest_deployment_metadata_is_optional_for_existing_feature_packs():
+    from kc_installer.models import Manifest
+
+    manifest = Manifest.model_validate({
+        "feature_pack": {
+            "id": "FP-LEGACY",
+            "name": "Legacy Pack",
+            "version": "1.0.0",
+        },
+        "components": {},
+    })
+
+    assert manifest.deployment is None
