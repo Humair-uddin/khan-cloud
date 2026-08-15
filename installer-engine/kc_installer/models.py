@@ -24,13 +24,35 @@ class DeploymentSpec(BaseModel):
 
 class GPUQualificationSpec(BaseModel):
     required: bool = False
-    qualification_mode: Literal["allowlist"] = "allowlist"
+
+    # "capability" is the production gaming policy.
+    # "allowlist" remains accepted for old signed feature packs.
+    qualification_mode: Literal["capability", "allowlist"] = "capability"
+
+    # Legacy compatibility only.
     approved_models: list[str] = []
+
+    vendor: str | None = None
+    minimum_vram_mb: int | None = None
+    required_capabilities: list[str] = []
+    require_operational_gpu: bool = False
+    quality_policy: dict = {}
 
 
 class DriverQualificationSpec(BaseModel):
     vendor: str | None = None
     required: bool = False
+
+    # Customer-owned gaming PCs preserve a functioning driver.
+    management: Literal[
+        "preserve_existing",
+        "managed",
+    ] = "preserve_existing"
+
+    require_operational: bool = False
+    automatic_upgrade: bool = False
+
+    # Legacy compatibility for existing feature packs.
     minimum_version: str | None = None
     approved_branches: list[str] = []
 

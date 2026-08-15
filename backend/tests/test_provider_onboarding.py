@@ -282,7 +282,8 @@ def test_gaming_host_policy_is_windows_only():
     assert policy["supported_platforms"] == ["windows"]
 
 
-def test_gaming_host_policy_uses_curated_gpu_allowlist():
+
+def test_gaming_host_policy_uses_capability_qualification():
     settings = _profile_settings_for_role(
         user("operator"),
         "gaming_host",
@@ -290,11 +291,42 @@ def test_gaming_host_policy_uses_curated_gpu_allowlist():
     )
 
     gpu = settings["resource_policy"]["gpu_policy"]
+    driver = settings["resource_policy"]["driver_policy"]
 
     assert gpu["required"] is True
-    assert gpu["qualification_mode"] == "allowlist"
-    assert "NVIDIA GeForce RTX 3080" in gpu["approved_models"]
+    assert gpu["qualification_mode"] == "capability"
+    assert gpu["vendor"] == "nvidia"
 
+    # Hard gaming-host admission floor.
+    assert gpu["minimum_vram_mb"] == 8192
+    assert gpu["require_operational_gpu"] is True
+    assert (
+        "hardware_video_encode"
+        in gpu["required_capabilities"]
+    )
+
+    # New GPUs do not require additions to a model allowlist.
+    assert gpu["approved_models"] == []
+
+    # Quality grading remains separate from admission.
+    assert (
+        gpu["quality_policy"]["baseline"]["minimum_vram_mb"]
+        == 8192
+    )
+    assert (
+        gpu["quality_policy"]["grading"]
+        == "capability_and_performance"
+    )
+
+    # Khan Cloud validates the provider's existing working
+    # driver rather than replacing/upgrading it automatically.
+    assert driver["vendor"] == "nvidia"
+    assert driver["required"] is True
+    assert driver["management"] == "preserve_existing"
+    assert driver["require_operational"] is True
+    assert driver["automatic_upgrade"] is False
+    assert driver["minimum_version"] is None
+    assert driver["approved_branches"] == []
 
 def test_gaming_host_policy_defines_driver_qualification():
     settings = _profile_settings_for_role(
@@ -369,11 +401,11 @@ def test_gaming_policy_builds_universal_installer_manifest():
     assert manifest["qualification"]["gpu"]["required"] is True
     assert (
         manifest["qualification"]["gpu"]["qualification_mode"]
-        == "allowlist"
+        == "capability"
     )
     assert (
-        "NVIDIA GeForce RTX 3080"
-        in manifest["qualification"]["gpu"]["approved_models"]
+        manifest["qualification"]["gpu"]["approved_models"]
+        == []
     )
 
     assert manifest["qualification"]["driver"]["vendor"] == "nvidia"
@@ -450,7 +482,7 @@ def test_windows_bundle_contains_universal_manifest(
 
     assert (
         manifest["qualification"]["gpu"]["approved_models"]
-        == ["NVIDIA GeForce RTX 3080"]
+        == []
     )
 
 
@@ -613,5 +645,68 @@ def test_windows_gaming_bundle_is_self_contained_for_universal_bootstrap(
             packaged_manifest["qualification"]["gpu"][
                 "qualification_mode"
             ]
-            == "allowlist"
+            == "capability"
         )
+
+
+def test_gaming_host_uses_capability_based_gpu_policy():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    gpu = settings["resource_policy"]["gpu_policy"]
+
+    assert gpu["required"] is True
+    assert gpu["qualification_mode"] == "capability"
+    assert gpu["minimum_vram_mb"] == 8192
+    assert gpu["require_operational_gpu"] is True
+
+    assert (
+        "hardware_video_encode"
+        in gpu["required_capabilities"]
+    )
+
+
+def test_gaming_host_preserves_working_customer_driver():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    driver = settings["resource_policy"]["driver_policy"]
+
+    assert driver["vendor"] == "nvidia"
+    assert driver["management"] == "preserve_existing"
+    assert driver["require_operational"] is True
+    assert driver["automatic_upgrade"] is False
+
+
+def test_gaming_manifest_carries_8gb_capability_policy():
+    from app.services.provider_onboarding_service import (
+        _build_installer_manifest,
+    )
+
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    manifest = _build_installer_manifest(
+        node_role="gaming_host",
+        target_platform="windows",
+        settings=settings,
+    )
+
+    gpu = manifest["qualification"]["gpu"]
+    driver = manifest["qualification"]["driver"]
+
+    assert gpu["qualification_mode"] == "capability"
+    assert gpu["minimum_vram_mb"] == 8192
+    assert gpu["require_operational_gpu"] is True
+
+    assert driver["management"] == "preserve_existing"
+    assert driver["automatic_upgrade"] is False

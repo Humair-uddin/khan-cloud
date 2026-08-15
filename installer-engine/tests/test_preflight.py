@@ -167,8 +167,8 @@ def test_detect_nvidia_gpus_parses_nvidia_smi(monkeypatch):
     class Completed:
         returncode = 0
         stdout = (
-            "NVIDIA GeForce RTX 3080, 595.95\n"
-            "NVIDIA GeForce RTX 5070 Ti, 595.95\n"
+            "NVIDIA GeForce RTX 3080, 595.95, 10240\n"
+            "NVIDIA GeForce RTX 5070 Ti, 595.95, 16303\n"
         )
         stderr = ""
 
@@ -181,6 +181,17 @@ def test_detect_nvidia_gpus_parses_nvidia_smi(monkeypatch):
     devices = preflight.detect_nvidia_gpus()
 
     assert len(devices) == 2
+
+    assert devices[0].model == "NVIDIA GeForce RTX 3080"
+    assert devices[0].driver_version == "595.95"
+    assert devices[0].memory_total_mb == 10240
+    assert devices[0].operational is True
+    assert "hardware_video_encode" in devices[0].capabilities
+
+    assert devices[1].model == "NVIDIA GeForce RTX 5070 Ti"
+    assert devices[1].driver_version == "595.95"
+    assert devices[1].memory_total_mb == 16303
+    assert devices[1].operational is True
     assert devices[0].model == "NVIDIA GeForce RTX 3080"
     assert devices[0].driver_version == "595.95"
     assert devices[1].model == "NVIDIA GeForce RTX 5070 Ti"
@@ -456,3 +467,240 @@ def test_required_driver_fails_when_driver_is_unavailable(
 
     assert driver_result.passed is False
     assert driver_result.actual == "not detected"
+
+
+def capability_gaming_manifest(
+    *,
+    minimum_vram_mb: int = 8192,
+) -> Manifest:
+    return Manifest.model_validate(
+        {
+            "feature_pack": {
+                "id": "FP-GAMING-WINDOWS-CAPABILITY",
+                "name": "Windows Gaming Host Capability Policy",
+                "version": "1.0.0",
+            },
+            "deployment": {
+                "purpose": "gaming_host",
+                "platform": "windows",
+                "execution_backend": "windows_native",
+                "streaming_backend": "sunshine",
+            },
+            "qualification": {
+                "gpu": {
+                    "required": True,
+                    "qualification_mode": "capability",
+                    "vendor": "nvidia",
+                    "minimum_vram_mb": minimum_vram_mb,
+                    "required_capabilities": [
+                        "hardware_video_encode",
+                    ],
+                    "require_operational_gpu": True,
+                    "quality_policy": {
+                        "minimum_experience_tier": "standard",
+                        "tiers": {
+                            "standard": {
+                                "minimum_vram_mb": 8192,
+                            },
+                            "premium": {
+                                "minimum_vram_mb": 10240,
+                            },
+                            "ultra": {
+                                "minimum_vram_mb": 16384,
+                            },
+                        },
+                    },
+                },
+                "driver": {
+                    "vendor": "nvidia",
+                    "required": True,
+                    "management": "preserve_existing",
+                    "require_operational": True,
+                    "automatic_upgrade": False,
+                },
+            },
+            "components": {},
+        }
+    )
+
+
+def test_capability_policy_accepts_working_10gb_rtx3080(
+    tmp_path,
+    monkeypatch,
+):
+    from kc_installer import preflight
+
+    manifest = capability_gaming_manifest()
+
+    monkeypatch.setattr(
+        preflight,
+        "detect_nvidia_gpus",
+        lambda: [
+            preflight.NvidiaGPU(
+                model="NVIDIA GeForce RTX 3080",
+                driver_version="595.95",
+                memory_total_mb=10240,
+                operational=True,
+                capabilities=("hardware_video_encode",),
+            )
+        ],
+    )
+
+    results = run_preflight(manifest, tmp_path)
+
+    gpu = next(
+        result
+        for result in results
+        if result.name == "gpu_qualification"
+    )
+
+    assert gpu.passed is True
+
+
+def test_capability_policy_rejects_gpu_below_8gb(
+    tmp_path,
+    monkeypatch,
+):
+    from kc_installer import preflight
+
+    manifest = capability_gaming_manifest()
+
+    monkeypatch.setattr(
+        preflight,
+        "detect_nvidia_gpus",
+        lambda: [
+            preflight.NvidiaGPU(
+                model="NVIDIA GeForce GTX TEST",
+                driver_version="595.95",
+                memory_total_mb=6144,
+                operational=True,
+                capabilities=("hardware_video_encode",),
+            )
+        ],
+    )
+
+    results = run_preflight(manifest, tmp_path)
+
+    gpu = next(
+        result
+        for result in results
+        if result.name == "gpu_qualification"
+    )
+
+    assert gpu.passed is False
+    assert "8192" in gpu.required
+
+
+def test_capability_policy_rejects_missing_encoder(
+    tmp_path,
+    monkeypatch,
+):
+    from kc_installer import preflight
+
+    manifest = capability_gaming_manifest()
+
+    monkeypatch.setattr(
+        preflight,
+        "detect_nvidia_gpus",
+        lambda: [
+            preflight.NvidiaGPU(
+                model="NVIDIA GeForce TEST",
+                driver_version="595.95",
+                memory_total_mb=12288,
+                operational=True,
+                capabilities=(),
+            )
+        ],
+    )
+
+    results = run_preflight(manifest, tmp_path)
+
+    gpu = next(
+        result
+        for result in results
+        if result.name == "gpu_qualification"
+    )
+
+    assert gpu.passed is False
+
+
+def test_capability_policy_rejects_non_operational_gpu(
+    tmp_path,
+    monkeypatch,
+):
+    from kc_installer import preflight
+
+    manifest = capability_gaming_manifest()
+
+    monkeypatch.setattr(
+        preflight,
+        "detect_nvidia_gpus",
+        lambda: [
+            preflight.NvidiaGPU(
+                model="NVIDIA GeForce TEST",
+                driver_version="595.95",
+                memory_total_mb=12288,
+                operational=False,
+                capabilities=("hardware_video_encode",),
+            )
+        ],
+    )
+
+    results = run_preflight(manifest, tmp_path)
+
+    gpu = next(
+        result
+        for result in results
+        if result.name == "gpu_qualification"
+    )
+
+    assert gpu.passed is False
+
+
+def test_gaming_driver_policy_preserves_working_customer_driver():
+    manifest = capability_gaming_manifest()
+
+    driver = manifest.qualification.driver
+
+    assert driver.management == "preserve_existing"
+    assert driver.require_operational is True
+    assert driver.automatic_upgrade is False
+
+
+def test_legacy_gpu_allowlist_manifest_remains_supported():
+    manifest = gaming_manifest_with_gpu(
+        ["NVIDIA GeForce RTX 3080"]
+    )
+
+    assert (
+        manifest.qualification.gpu.qualification_mode
+        == "allowlist"
+    )
+
+
+def test_experience_tier_classifier():
+    from kc_installer.preflight import (
+        classify_gpu_experience_tier,
+    )
+
+    policy = {
+        "tiers": {
+            "standard": {"minimum_vram_mb": 8192},
+            "premium": {"minimum_vram_mb": 10240},
+            "ultra": {"minimum_vram_mb": 16384},
+        }
+    }
+
+    assert classify_gpu_experience_tier(6144, policy) is None
+    assert (
+        classify_gpu_experience_tier(8192, policy)
+        == "standard"
+    )
+    assert (
+        classify_gpu_experience_tier(10240, policy)
+        == "premium"
+    )
+    assert (
+        classify_gpu_experience_tier(24576, policy)
+        == "ultra"
+    )

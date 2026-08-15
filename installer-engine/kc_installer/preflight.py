@@ -14,7 +14,9 @@ from kc_installer.models import Manifest
 class NvidiaGPU:
     model: str
     driver_version: str
-
+    memory_total_mb: int | None = None
+    operational: bool = True
+    capabilities: tuple[str, ...] = ()
 
 def _version_tuple(version: str) -> tuple[int, ...] | None:
     parts = version.strip().split(".")
@@ -62,11 +64,18 @@ def _driver_matches_branch(
 
 
 def detect_nvidia_gpus() -> list[NvidiaGPU]:
+    """Discover NVIDIA GPUs without modifying the host.
+
+    nvidia-smi is treated as the authoritative runtime probe. Successful
+    discovery proves that the installed NVIDIA stack is sufficiently
+    operational for qualification; Khan Cloud does not replace that driver
+    during normal provider onboarding.
+    """
     try:
         completed = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,driver_version",
+                "--query-gpu=name,driver_version,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             check=False,
@@ -89,20 +98,39 @@ def detect_nvidia_gpus() -> list[NvidiaGPU]:
         if not line:
             continue
 
-        parts = [part.strip() for part in line.split(",", 1)]
+        parts = [part.strip() for part in line.split(",")]
 
-        if len(parts) != 2:
+        if len(parts) != 3:
             continue
 
-        model, driver_version = parts
+        model, driver_version, memory_text = parts
 
         if not model:
             continue
+
+        try:
+            memory_total_mb = int(float(memory_text))
+        except (TypeError, ValueError):
+            memory_total_mb = None
+
+        # nvidia-smi successfully querying the device means the GPU and
+        # installed driver are operational enough for this discovery stage.
+        #
+        # NVIDIA gaming GPUs supported by the current Khan streaming stack
+        # expose hardware video encoding. This capability is represented
+        # explicitly so future discovery adapters can probe additional
+        # vendors/capabilities without changing policy semantics.
+        capabilities = (
+            "hardware_video_encode",
+        )
 
         devices.append(
             NvidiaGPU(
                 model=model,
                 driver_version=driver_version,
+                memory_total_mb=memory_total_mb,
+                operational=True,
+                capabilities=capabilities,
             )
         )
 
@@ -265,17 +293,196 @@ def run_preflight(
         gpu_policy = qualification.gpu
 
         if not nvidia_devices:
+            if gpu_policy.qualification_mode == "capability":
+                required_parts = []
+
+                if gpu_policy.vendor:
+                    required_parts.append(
+                        f"vendor={gpu_policy.vendor}"
+                    )
+
+                if gpu_policy.minimum_vram_mb is not None:
+                    required_parts.append(
+                        f"VRAM>={gpu_policy.minimum_vram_mb}MB"
+                    )
+
+                if gpu_policy.require_operational_gpu:
+                    required_parts.append("operational GPU")
+
+                required_parts.extend(
+                    f"capability={capability}"
+                    for capability
+                    in gpu_policy.required_capabilities
+                )
+
+                required = (
+                    "; ".join(required_parts)
+                    or "qualified GPU"
+                )
+            else:
+                required = (
+                    ", ".join(gpu_policy.approved_models)
+                    or "approved GPU"
+                )
+
             results.append(
                 PreflightResult(
                     name="gpu_qualification",
                     passed=False,
                     actual="not detected",
-                    required=", ".join(
-                        gpu_policy.approved_models
-                    ),
+                    required=required,
                 )
             )
+
+        elif gpu_policy.qualification_mode == "capability":
+            required_vendor = (
+                gpu_policy.vendor.strip().casefold()
+                if gpu_policy.vendor
+                else None
+            )
+
+            required_capabilities = {
+                item.strip().casefold()
+                for item in gpu_policy.required_capabilities
+                if item.strip()
+            }
+
+            def qualifies(device: NvidiaGPU) -> bool:
+                if (
+                    required_vendor == "nvidia"
+                    and "nvidia"
+                    not in device.model.casefold()
+                ):
+                    return False
+
+                if (
+                    gpu_policy.minimum_vram_mb is not None
+                    and (
+                        device.memory_total_mb is None
+                        or device.memory_total_mb
+                        < gpu_policy.minimum_vram_mb
+                    )
+                ):
+                    return False
+
+                if (
+                    gpu_policy.require_operational_gpu
+                    and not device.operational
+                ):
+                    return False
+
+                device_capabilities = {
+                    item.strip().casefold()
+                    for item in device.capabilities
+                }
+
+                if not required_capabilities.issubset(
+                    device_capabilities
+                ):
+                    return False
+
+                return True
+
+            qualified_device = next(
+                (
+                    device
+                    for device in nvidia_devices
+                    if qualifies(device)
+                ),
+                None,
+            )
+
+            required_parts = []
+
+            if gpu_policy.vendor:
+                required_parts.append(
+                    f"vendor={gpu_policy.vendor}"
+                )
+
+            if gpu_policy.minimum_vram_mb is not None:
+                required_parts.append(
+                    f"VRAM>={gpu_policy.minimum_vram_mb}MB"
+                )
+
+            if gpu_policy.require_operational_gpu:
+                required_parts.append("operational GPU")
+
+            required_parts.extend(
+                f"capability={capability}"
+                for capability
+                in gpu_policy.required_capabilities
+            )
+
+            required = (
+                "; ".join(required_parts)
+                or "capability-qualified GPU"
+            )
+
+            if qualified_device is not None:
+                actual_parts = [
+                    qualified_device.model,
+                ]
+
+                if qualified_device.memory_total_mb is not None:
+                    actual_parts.append(
+                        f"{qualified_device.memory_total_mb}MB VRAM"
+                    )
+
+                actual_parts.extend(
+                    qualified_device.capabilities
+                )
+
+                results.append(
+                    PreflightResult(
+                        name="gpu_qualification",
+                        passed=True,
+                        actual="; ".join(actual_parts),
+                        required=required,
+                    )
+                )
+            else:
+                actual_devices = []
+
+                for device in nvidia_devices:
+                    details = [device.model]
+
+                    if device.memory_total_mb is None:
+                        details.append("VRAM=unknown")
+                    else:
+                        details.append(
+                            f"VRAM={device.memory_total_mb}MB"
+                        )
+
+                    details.append(
+                        "operational=yes"
+                        if device.operational
+                        else "operational=no"
+                    )
+
+                    if device.capabilities:
+                        details.append(
+                            "capabilities="
+                            + ",".join(device.capabilities)
+                        )
+                    else:
+                        details.append("capabilities=none")
+
+                    actual_devices.append(
+                        "[" + "; ".join(details) + "]"
+                    )
+
+                results.append(
+                    PreflightResult(
+                        name="gpu_qualification",
+                        passed=False,
+                        actual=", ".join(actual_devices),
+                        required=required,
+                    )
+                )
+
         else:
+            # Legacy allowlist mode remains supported for previously
+            # generated/signed feature packs.
             approved_models = {
                 model.strip().casefold()
                 for model in gpu_policy.approved_models
@@ -291,31 +498,24 @@ def run_preflight(
                 None,
             )
 
-            if approved_device is not None:
-                results.append(
-                    PreflightResult(
-                        name="gpu_qualification",
-                        passed=True,
-                        actual=approved_device.model,
-                        required=", ".join(
-                            gpu_policy.approved_models
-                        ),
-                    )
-                )
-            else:
-                results.append(
-                    PreflightResult(
-                        name="gpu_qualification",
-                        passed=False,
-                        actual=", ".join(
+            results.append(
+                PreflightResult(
+                    name="gpu_qualification",
+                    passed=approved_device is not None,
+                    actual=(
+                        approved_device.model
+                        if approved_device is not None
+                        else ", ".join(
                             device.model
                             for device in nvidia_devices
-                        ),
-                        required=", ".join(
-                            gpu_policy.approved_models
-                        ),
-                    )
+                        )
+                    ),
+                    required=(
+                        ", ".join(gpu_policy.approved_models)
+                        or "approved GPU"
+                    ),
                 )
+            )
 
     # --------------------------------------------------------
     # NVIDIA driver qualification
@@ -566,3 +766,35 @@ def evaluate_remediation_policy(
         )
 
     return decisions
+
+
+def classify_gpu_experience_tier(
+    memory_total_mb: int,
+    quality_policy: dict,
+) -> str | None:
+    """Return the highest VRAM-backed experience tier satisfied.
+
+    VRAM is only one qualification input. Calling this function does
+    not itself qualify a GPU; operational/capability checks happen
+    separately.
+    """
+    tiers = quality_policy.get("tiers", {})
+
+    ranked = []
+
+    for name, definition in tiers.items():
+        minimum = definition.get("minimum_vram_mb")
+
+        if isinstance(minimum, int):
+            ranked.append((minimum, name))
+
+    eligible = [
+        (minimum, name)
+        for minimum, name in ranked
+        if memory_total_mb >= minimum
+    ]
+
+    if not eligible:
+        return None
+
+    return max(eligible, key=lambda item: item[0])[1]

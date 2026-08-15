@@ -118,23 +118,49 @@ def _profile_settings_for_role(
                 "gpu_required": True,
                 "gpu_policy": {
                     "required": True,
-                    "qualification_mode": "allowlist",
 
-                    # Start only with hardware actually qualified by Khan Cloud.
-                    # Add models after they pass the gaming-host qualification
-                    # suite rather than accepting every GPU automatically.
-                    "approved_models": [
-                        "NVIDIA GeForce RTX 3080",
+                    # Gaming admission is based on capabilities rather than
+                    # maintaining an ever-growing GPU model allowlist.
+                    "qualification_mode": "capability",
+                    "vendor": "nvidia",
+
+                    # 8 GiB is Khan Cloud's minimum gaming-host quality floor.
+                    "minimum_vram_mb": 8192,
+
+                    # A gaming host must expose a functioning GPU and the
+                    # hardware video-encoding capability required by the
+                    # streaming stack.
+                    "require_operational_gpu": True,
+                    "required_capabilities": [
+                        "hardware_video_encode",
                     ],
+
+                    # Commercial tiers can evolve independently from the
+                    # hard admission floor. Do not infer tier from VRAM alone.
+                    "quality_policy": {
+                        "baseline": {
+                            "minimum_vram_mb": 8192,
+                        },
+                        "grading": "capability_and_performance",
+                    },
+
+                    # Retained only for backward-compatible manifests.
+                    "approved_models": [],
                 },
 
                 "driver_policy": {
                     "vendor": "nvidia",
                     "required": True,
 
-                    # Do not invent a minimum/branch until Khan Cloud has
-                    # qualified one. The installer can still detect/report
-                    # the installed driver during preflight.
+                    # Customer/provider machines already have a working GPU
+                    # driver. Khan Cloud validates it but does not replace or
+                    # upgrade it during normal onboarding.
+                    "management": "preserve_existing",
+                    "require_operational": True,
+                    "automatic_upgrade": False,
+
+                    # Legacy policy fields remain representable but are not
+                    # used to force an arbitrary version during onboarding.
                     "minimum_version": None,
                     "approved_branches": [],
                 },
@@ -218,11 +244,43 @@ def _build_installer_manifest(
                 "approved_models": list(
                     gpu_policy.get("approved_models", [])
                 ),
+                "vendor": gpu_policy.get("vendor"),
+                "minimum_vram_mb": gpu_policy.get(
+                    "minimum_vram_mb"
+                ),
+                "required_capabilities": list(
+                    gpu_policy.get("required_capabilities", [])
+                ),
+                "require_operational_gpu": bool(
+                    gpu_policy.get(
+                        "require_operational_gpu",
+                        False,
+                    )
+                ),
+                "quality_policy": dict(
+                    gpu_policy.get("quality_policy", {})
+                ),
             },
             "driver": {
                 "vendor": driver_policy.get("vendor"),
                 "required": bool(
                     driver_policy.get("required", False)
+                ),
+                "management": driver_policy.get(
+                    "management",
+                    "preserve_existing",
+                ),
+                "require_operational": bool(
+                    driver_policy.get(
+                        "require_operational",
+                        False,
+                    )
+                ),
+                "automatic_upgrade": bool(
+                    driver_policy.get(
+                        "automatic_upgrade",
+                        False,
+                    )
                 ),
                 "minimum_version": driver_policy.get(
                     "minimum_version"
