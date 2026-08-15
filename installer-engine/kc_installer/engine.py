@@ -246,17 +246,43 @@ def execute_remediation(
             )
         )
 
+    # --------------------------------------------------------
+    # REMEDIATION V2 — execution-time preservation guard
+    # --------------------------------------------------------
+    #
+    # Planning and execution can be separated by time. Another
+    # administrator, bootstrap process, package manager, reboot,
+    # or recovery operation may satisfy the dependency after the
+    # plan was persisted.
+    #
+    # Never mutate a dependency that is already operational.
+    if shutil.which(dependency.command) is not None:
+        raise RemediationExecutionError(
+            (
+                f"Remediation refused for {decision.dependency_name!r}: "
+                f"dependency is already available "
+                f"({dependency.command}); preservation policy forbids "
+                "modifying working provider software."
+            )
+        )
+
+    if decision.mutation_policy != "missing_only":
+        raise RemediationExecutionError(
+            (
+                "Unsupported remediation mutation policy: "
+                f"{decision.mutation_policy}"
+            )
+        )
+
     command_result = execute_command(
         list(decision.command),
         cwd=cwd,
         timeout_seconds=timeout_seconds,
     )
 
-    import shutil as _shutil
+    verified = shutil.which(dependency.command) is not None
 
-    verified = _shutil.which(dependency.command) is not None
-
-    if not verified:
+    if decision.verify_after_execution and not verified:
         raise RemediationExecutionError(
             (
                 f"Remediation command succeeded but dependency "

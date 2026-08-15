@@ -100,6 +100,18 @@ class RemediationAction(BaseModel):
     command: list[str] = Field(min_length=1)
     description: str = ""
 
+    # Remediation V2 safety contract.
+    #
+    # "missing_only" means Khan Cloud may execute this action only
+    # when the declared dependency is absent at execution time.
+    # This prevents an old remediation plan from modifying software
+    # that became available after planning.
+    mutation_policy: Literal["missing_only"] = "missing_only"
+
+    # Automatic remediation must prove the dependency became usable
+    # after mutation. This remains explicit in the manifest contract.
+    verify_after_execution: bool = True
+
 
 class DependencySpec(BaseModel):
     name: str

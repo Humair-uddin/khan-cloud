@@ -711,6 +711,8 @@ class RemediationPolicyDecision:
     description: str
     eligible: bool
     reason: str
+    mutation_policy: str = "missing_only"
+    verify_after_execution: bool = True
 
 
 def evaluate_remediation_policy(
@@ -762,6 +764,8 @@ def evaluate_remediation_policy(
                 description=action.description,
                 eligible=eligible,
                 reason=reason,
+                mutation_policy="missing_only",
+                verify_after_execution=True,
             )
         )
 

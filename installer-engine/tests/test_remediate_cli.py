@@ -322,11 +322,22 @@ def test_remediate_cli_preserves_retry_history(
     monkeypatch,
     capsys,
 ) -> None:
+    """
+    Remediation V2 preservation contract:
+
+    First execution may install a missing dependency.
+
+    Once that dependency is operational, a later retry must NOT execute
+    the mutation again. The refused retry must still be persisted in the
+    audit history so operators can see exactly what happened.
+    """
+
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
 
     dependency = "kc-retry-dependency"
     executable = bin_dir / dependency
+    execution_counter = tmp_path / "execution-count.txt"
 
     monkeypatch.setenv(
         "PATH",
@@ -336,6 +347,9 @@ def test_remediate_cli_preserves_retry_history(
     script = (
         "from pathlib import Path; import os; "
         f"p=Path({str(executable)!r}); "
+        f"counter=Path({str(execution_counter)!r}); "
+        "count=int(counter.read_text()) if counter.exists() else 0; "
+        "counter.write_text(str(count + 1)); "
         "p.write_text('#!/bin/sh\\nexit 0\\n'); "
         "os.chmod(p, 0o755)"
     )
@@ -354,20 +368,74 @@ def test_remediate_cli_preserves_retry_history(
         policy_reason="eligible",
     )
 
-    run_cli(monkeypatch, paths, transaction_id)
-    capsys.readouterr()
+    # --------------------------------------------------------
+    # First attempt: dependency is absent, so remediation runs.
+    # --------------------------------------------------------
 
     run_cli(monkeypatch, paths, transaction_id)
-    capsys.readouterr()
 
-    attempts = state.remediation_attempts(transaction_id)
+    first_output = capsys.readouterr().out
 
-    assert [item["attempt_number"] for item in attempts] == [
-        1,
-        2,
+    assert '"verified": true' in first_output.lower()
+    assert executable.exists()
+    assert execution_counter.read_text() == "1"
+
+    first_attempts = [
+        item
+        for item in state.remediation_attempts(transaction_id)
+        if item["position"] == 0
     ]
 
-    assert [item["status"] for item in attempts] == [
-        "success",
-        "success",
+    assert len(first_attempts) == 1
+    assert first_attempts[0]["attempt_number"] == 1
+    assert first_attempts[0]["status"] == "success"
+    assert first_attempts[0]["verified"] == 1
+
+    # --------------------------------------------------------
+    # Second attempt:
+    #
+    # The dependency is now operational. Preservation policy
+    # must refuse another mutation instead of reinstalling,
+    # upgrading, replacing, or otherwise touching it.
+    # --------------------------------------------------------
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_cli(monkeypatch, paths, transaction_id)
+
+    assert exc_info.value.code == 1
+
+    second_output = capsys.readouterr().out.lower()
+
+    assert '"status": "blocked"' in second_output
+    assert '"verified": false' in second_output
+    assert "already available" in second_output
+    assert "preservation policy" in second_output
+
+    # Critical invariant: remediation command executed only once.
+    assert execution_counter.read_text() == "1"
+
+    attempts = [
+        item
+        for item in state.remediation_attempts(transaction_id)
+        if item["position"] == 0
     ]
+
+    assert len(attempts) == 2
+
+    assert attempts[0]["attempt_number"] == 1
+    assert attempts[0]["status"] == "success"
+    assert attempts[0]["verified"] == 1
+
+    assert attempts[1]["attempt_number"] == 2
+    assert attempts[1]["status"] == "blocked"
+    assert attempts[1]["verified"] == 0
+    assert attempts[1]["return_code"] is None
+    assert attempts[1]["timed_out"] == 0
+
+    error = attempts[1]["error_message"].lower()
+
+    assert "already available" in error
+    assert "preservation policy" in error
+
+    # The operational dependency remains intact.
+    assert executable.exists()
