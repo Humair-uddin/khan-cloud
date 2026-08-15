@@ -39,11 +39,26 @@ def generate_node_installer(
         raise HTTPException(status_code=500, detail="Installer generation failed.") from exc
 
     download_url = str(request.url_for("download_node_installer", token=token))
-    quoted = download_url.replace("'", "%27")
-    one_command = (
-        f"curl -fL '{quoted}' -o /tmp/khan-cloud-node.run && "
-        "chmod +x /tmp/khan-cloud-node.run && sudo /tmp/khan-cloud-node.run"
-    )
+
+    if payload.target_platform == "windows":
+        quoted = download_url.replace("'", "''")
+        one_command = (
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            f"\"Invoke-WebRequest -Uri '{quoted}' "
+            "-OutFile '$env:TEMP\\khan-cloud-node.zip'; "
+            "Remove-Item '$env:TEMP\\khan-cloud-node' "
+            "-Recurse -Force -ErrorAction SilentlyContinue; "
+            "Expand-Archive '$env:TEMP\\khan-cloud-node.zip' "
+            "-DestinationPath '$env:TEMP\\khan-cloud-node' -Force; "
+            "& '$env:TEMP\\khan-cloud-node\\install.ps1'\""
+        )
+    else:
+        quoted = download_url.replace("'", "%27")
+        one_command = (
+            f"curl -fL '{quoted}' -o /tmp/khan-cloud-node.run && "
+            "chmod +x /tmp/khan-cloud-node.run && "
+            "sudo /tmp/khan-cloud-node.run"
+        )
     return NodeInstallerCreated(
         artifact_id=artifact.id,
         deployment_profile_id=artifact.deployment_profile_id,

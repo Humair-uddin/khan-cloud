@@ -231,3 +231,25 @@ def test_windows_installer_builder_creates_complete_bundle(monkeypatch, tmp_path
         assert "install-runtime.ps1" in install_script
         assert "-SourceDir" in install_script
         assert "-ConfigFile" in install_script
+
+
+def test_provider_api_builds_windows_one_command():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "app" / "api" / "v1" / "provider.py").read_text()
+
+    assert 'payload.target_platform == "windows"' in source
+    assert "Expand-Archive" in source
+    assert "install.ps1" in source
+    assert "powershell" in source.lower()
+
+
+def test_provider_api_keeps_linux_one_command():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "app" / "api" / "v1" / "provider.py").read_text()
+
+    assert "/tmp/khan-cloud-node.run" in source
+    assert "chmod +x" in source
