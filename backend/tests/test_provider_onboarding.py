@@ -100,3 +100,134 @@ def test_provider_installer_propagates_node_role():
     assert "node_role: str" in source
     assert '"node_role": node_role' in source
     assert "node_role=payload.node_role" in source
+
+
+def test_gaming_host_can_target_windows_native():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+        target_platform="windows",
+    )
+
+    assert settings["purpose"] == "gaming_host"
+    assert settings["resource_policy"]["execution_backend"] == "windows_native"
+    assert settings["resource_policy"]["streaming_backend"] == "sunshine"
+
+
+def test_gaming_host_linux_default_remains_proxmox():
+    settings = _profile_settings_for_role(
+        user("operator"),
+        "gaming_host",
+    )
+
+    assert settings["resource_policy"]["execution_backend"] == "proxmox_vm"
+    assert settings["resource_policy"]["streaming_backend"] == "sunshine"
+
+
+def test_windows_installer_target_is_supported_by_schema():
+    from app.schemas.provider_onboarding import NodeInstallerCreate
+
+    payload = NodeInstallerCreate(
+        node_role="gaming_host",
+        target_platform="windows",
+    )
+
+    assert payload.target_platform == "windows"
+
+
+def test_linux_installer_target_remains_default():
+    from app.schemas.provider_onboarding import NodeInstallerCreate
+
+    payload = NodeInstallerCreate(
+        node_role="gaming_host",
+    )
+
+    assert payload.target_platform == "linux"
+
+
+def test_provider_service_contains_windows_installer_builder():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (
+        root / "app" / "services" / "provider_onboarding_service.py"
+    ).read_text()
+
+    assert "_build_windows_installer" in source
+    assert "install-runtime.ps1" in source
+    assert "windows_native" in source
+
+
+def test_windows_installer_builder_creates_complete_bundle(monkeypatch, tmp_path):
+    import zipfile
+    import yaml
+
+    from app.services import provider_onboarding_service as service
+
+    fake_agent = tmp_path / "node-agent"
+    deploy = fake_agent / "deploy"
+    deploy.mkdir(parents=True)
+
+    (deploy / "install-runtime.ps1").write_text(
+        'Write-Host "Khan Cloud Windows installer"\n'
+    )
+    (fake_agent / "requirements.txt").write_text("pyyaml\n")
+    (fake_agent / "agent-marker.txt").write_text("agent payload\n")
+
+    monkeypatch.setattr(service, "AGENT_SOURCE", fake_agent)
+
+    output = tmp_path / "khan-cloud-windows.zip"
+
+    service._build_windows_installer(
+        enrollment_code="kc-test-enrollment",
+        node_name="KC-WINDOWS-TEST",
+        node_role="gaming_host",
+        gaming_execution_backend="windows_native",
+        gaming_streaming_backend="sunshine",
+        control_plane_url="http://10.10.20.100:8000",
+        verify_tls=False,
+        output=output,
+    )
+
+    assert output.is_file()
+
+    with zipfile.ZipFile(output) as archive:
+        names = set(archive.namelist())
+
+        assert "install.ps1" in names
+        assert "config.yaml" in names
+        assert "agent/deploy/install-runtime.ps1" in names
+        assert "agent/agent-marker.txt" in names
+
+        config = yaml.safe_load(
+            archive.read("config.yaml").decode("utf-8")
+        )
+
+        assert config["agent"]["node_name"] == "KC-WINDOWS-TEST"
+        assert config["agent"]["node_role"] == "gaming_host"
+        assert (
+            config["agent"]["control_plane_url"]
+            == "http://10.10.20.100:8000"
+        )
+
+        assert (
+            config["security"]["deployment_enrollment_code"]
+            == "kc-test-enrollment"
+        )
+        assert config["security"]["verify_tls"] is False
+
+        assert config["gaming"]["enabled"] is True
+        assert (
+            config["gaming"]["execution_backend"]
+            == "windows_native"
+        )
+        assert (
+            config["gaming"]["streaming_backend"]
+            == "sunshine"
+        )
+
+        install_script = archive.read("install.ps1").decode("utf-8")
+
+        assert "install-runtime.ps1" in install_script
+        assert "-SourceDir" in install_script
+        assert "-ConfigFile" in install_script

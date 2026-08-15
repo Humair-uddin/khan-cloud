@@ -36,7 +36,12 @@ def hash_download_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _profile_settings_for_role(user: User, role: str) -> dict:
+def _profile_settings_for_role(
+    user: User,
+    role: str,
+    *,
+    target_platform: str = "linux",
+) -> dict:
     staff = bool(user.is_superuser or STAFF_ROLES.intersection(get_role_names(user)))
     if role == "vps_host":
         if not staff:
@@ -97,7 +102,11 @@ def _profile_settings_for_role(user: User, role: str) -> dict:
             "resource_policy": {
                 "role": "gaming_host",
                 "gpu_required": True,
-                "execution_backend": "proxmox_vm",
+                "execution_backend": (
+                    "windows_native"
+                    if target_platform == "windows"
+                    else "proxmox_vm"
+                ),
                 "streaming_backend": "sunshine",
                 "backend_policy": "profile_defined",
                 "auto_approve_node": True,
@@ -189,6 +198,112 @@ def _build_installer_run(
     output.chmod(0o600)
 
 
+
+
+def _build_windows_installer(
+    *,
+    enrollment_code: str,
+    node_name: str,
+    node_role: str,
+    gaming_execution_backend: str,
+    gaming_streaming_backend: str,
+    control_plane_url: str,
+    verify_tls: bool,
+    output: Path,
+) -> None:
+    if not AGENT_SOURCE.is_dir():
+        raise ProviderOnboardingError(
+            "Khan Cloud Node Agent source is unavailable."
+        )
+
+    windows_installer = AGENT_SOURCE / "deploy" / "install-runtime.ps1"
+    if not windows_installer.is_file():
+        raise ProviderOnboardingError(
+            "Windows runtime installer is unavailable."
+        )
+
+    with tempfile.TemporaryDirectory(
+        prefix="khan-cloud-provider-windows-"
+    ) as temp:
+        stage = Path(temp) / "payload"
+        agent = stage / "agent"
+
+        shutil.copytree(
+            AGENT_SOURCE,
+            agent,
+            ignore=shutil.ignore_patterns(
+                ".venv",
+                ".pytest_cache",
+                "__pycache__",
+                "*.pyc",
+                "*.pyo",
+            ),
+        )
+
+        config = {
+            "agent": {
+                "node_name": node_name,
+                "node_role": node_role,
+                "control_plane_url": control_plane_url,
+                "heartbeat_interval_seconds": 30,
+                "request_timeout_seconds": 15,
+                "log_level": "INFO",
+                "observation_only": True,
+            },
+            "security": {
+                "deployment_enrollment_code": enrollment_code,
+                "enrollment_token": "",
+                "verify_tls": verify_tls,
+            },
+            "enrollment": {
+                "endpoint": "/api/v1/nodes/register",
+            },
+            "gaming": {
+                "enabled": node_role == "gaming_host",
+                "execution_backend": gaming_execution_backend,
+                "streaming_backend": gaming_streaming_backend,
+            },
+            "heartbeat": {
+                "enabled": True,
+                "endpoint": "/api/v1/nodes/heartbeat",
+            },
+            "telemetry": {
+                "enabled": False,
+                "endpoint": "/api/v1/nodes/installation-events",
+            },
+        }
+
+        (stage / "config.yaml").write_text(
+            yaml.safe_dump(config, sort_keys=False)
+        )
+
+        install_ps1 = stage / "install.ps1"
+        install_ps1.write_text(
+            '$ErrorActionPreference = "Stop"\n'
+            '$Here = Split-Path -Parent $MyInvocation.MyCommand.Path\n'
+            '& "$Here\\agent\\deploy\\install-runtime.ps1" '
+            '-SourceDir "$Here\\agent" '
+            '-ConfigFile "$Here\\config.yaml"\n'
+        )
+
+        archive_base = Path(temp) / "windows-installer"
+
+        shutil.make_archive(
+            str(archive_base),
+            "zip",
+            root_dir=stage,
+        )
+
+        generated = archive_base.with_suffix(".zip")
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        if output.exists():
+            output.unlink()
+
+        shutil.move(str(generated), str(output))
+
+
 def create_node_installer(
     db: Session,
     *,
@@ -208,7 +323,11 @@ def create_node_installer(
         raise ProviderOnboardingError("Organization access denied.")
 
     node_name = payload.node_name or ("KC-NODE-" + secrets.token_hex(3).upper())
-    settings = _profile_settings_for_role(actor, payload.node_role)
+    settings = _profile_settings_for_role(
+        actor,
+        payload.node_role,
+        target_platform=payload.target_platform,
+    )
     base_url = control_plane_url.rstrip("/")
     enrollment_expires_at = datetime.now(UTC) + timedelta(hours=24)
     profile, enrollment_code = create_profile(
@@ -225,22 +344,38 @@ def create_node_installer(
     )
 
     artifact_id = secrets.token_hex(16)
-    filename = f"khan-cloud-node-{node_name.lower()}.run"
+
+    if payload.target_platform == "windows":
+        filename = f"khan-cloud-node-{node_name.lower()}-windows.zip"
+    else:
+        filename = f"khan-cloud-node-{node_name.lower()}.run"
     artifact_dir = STATE_ROOT / artifact_id
     artifact_dir.mkdir(parents=True, exist_ok=False)
     artifact_dir.chmod(0o700)
     artifact_path = artifact_dir / filename
 
     try:
-        _build_installer_run(
+        installer_builder = (
+            _build_windows_installer
+            if payload.target_platform == "windows"
+            else _build_installer_run
+        )
+
+        installer_builder(
             enrollment_code=enrollment_code,
             node_name=node_name,
             node_role=payload.node_role,
             gaming_execution_backend=str(
-                settings.get("resource_policy", {}).get("execution_backend", "none")
+                settings.get("resource_policy", {}).get(
+                    "execution_backend",
+                    "none",
+                )
             ),
             gaming_streaming_backend=str(
-                settings.get("resource_policy", {}).get("streaming_backend", "none")
+                settings.get("resource_policy", {}).get(
+                    "streaming_backend",
+                    "none",
+                )
             ),
             control_plane_url=base_url,
             verify_tls=base_url.startswith("https://"),

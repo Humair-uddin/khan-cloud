@@ -9,6 +9,7 @@ class NodeInstallerCreate(BaseModel):
     organization_id: UUID | None = None
     node_name: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     node_role: Literal["vps_host", "gpu_host", "private_compute", "gaming_host"]
+    target_platform: Literal["linux", "windows"] = "linux"
     download_expires_minutes: int = Field(default=60, ge=10, le=1440)
 
 
