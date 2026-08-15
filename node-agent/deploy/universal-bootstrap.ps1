@@ -383,7 +383,8 @@ Write-Stage "INSTALL KHAN CLOUD RUNTIME"
 
 & $InstallRuntime `
     -SourceDir $SourceDir `
-    -ConfigFile $ConfigFile
+    -ConfigFile $ConfigFile `
+    -PythonExecutable $Python.Path
 
 if ($LASTEXITCODE -ne 0) {
     throw "Khan Cloud Windows runtime installation failed."

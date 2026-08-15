@@ -3,7 +3,10 @@ param(
     [string]$SourceDir,
 
     [Parameter(Mandatory = $true)]
-    [string]$ConfigFile
+    [string]$ConfigFile,
+
+    [Parameter(Mandatory = $true)]
+    [string]$PythonExecutable
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,22 +50,21 @@ if (-not (Test-Path $Requirements -PathType Leaf)) {
     throw "requirements.txt is missing: $Requirements"
 }
 
-$PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
-
-if (-not $PythonCommand) {
-    $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+# Python discovery and remediation belong exclusively to
+# universal-bootstrap.ps1. The runtime installer receives the exact
+# interpreter selected and validated by that bootstrap and must never
+# rediscover Python from PATH.
+if (-not (Test-Path $PythonExecutable -PathType Leaf)) {
+    throw "Validated Python executable is unavailable: $PythonExecutable"
 }
 
-if (-not $PythonCommand) {
-    throw "Python 3.12 or newer is required."
-}
+$SystemPython = $PythonExecutable
 
-$SystemPython = $PythonCommand.Source
-
-$PythonVersion = & $SystemPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+$PythonVersion = & $SystemPython `
+    -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 
 if ($LASTEXITCODE -ne 0) {
-    throw "Unable to determine Python version."
+    throw "Validated Python executable failed: $SystemPython"
 }
 
 $VersionParts = $PythonVersion.Trim().Split(".")
