@@ -43,6 +43,8 @@ def test_generated_windows_installer_preparses_internal_powershell(tmp_path):
     assert "install-runtime.ps1" in wrapper
     assert "apply-runtime-update.ps1" in wrapper
     assert "PowerShell parser validation failed" in wrapper
+    assert "$Script:" not in wrapper
+    assert "${Script}: $Details" in wrapper
     assert '& $Bootstrap ' in wrapper
     assert '-InstallerManifest "$Here\\installer-manifest.yaml"' in wrapper
 

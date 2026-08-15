@@ -518,7 +518,7 @@ def _build_windows_installer(
             '        $Details = ($Errors | ForEach-Object {\n'
             '            "line $($_.Extent.StartLineNumber): $($_.Message)"\n'
             '        }) -join "; "\n'
-            '        throw "PowerShell parser validation failed for $Script: $Details"\n'
+            '        throw "PowerShell parser validation failed for ${Script}: $Details"\n'
             '    }\n'
             '}\n'
             '& $Bootstrap -SourceDir "$Here\\agent" '
