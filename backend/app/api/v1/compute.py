@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.rbac_dependencies import require_permission
 from app.db.database import get_db
 from app.models.user import User
-from app.schemas.compute import ComputeHostRead, VPSAction, VPSCreate, VPSImageRead, VPSRead
+from app.schemas.compute import (ComputeHostRead, GamingSessionAction, GamingSessionCreate, GamingSessionRead, VPSAction, VPSCreate, VPSImageRead, VPSRead)
 from app.services.compute_service import (
     ComputeError, create_vps, get_visible_vps, list_compute_hosts, list_vps_images, queue_vps_action, visible_vps,
 )
@@ -71,5 +71,55 @@ def vps_action(
     try:
         vps = get_visible_vps(db, user, vps_id)
         return queue_vps_action(db, vps=vps, action=payload.action, actor=user)
+    except ComputeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/gaming/sessions", response_model=list[GamingSessionRead])
+def list_gaming_sessions(
+    user: User = Depends(require_permission("gaming.read")),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_service import visible_gaming_sessions
+    return visible_gaming_sessions(db, user)
+
+
+@router.post("/gaming/sessions", response_model=GamingSessionRead, status_code=status.HTTP_201_CREATED)
+def provision_gaming_session(
+    payload: GamingSessionCreate,
+    user: User = Depends(require_permission("gaming.manage")),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_service import create_gaming_session
+    try:
+        return create_gaming_session(db, payload=payload, actor=user)
+    except ComputeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/gaming/sessions/{session_id}", response_model=GamingSessionRead)
+def get_gaming_session(
+    session_id: UUID,
+    user: User = Depends(require_permission("gaming.read")),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_service import get_visible_gaming_session
+    try:
+        return get_visible_gaming_session(db, user, session_id)
+    except ComputeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/gaming/sessions/{session_id}/actions", response_model=GamingSessionRead)
+def gaming_session_action(
+    session_id: UUID,
+    payload: GamingSessionAction,
+    user: User = Depends(require_permission("gaming.manage")),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_service import get_visible_gaming_session, queue_gaming_action
+    try:
+        item = get_visible_gaming_session(db, user, session_id)
+        return queue_gaming_action(db, session=item, action=payload.action)
     except ComputeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -382,6 +382,10 @@ def claim_next_job(db: Session, node: Node) -> NodeJob | None:
     if job is None:
         return None
     job.status = "running"; job.claimed_at = datetime.now(UTC); job.attempt_count += 1
+    if job.gaming_session_id is not None:
+        from app.services.gaming_service import finish_gaming_job
+        finish_gaming_job(db, job=job, status=status, result=result, error_message=error_message)
+
     db.commit(); db.refresh(job)
     return job
 

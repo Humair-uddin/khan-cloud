@@ -112,6 +112,9 @@ class NodeJob(BaseModel):
     vps_instance_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("vps_instances.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    gaming_session_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("gaming_sessions.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     job_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False, index=True)
@@ -120,3 +123,44 @@ class NodeJob(BaseModel):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     error_message: Mapped[str] = mapped_column(String(500), default="")
+
+
+class GamingSession(BaseModel):
+    __tablename__ = "gaming_sessions"
+
+    organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True)
+    created_by_user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    node_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending", index=True)
+    desired_state: Mapped[str] = mapped_column(String(40), nullable=False, default="running")
+    minimum_vram_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=8192)
+    requested_cpu: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    requested_memory_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    requested_storage_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    gpu_uuid: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    gpu_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    gpu_vram_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    streaming_backend: Mapped[str] = mapped_column(String(50), nullable=False, default="sunshine")
+    runtime_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    connection_info: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_category: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    failure_message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+
+
+class GamingReservation(BaseModel):
+    __tablename__ = "gaming_reservations"
+    __table_args__ = (
+        UniqueConstraint("gaming_session_id", name="uq_gaming_reservation_session"),
+    )
+
+    gaming_session_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("gaming_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    gpu_uuid: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    cpu: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="reserved", index=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

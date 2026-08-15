@@ -108,6 +108,7 @@ class NodeJobRead(BaseModel):
     id: UUID
     node_id: UUID
     vps_instance_id: UUID | None
+    gaming_session_id: UUID | None = None
     job_type: str
     payload: dict[str, Any]
     status: str
@@ -118,3 +119,43 @@ class NodeJobResult(BaseModel):
     status: Literal["succeeded", "failed", "blocked"]
     result: dict[str, Any] = Field(default_factory=dict)
     error_message: str = Field(default="", max_length=500)
+
+
+class GamingSessionCreate(BaseModel):
+    organization_id: UUID | None = None
+    name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+    minimum_vram_mb: int = Field(default=8192, ge=8192, le=196608)
+    cpu: int = Field(default=2, ge=1, le=128)
+    memory_mb: int = Field(default=4096, ge=1024, le=1048576)
+    storage_gb: int = Field(default=20, ge=1, le=16384)
+    streaming_backend: Literal["sunshine"] = "sunshine"
+
+
+class GamingSessionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    organization_id: UUID
+    node_id: UUID | None
+    name: str
+    status: str
+    desired_state: str
+    minimum_vram_mb: int
+    requested_cpu: int
+    requested_memory_bytes: int
+    requested_storage_bytes: int
+    gpu_uuid: str
+    gpu_name: str
+    gpu_vram_mb: int
+    streaming_backend: str
+    runtime_id: str
+    connection_info: dict[str, Any]
+    started_at: datetime | None
+    ended_at: datetime | None
+    failure_category: str
+    failure_message: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class GamingSessionAction(BaseModel):
+    action: Literal["start", "stop", "terminate"]
