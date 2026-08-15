@@ -188,3 +188,34 @@ def test_windows_native_backend_is_unavailable_without_sunshine(monkeypatch):
     assert result["available"] is False
     assert result["sunshine_installed"] is False
     assert result["nvidia_smi_installed"] is True
+
+
+def test_probe_nvidia_gpu_matches_assigned_uuid(monkeypatch):
+    monkeypatch.setattr(
+        gaming_backends.shutil,
+        "which",
+        lambda command: "/usr/bin/nvidia-smi" if command == "nvidia-smi" else None,
+    )
+    monkeypatch.setattr(
+        gaming_backends,
+        "_run",
+        lambda command, timeout=5.0: subprocess.CompletedProcess(
+            command,
+            0,
+            "GPU-A, NVIDIA RTX A, 8192, 595.95\nGPU-B, NVIDIA RTX B, 16384, 595.95\n",
+            "",
+        ),
+    )
+    result = gaming_backends.probe_nvidia_gpu("GPU-B")
+    assert result["available"] is True
+    assert result["uuid"] == "GPU-B"
+    assert result["memory_total_mib"] == 16384
+    assert result["driver_version"] == "595.95"
+
+
+def test_locate_sunshine_honors_existing_override(monkeypatch, tmp_path):
+    executable = tmp_path / "sunshine.exe"
+    executable.write_text("test")
+    monkeypatch.setenv("KHAN_SUNSHINE_EXECUTABLE", str(executable))
+    monkeypatch.setattr(gaming_backends.shutil, "which", lambda command: None)
+    assert gaming_backends.locate_sunshine() == executable

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import platform
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 
@@ -22,6 +25,63 @@ def _run(
     except (OSError, subprocess.TimeoutExpired):
         return None
 
+
+
+def locate_sunshine() -> Path | None:
+    """Locate an existing Sunshine installation without modifying the host."""
+    override = os.environ.get("KHAN_SUNSHINE_EXECUTABLE", "").strip()
+    if override:
+        candidate = Path(override)
+        if candidate.is_file():
+            return candidate
+
+    discovered = shutil.which("sunshine")
+    if discovered:
+        return Path(discovered)
+
+    if platform.system() == "Windows":
+        roots = [
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ]
+        for root in roots:
+            candidate = Path(root) / "Sunshine" / "sunshine.exe"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def probe_nvidia_gpu(gpu_uuid: str) -> dict[str, Any]:
+    """Read-only validation of the assigned NVIDIA GPU and installed driver stack."""
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return {"available": False, "gpu_uuid": gpu_uuid, "error": "nvidia_smi_not_available"}
+    result = _run(
+        [
+            executable,
+            "--query-gpu=uuid,name,memory.total,driver_version",
+            "--format=csv,noheader,nounits",
+        ],
+        timeout=10.0,
+    )
+    if result is None or result.returncode != 0:
+        return {"available": False, "gpu_uuid": gpu_uuid, "error": "nvidia_query_failed"}
+    for raw in result.stdout.splitlines():
+        parts = [item.strip() for item in raw.split(",")]
+        if len(parts) < 4 or parts[0] != gpu_uuid:
+            continue
+        try:
+            memory_total_mib = int(parts[2])
+        except ValueError:
+            memory_total_mib = 0
+        return {
+            "available": True,
+            "uuid": parts[0],
+            "name": parts[1],
+            "memory_total_mib": memory_total_mib,
+            "driver_version": parts[3],
+        }
+    return {"available": False, "gpu_uuid": gpu_uuid, "error": "assigned_gpu_not_found"}
 
 def probe_proxmox_backend() -> dict[str, Any]:
     """
@@ -74,7 +134,7 @@ def probe_gaming_backend(execution_backend: str) -> dict[str, Any]:
         }
 
     if backend == "windows_native":
-        sunshine = shutil.which("sunshine")
+        sunshine = locate_sunshine()
         nvidia_smi = shutil.which("nvidia-smi")
 
         return {
