@@ -3,10 +3,110 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from kc_installer.models import Manifest
+
+
+@dataclass(frozen=True)
+class NvidiaGPU:
+    model: str
+    driver_version: str
+
+
+def _version_tuple(version: str) -> tuple[int, ...] | None:
+    parts = version.strip().split(".")
+
+    if not parts or any(not part.isdigit() for part in parts):
+        return None
+
+    return tuple(int(part) for part in parts)
+
+
+def _driver_meets_minimum(
+    actual: str,
+    minimum: str,
+) -> bool:
+    actual_version = _version_tuple(actual)
+    minimum_version = _version_tuple(minimum)
+
+    if actual_version is None or minimum_version is None:
+        return False
+
+    length = max(len(actual_version), len(minimum_version))
+
+    actual_version += (0,) * (length - len(actual_version))
+    minimum_version += (0,) * (length - len(minimum_version))
+
+    return actual_version >= minimum_version
+
+
+def _driver_matches_branch(
+    actual: str,
+    branches: list[str],
+) -> bool:
+    actual_parts = actual.strip().split(".")
+
+    for branch in branches:
+        branch_parts = branch.strip().split(".")
+
+        if not branch_parts:
+            continue
+
+        if actual_parts[:len(branch_parts)] == branch_parts:
+            return True
+
+    return False
+
+
+def detect_nvidia_gpus() -> list[NvidiaGPU]:
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=15.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+
+    if completed.returncode != 0:
+        return []
+
+    devices: list[NvidiaGPU] = []
+
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+
+        if not line:
+            continue
+
+        parts = [part.strip() for part in line.split(",", 1)]
+
+        if len(parts) != 2:
+            continue
+
+        model, driver_version = parts
+
+        if not model:
+            continue
+
+        devices.append(
+            NvidiaGPU(
+                model=model,
+                driver_version=driver_version,
+            )
+        )
+
+    return devices
 
 
 @dataclass(frozen=True)
@@ -140,6 +240,163 @@ def run_preflight(
                 required=str(compatibility.minimum_disk_mb),
             )
         )
+
+    qualification = manifest.qualification
+
+    needs_gpu_discovery = (
+        qualification is not None
+        and (
+            qualification.gpu.required
+            or qualification.driver.required
+        )
+    )
+
+    nvidia_devices = (
+        detect_nvidia_gpus()
+        if needs_gpu_discovery
+        else []
+    )
+
+    # --------------------------------------------------------
+    # GPU qualification
+    # --------------------------------------------------------
+
+    if qualification is not None and qualification.gpu.required:
+        gpu_policy = qualification.gpu
+
+        if not nvidia_devices:
+            results.append(
+                PreflightResult(
+                    name="gpu_qualification",
+                    passed=False,
+                    actual="not detected",
+                    required=", ".join(
+                        gpu_policy.approved_models
+                    ),
+                )
+            )
+        else:
+            approved_models = {
+                model.strip().casefold()
+                for model in gpu_policy.approved_models
+            }
+
+            approved_device = next(
+                (
+                    device
+                    for device in nvidia_devices
+                    if device.model.strip().casefold()
+                    in approved_models
+                ),
+                None,
+            )
+
+            if approved_device is not None:
+                results.append(
+                    PreflightResult(
+                        name="gpu_qualification",
+                        passed=True,
+                        actual=approved_device.model,
+                        required=", ".join(
+                            gpu_policy.approved_models
+                        ),
+                    )
+                )
+            else:
+                results.append(
+                    PreflightResult(
+                        name="gpu_qualification",
+                        passed=False,
+                        actual=", ".join(
+                            device.model
+                            for device in nvidia_devices
+                        ),
+                        required=", ".join(
+                            gpu_policy.approved_models
+                        ),
+                    )
+                )
+
+    # --------------------------------------------------------
+    # NVIDIA driver qualification
+    # --------------------------------------------------------
+
+    if (
+        qualification is not None
+        and qualification.driver.required
+    ):
+        driver_policy = qualification.driver
+
+        driver_versions = [
+            device.driver_version.strip()
+            for device in nvidia_devices
+            if device.driver_version.strip()
+        ]
+
+        if not driver_versions:
+            results.append(
+                PreflightResult(
+                    name="driver_qualification",
+                    passed=False,
+                    actual="not detected",
+                    required=(
+                        driver_policy.minimum_version
+                        or ", ".join(
+                            driver_policy.approved_branches
+                        )
+                        or "installed NVIDIA driver"
+                    ),
+                )
+            )
+        else:
+            actual = driver_versions[0]
+
+            minimum_ok = (
+                True
+                if driver_policy.minimum_version is None
+                else _driver_meets_minimum(
+                    actual,
+                    driver_policy.minimum_version,
+                )
+            )
+
+            branch_ok = (
+                True
+                if not driver_policy.approved_branches
+                else _driver_matches_branch(
+                    actual,
+                    driver_policy.approved_branches,
+                )
+            )
+
+            passed = minimum_ok and branch_ok
+
+            requirements = []
+
+            if driver_policy.minimum_version is not None:
+                requirements.append(
+                    f">={driver_policy.minimum_version}"
+                )
+
+            if driver_policy.approved_branches:
+                requirements.append(
+                    "branch "
+                    + "/".join(
+                        driver_policy.approved_branches
+                    )
+                )
+
+            results.append(
+                PreflightResult(
+                    name="driver_qualification",
+                    passed=passed,
+                    actual=actual,
+                    required=(
+                        "; ".join(requirements)
+                        or "installed NVIDIA driver"
+                    ),
+                )
+            )
 
     for command in manifest.preflight.required_commands:
         location = shutil.which(command)
