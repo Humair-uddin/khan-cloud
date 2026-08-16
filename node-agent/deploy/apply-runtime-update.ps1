@@ -107,7 +107,22 @@ foreach ($Component in @("khan_agent", "deploy", "tests")) {
 
 Write-Host "===== UPDATE CONFIG ====="
 
-Copy-Item $ConfigFile $InstalledConfig -Force
+$ResolvedConfigFile = (Resolve-Path $ConfigFile).Path
+$ResolvedInstalledConfig = $null
+
+if (Test-Path $InstalledConfig -PathType Leaf) {
+    $ResolvedInstalledConfig = (Resolve-Path $InstalledConfig).Path
+}
+
+if (
+    $ResolvedInstalledConfig -and
+    $ResolvedConfigFile -ieq $ResolvedInstalledConfig
+) {
+    Write-Host "Installed configuration already supplied - preserving existing config.yaml"
+}
+else {
+    Copy-Item $ConfigFile $InstalledConfig -Force
+}
 
 Write-Host "===== COMPILE ====="
 
