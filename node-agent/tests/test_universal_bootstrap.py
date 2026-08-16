@@ -245,7 +245,9 @@ def test_windows_runtime_installer_registers_persistent_service():
     # Windows SCM owns persistence/startup. The service process is the
     # Khan Cloud virtualenv Python interpreter rather than pythonservice.exe.
     assert r'Join-Path $Venv "Scripts\python.exe"' in source
-    assert "-m khan_agent.windows_service --service" in source
+    assert "$ServiceModule" in source
+    assert '" --service' in source
+    assert "-m khan_agent.windows_service --service" not in source
     assert "sc.exe create" in source
     assert "start= auto" in source
     assert "Start-Service -Name $ServiceName" in source

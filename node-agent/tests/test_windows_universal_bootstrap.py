@@ -195,7 +195,9 @@ def test_windows_service_uses_direct_venv_python_host():
     ).read_text()
 
     assert 'Join-Path $Venv "Scripts\\python.exe"' in installer
-    assert "-m khan_agent.windows_service --service" in installer
+    assert "$ServiceModule" in installer
+    assert '" --service' in installer
+    assert "-m khan_agent.windows_service --service" not in installer
 
     assert "pythonservice.exe" not in installer
 
@@ -222,3 +224,32 @@ def test_windows_service_management_fallback_remains_available():
         "win32serviceutil.HandleCommandLine("
         "KhanCloudAgentService)"
     ) in service
+
+
+def test_windows_service_bootstraps_runtime_when_executed_as_script():
+    from pathlib import Path
+
+    service = (
+        Path(__file__).resolve().parents[1]
+        / "khan_agent"
+        / "windows_service.py"
+    ).read_text()
+
+    assert 'if __package__ in (None, ""):' in service
+    assert "Path(__file__).resolve().parents[1]" in service
+    assert "sys.path.insert(0, runtime_root)" in service
+
+
+def test_windows_service_registration_does_not_depend_on_working_directory():
+    from pathlib import Path
+
+    installer = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "install-runtime.ps1"
+    ).read_text()
+
+    assert '$ServiceModule = Join-Path $Runtime' in installer
+    assert '"$ServiceModule"' not in installer
+    assert "'\"' + $ServiceModule + '\" --service'" in installer
+    assert "-m khan_agent.windows_service --service" not in installer

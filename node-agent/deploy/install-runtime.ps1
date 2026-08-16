@@ -321,7 +321,7 @@ if ($ExistingService) {
 
 $ServiceCommand = (
     '"' + $ServicePython + '" ' +
-    '-m khan_agent.windows_service --service'
+    '"' + $ServiceModule + '" --service'
 )
 
 sc.exe create `

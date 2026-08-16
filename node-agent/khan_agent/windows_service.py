@@ -9,6 +9,14 @@ import win32event
 import win32service
 import win32serviceutil
 
+# Windows SCM does not guarantee Khan Cloud's runtime directory as the
+# process working directory. When this module is executed by absolute
+# script path, add the runtime root before importing the package.
+if __package__ in (None, ""):
+    runtime_root = str(Path(__file__).resolve().parents[1])
+    if runtime_root not in sys.path:
+        sys.path.insert(0, runtime_root)
+
 from khan_agent.config import AgentSettings
 from khan_agent.runtime import AgentRuntime
 
