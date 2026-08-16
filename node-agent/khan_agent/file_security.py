@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import platform
 import subprocess
 from pathlib import Path
@@ -14,20 +13,14 @@ def secure_private_file(path: Path) -> None:
         path.chmod(0o600)
         return
 
-    username = os.environ.get("USERNAME")
-    if not username:
-        raise RuntimeError(
-            "Unable to secure private file permissions: "
-            "Windows USERNAME is unavailable"
-        )
-
     result = subprocess.run(
         [
             "icacls",
             str(path),
             "/inheritance:r",
             "/grant:r",
-            f"{username}:(F)",
+            "*S-1-5-18:(F)",
+            "*S-1-5-32-544:(F)",
         ],
         capture_output=True,
         text=True,

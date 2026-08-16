@@ -23,7 +23,6 @@ def test_windows_private_file_uses_icacls(monkeypatch, tmp_path):
     path.write_text("secret")
 
     monkeypatch.setattr(file_security.platform, "system", lambda: "Windows")
-    monkeypatch.setenv("USERNAME", "KC-01")
 
     commands = []
 
@@ -48,7 +47,10 @@ def test_windows_private_file_uses_icacls(monkeypatch, tmp_path):
     assert str(path) in command
     assert "/inheritance:r" in command
     assert "/grant:r" in command
-    assert "KC-01:(F)" in command
+    assert "*S-1-5-18:(F)" in command
+    assert "*S-1-5-32-544:(F)" in command
+    assert not any("KC-01" in item for item in command)
+
 
 
 def test_windows_private_file_fails_closed_when_acl_fails(monkeypatch, tmp_path):
@@ -56,7 +58,6 @@ def test_windows_private_file_fails_closed_when_acl_fails(monkeypatch, tmp_path)
     path.write_text("secret")
 
     monkeypatch.setattr(file_security.platform, "system", lambda: "Windows")
-    monkeypatch.setenv("USERNAME", "KC-01")
 
     def fake_run(command, **kwargs):
         class Result:
