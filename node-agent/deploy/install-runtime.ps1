@@ -245,9 +245,15 @@ try {
             throw "Enrollment completed without creating identity.json."
         }
 
-        # Remove the one-time deployment enrollment code after successful
-        # enrollment so it is not retained as a reusable secret.
-        & $Python -c @'
+    }
+    else {
+        Write-Host "Existing credentials found - skipping enrollment."
+    }
+
+    # The deployment enrollment code is always one-time material.
+    # Scrub it even when persistent credentials already exist, because
+    # a reinstall/update may have copied a fresh config containing a code.
+    $ScrubScript = @'
 import sys
 from pathlib import Path
 import yaml
@@ -259,14 +265,12 @@ security = data.setdefault("security", {})
 security["deployment_enrollment_code"] = ""
 
 path.write_text(yaml.safe_dump(data, sort_keys=False))
-'@ $InstalledConfig
+'@
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to scrub deployment_enrollment_code."
-        }
-    }
-    else {
-        Write-Host "Existing credentials found - skipping enrollment."
+    $ScrubScript | & $Python - $InstalledConfig
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to scrub deployment_enrollment_code."
     }
 }
 finally {

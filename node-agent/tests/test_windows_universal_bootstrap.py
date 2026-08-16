@@ -160,3 +160,22 @@ def test_bootstrap_and_updater_have_distinct_responsibilities():
 
     assert "Install-PythonSafely" in bootstrap
     assert "Install-PythonSafely" not in updater
+
+
+def test_existing_installer_scrubber_uses_python_stdin():
+    text = installer_text()
+
+    assert "$ScrubScript = @'" in text
+    assert "$ScrubScript | & $Python - $InstalledConfig" in text
+    assert "& $Python -c @'" not in text
+
+
+def test_existing_credentials_still_scrub_fresh_enrollment_code():
+    text = installer_text()
+
+    skip = text.index(
+        'Write-Host "Existing credentials found - skipping enrollment."'
+    )
+    scrub = text.index("$ScrubScript | & $Python - $InstalledConfig")
+
+    assert scrub > skip
