@@ -49,7 +49,14 @@ def test_windows_private_file_uses_icacls(monkeypatch, tmp_path):
     assert "/grant:r" in command
     assert "*S-1-5-18:(F)" in command
     assert "*S-1-5-32-544:(F)" in command
-    assert not any("KC-01" in item for item in command)
+
+    grant_index = command.index("/grant:r")
+    grants = command[grant_index + 1:]
+
+    assert grants == [
+        "*S-1-5-18:(F)",
+        "*S-1-5-32-544:(F)",
+    ]
 
 
 
