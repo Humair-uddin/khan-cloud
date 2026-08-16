@@ -9,6 +9,7 @@ def test_memory_inventory_reads_proc_meminfo(monkeypatch):
         def read_text(self, errors="replace"):
             return "MemTotal:       32768000 kB\n"
 
+    monkeypatch.setattr(inventory.platform, "system", lambda: "Linux")
     monkeypatch.setattr(inventory, "Path", lambda *_: FakePath())
     assert inventory._memory_total_bytes() == 32768000 * 1024
 
