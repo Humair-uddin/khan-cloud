@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
 import servicemanager
@@ -55,6 +56,17 @@ class KhanCloudAgentService(win32serviceutil.ServiceFramework):
 
 
 def main() -> None:
+    # When Windows SCM launches the service directly through the
+    # virtualenv Python interpreter there are no management arguments.
+    # Host the service inside this interpreter so its normal venv
+    # sys.path and site-packages remain available.
+    if len(sys.argv) == 1 or sys.argv[1:] == ["--service"]:
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(KhanCloudAgentService)
+        servicemanager.StartServiceCtrlDispatcher()
+        return
+
+    # Interactive management remains available for diagnostics.
     win32serviceutil.HandleCommandLine(KhanCloudAgentService)
 
 

@@ -241,11 +241,18 @@ def test_windows_runtime_installer_registers_persistent_service():
 
     assert "KhanCloudAgent" in source
     assert "windows_service" in source
-    assert "--startup auto" in source
-    assert "install" in source
-    assert "start" in source
-    assert "New-Service" not in source
 
+    # Windows SCM owns persistence/startup. The service process is the
+    # Khan Cloud virtualenv Python interpreter rather than pythonservice.exe.
+    assert r'Join-Path $Venv "Scripts\python.exe"' in source
+    assert "-m khan_agent.windows_service --service" in source
+    assert "sc.exe create" in source
+    assert "start= auto" in source
+    assert "Start-Service -Name $ServiceName" in source
+
+    # Legacy pywin32 service-host registration must not return.
+    assert "--startup auto" not in source
+    assert "pythonservice.exe" not in source
 
 def test_windows_runtime_installer_runs_validation_and_heartbeat():
     root = Path(__file__).resolve().parents[1]

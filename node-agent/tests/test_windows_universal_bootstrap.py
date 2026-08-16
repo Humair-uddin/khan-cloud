@@ -179,3 +179,46 @@ def test_existing_credentials_still_scrub_fresh_enrollment_code():
     scrub = text.index("$ScrubScript | & $Python - $InstalledConfig")
 
     assert scrub > skip
+
+
+def test_windows_service_uses_direct_venv_python_host():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+
+    installer = (
+        root / "deploy" / "install-runtime.ps1"
+    ).read_text()
+
+    service = (
+        root / "khan_agent" / "windows_service.py"
+    ).read_text()
+
+    assert 'Join-Path $Venv "Scripts\\python.exe"' in installer
+    assert "-m khan_agent.windows_service --service" in installer
+
+    assert "pythonservice.exe" not in installer
+
+    assert "servicemanager.Initialize()" in service
+    assert (
+        "servicemanager.PrepareToHostSingle("
+        "KhanCloudAgentService)"
+    ) in service
+    assert "servicemanager.StartServiceCtrlDispatcher()" in service
+
+    assert 'sys.argv[1:] == ["--service"]' in service
+
+
+def test_windows_service_management_fallback_remains_available():
+    from pathlib import Path
+
+    service = (
+        Path(__file__).resolve().parents[1]
+        / "khan_agent"
+        / "windows_service.py"
+    ).read_text()
+
+    assert (
+        "win32serviceutil.HandleCommandLine("
+        "KhanCloudAgentService)"
+    ) in service

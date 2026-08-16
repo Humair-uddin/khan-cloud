@@ -289,46 +289,67 @@ if (-not (Test-Path $ServiceModule -PathType Leaf)) {
     throw "Windows service host is missing: $ServiceModule"
 }
 
-$ExistingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$ServicePython = Join-Path $Venv "Scripts\python.exe"
+
+if (-not (Test-Path $ServicePython -PathType Leaf)) {
+    throw "Windows service Python is missing: $ServicePython"
+}
+
+$ExistingService = Get-Service `
+    -Name $ServiceName `
+    -ErrorAction SilentlyContinue
 
 if ($ExistingService) {
     if ($ExistingService.Status -ne "Stopped") {
         Stop-Service -Name $ServiceName -Force
+
         (Get-Service -Name $ServiceName).WaitForStatus(
             [System.ServiceProcess.ServiceControllerStatus]::Stopped,
             [TimeSpan]::FromSeconds(30)
         )
     }
 
-    & $Python -m khan_agent.windows_service remove
+    sc.exe delete $ServiceName | Out-Null
 
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to remove existing Khan Cloud Windows service."
     }
+
+    # Allow SCM to finish releasing the deleted service object.
+    Start-Sleep -Seconds 2
 }
 
-Push-Location $Runtime
+$ServiceCommand = (
+    '"' + $ServicePython + '" ' +
+    '-m khan_agent.windows_service --service'
+)
 
-try {
-    & $Python -m khan_agent.windows_service `
-        --startup auto `
-        install
+sc.exe create `
+    $ServiceName `
+    binPath= $ServiceCommand `
+    start= auto `
+    DisplayName= "Khan Cloud Agent" |
+    Out-Null
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to install Khan Cloud Windows service."
-    }
-
-    & $Python -m khan_agent.windows_service start
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to start Khan Cloud Windows service."
-    }
-}
-finally {
-    Pop-Location
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to create Khan Cloud Windows service."
 }
 
-Start-Sleep -Seconds 2
+sc.exe description `
+    $ServiceName `
+    "Khan Cloud managed node agent" |
+    Out-Null
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to set Khan Cloud Windows service description."
+}
+
+Start-Service -Name $ServiceName
+
+(Get-Service -Name $ServiceName).WaitForStatus(
+    [System.ServiceProcess.ServiceControllerStatus]::Running,
+    [TimeSpan]::FromSeconds(30)
+)
 
 $Service = Get-Service -Name $ServiceName -ErrorAction Stop
 
