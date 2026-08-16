@@ -128,6 +128,7 @@ class NodeJob(BaseModel):
 class GamingSession(BaseModel):
     __tablename__ = "gaming_sessions"
 
+    gaming_title_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("gaming_titles.id", ondelete="RESTRICT"), nullable=True, index=True)
     organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True)
     created_by_user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
     node_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)

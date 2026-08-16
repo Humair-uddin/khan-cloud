@@ -232,3 +232,16 @@ def _virtualization_inventory() -> dict[str, Any]:
         "qemu_installed": bool(qemu),
         "libvirt_active": libvirt_active,
     }
+
+
+# KG-001 gaming inventory
+_original_collect_safe_inventory = collect_safe_inventory
+
+def collect_safe_inventory(*args, **kwargs):
+    inventory = _original_collect_safe_inventory(*args, **kwargs)
+    try:
+        from khan_agent.gaming_inventory import collect_gaming_inventory
+        inventory["gaming"] = collect_gaming_inventory()
+    except Exception as exc:
+        inventory["gaming"] = {"launchers": {}, "games": [], "streaming": {}, "discovery_error": type(exc).__name__}
+    return inventory

@@ -91,6 +91,11 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
         updated = heartbeat_node(db,node,payload)
         from app.services.compute_service import sync_node_capacity
         sync_node_capacity(db, updated)
+        from app.services.gaming_catalog_service import reconcile_node_gaming_inventory
+        if updated.intended_purpose == "gaming_host":
+            reconcile_node_gaming_inventory(db, updated)
+            db.commit()
+            db.refresh(updated)
         return updated
     except NodeLifecycleError as exc: raise HTTPException(status_code=409,detail=str(exc)) from exc
 

@@ -122,6 +122,7 @@ class NodeJobResult(BaseModel):
 
 
 class GamingSessionCreate(BaseModel):
+    game_slug: str | None = None
     organization_id: UUID | None = None
     name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     minimum_vram_mb: int = Field(default=8192, ge=8192, le=196608)
@@ -136,6 +137,7 @@ class GamingSessionRead(BaseModel):
     id: UUID
     organization_id: UUID
     node_id: UUID | None
+    gaming_title_id: UUID | None
     name: str
     status: str
     desired_state: str
