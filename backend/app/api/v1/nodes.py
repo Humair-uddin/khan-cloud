@@ -60,6 +60,7 @@ def register(
             payload,
             deployment_profile_id=(profile.id if profile else None),
             intended_purpose=(profile.purpose if profile else None),
+            organization_id=(profile.organization_id if profile else None),
             commit=profile is None,
         )
         if profile is not None:
@@ -79,6 +80,9 @@ def register(
         lifecycle_state=node.lifecycle_state,
         deployment_profile_id=node.deployment_profile_id,
         intended_purpose=node.intended_purpose,
+        assigned_name=node.name,
+        physical_host_id=node.physical_host_id,
+        deployment_generation=node.deployment_generation,
     )
 
 @router.post("/heartbeat",response_model=NodeRead)

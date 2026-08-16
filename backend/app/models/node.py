@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 from uuid import UUID
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import BaseModel
@@ -10,6 +10,9 @@ class Node(BaseModel):
     __tablename__ = "nodes"
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     machine_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    physical_host_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("physical_hosts.id", ondelete="SET NULL"), nullable=True, index=True)
+    deployment_generation: Mapped[int] = mapped_column(Integer, default=1)
+    superseded_by_node_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)
     secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="pending_approval", index=True)
     lifecycle_state: Mapped[str] = mapped_column(String(30), default="pending_approval", index=True)

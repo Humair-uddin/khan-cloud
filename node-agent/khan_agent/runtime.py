@@ -53,6 +53,13 @@ class AgentRuntime:
         return {
             "name": self.settings.agent.node_name,
             "machine_id": self.identity.node_uuid,
+            "hardware_identity": {
+                "fingerprint": self.identity.hardware_fingerprint,
+                "system_uuid": self.identity.system_uuid,
+                "serial_number": self.identity.serial_number,
+                "manufacturer": self.identity.manufacturer,
+                "model": self.identity.model,
+            },
             "hostname": self.identity.hostname,
             "operating_system": self.identity.platform,
             "kernel_version": self.identity.platform_release,

@@ -35,6 +35,7 @@ def check_database():
 
 import app.models.user  # noqa: E402,F401
 import app.models.rbac  # noqa: E402,F401
+import app.models.physical_host  # noqa: E402,F401
 import app.models.node  # noqa: E402,F401
 import app.models.installation_event  # noqa: E402,F401
 import app.models.organization  # noqa: E402,F401

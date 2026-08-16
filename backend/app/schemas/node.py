@@ -3,9 +3,17 @@ from typing import Any
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
+class HardwareIdentityEvidence(BaseModel):
+    fingerprint: str = Field(default="", max_length=64)
+    system_uuid: str = Field(default="", max_length=255)
+    serial_number: str = Field(default="", max_length=255)
+    manufacturer: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+
 class NodeRegistrationRequest(BaseModel):
-    name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+    name: str = Field(default="", max_length=100, pattern=r"^[A-Za-z0-9_.-]*$")
     machine_id: str = Field(min_length=4, max_length=255)
+    hardware_identity: HardwareIdentityEvidence = Field(default_factory=HardwareIdentityEvidence)
     hostname: str = Field(min_length=1, max_length=255)
     operating_system: str = Field(default="", max_length=255)
     kernel_version: str = Field(default="", max_length=255)
@@ -22,6 +30,9 @@ class NodeRegistrationResponse(BaseModel):
     lifecycle_state: str
     deployment_profile_id: UUID | None = None
     intended_purpose: str
+    assigned_name: str | None = None
+    physical_host_id: UUID | None = None
+    deployment_generation: int = 1
 
 class NodeHeartbeatRequest(BaseModel):
     hostname: str = Field(min_length=1, max_length=255)
@@ -41,6 +52,9 @@ class NodeRead(BaseModel):
     id: UUID
     name: str
     machine_id: str
+    physical_host_id: UUID | None
+    deployment_generation: int
+    superseded_by_node_id: UUID | None
     status: str
     lifecycle_state: str
     connectivity_state: str
