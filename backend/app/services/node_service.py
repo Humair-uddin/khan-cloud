@@ -126,7 +126,15 @@ def register_node(
             production_ip=payload.production_ip, inventory=payload.inventory, last_seen_at=datetime.now(UTC), **summary,
         )
         # Authorized redeployment supersedes previous non-retired deployments of this same physical host.
-        previous = list(db.scalars(select(Node).where(Node.physical_host_id == host.id, Node.id != node.id)).all())
+        previous = list(
+            db.scalars(
+                select(Node).where(
+                    Node.physical_host_id == host.id,
+                    Node.id != node.id,
+                    Node.intended_purpose == purpose,
+                )
+            ).all()
+        )
         db.add(node); db.flush()
         for old in previous:
             if old.superseded_by_node_id is None and old.lifecycle_state != "retired":

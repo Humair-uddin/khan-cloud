@@ -15,3 +15,16 @@ def test_serial_is_evidence_not_authentication():
     service=(Path(__file__).resolve().parents[1]/'app'/'services'/'node_service.py').read_text()
     assert 'matching hash is not authentication' in service
     assert 'deployment profile' in service.lower()
+
+
+def test_redeployment_supersession_is_purpose_scoped():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "services"
+        / "node_service.py"
+    ).read_text()
+
+    assert "Node.intended_purpose == purpose" in source
