@@ -21,6 +21,11 @@ class CredentialStore:
         return self.path.exists()
 
     def load(self) -> NodeCredentials:
+        # Existing credentials may have been created by an older agent
+        # version under an interactive Windows account. Normalize the
+        # private-file ACL before reading so the persistent Windows
+        # service account can safely consume preserved credentials.
+        secure_private_file(self.path)
         data = json.loads(self.path.read_text())
         return NodeCredentials(**data)
 
