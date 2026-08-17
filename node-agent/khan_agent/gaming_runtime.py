@@ -9,6 +9,11 @@ from uuid import UUID
 
 from khan_agent.file_security import secure_private_file
 from khan_agent.gaming_backends import locate_sunshine, probe_nvidia_gpu
+from khan_agent.gaming_launchers import (
+    GameLaunchError,
+    launch_prepared_game,
+    prepare_game_launch,
+)
 from khan_agent.virtualization import JobExecutionResult
 
 
@@ -173,6 +178,16 @@ def create_session(
             execution_backend=execution_backend,
             streaming_backend=streaming_backend,
         )
+
+        prepared_launch = prepare_game_launch(payload)
+
+        launch_info: dict[str, Any] | None = None
+
+        if prepared_launch is not None:
+            launch_info = launch_prepared_game(
+                prepared_launch
+            )
+
         state = {
             "schema_version": 1,
             "session_id": session_id,
@@ -184,16 +199,53 @@ def create_session(
             "gpu": validation["gpu"],
             "minimum_vram_mb": minimum_vram_mb,
         }
+
+        if (
+            prepared_launch is not None
+            and launch_info is not None
+        ):
+            state.update(
+                {
+                    "game_slug":
+                        prepared_launch.game_slug,
+                    "launcher_type":
+                        prepared_launch.launcher_type,
+                    "launcher_game_id":
+                        prepared_launch.launcher_game_id,
+                    # Preserve KG-001 state keys while the
+                    # backend schema evolves to launch profiles.
+                    "launcher":
+                        prepared_launch.launcher_type,
+                    "launcher_app_id":
+                        prepared_launch.launcher_game_id,
+                    "game":
+                        prepared_launch.game,
+                    "launch_info":
+                        launch_info,
+                }
+            )
+
         _write_state(state_file, state)
+
+        result: dict[str, Any] = {
+            "runtime_id": runtime_id,
+            "connection_info":
+                _connection_info(runtime_id),
+            "gpu": validation["gpu"],
+        }
+
+        if (
+            prepared_launch is not None
+            and launch_info is not None
+        ):
+            result["game"] = prepared_launch.game
+            result["launch_info"] = launch_info
+
         return JobExecutionResult(
             "succeeded",
-            {
-                "runtime_id": runtime_id,
-                "connection_info": _connection_info(runtime_id),
-                "gpu": validation["gpu"],
-            },
+            result,
         )
-    except GamingRuntimeError as exc:
+    except (GamingRuntimeError, GameLaunchError) as exc:
         return JobExecutionResult("blocked", {}, str(exc))
 
 

@@ -209,3 +209,103 @@ def test_duplicate_create_never_resurrects_stopped_session(
     state = json.loads(state_file.read_text())
 
     assert state["status"] == "stopped"
+
+
+def test_kg002_catalog_session_launches_through_adapter(
+    tmp_path,
+    monkeypatch,
+):
+    _good_environment(monkeypatch)
+
+    from khan_agent.gaming_launchers import (
+        PreparedGameLaunch,
+    )
+
+    prepared = PreparedGameLaunch(
+        game_slug="counter-strike-2",
+        launcher_type="steam",
+        launcher_game_id="730",
+        game={
+            "launcher": "steam",
+            "app_id": "730",
+            "name": "Counter-Strike 2",
+            "installed": True,
+        },
+        launcher_executable=r"C:\Steam\steam.exe",
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: prepared,
+    )
+
+    launches = []
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "launch_prepared_game",
+        lambda item: (
+            launches.append(item)
+            or {
+                "launcher_type": "steam",
+                "launcher_game_id": "730",
+                "game_slug": "counter-strike-2",
+                "launcher_pid": 4242,
+            }
+        ),
+    )
+
+    session_id = uuid4()
+
+    result = execute_node_job(
+        _job(
+            "gaming.session.create",
+            session_id,
+            gpu_uuid="GPU-A",
+            minimum_vram_mb=8192,
+            game_slug="counter-strike-2",
+            launcher="steam",
+            launcher_app_id="730",
+        ),
+        gaming_state_root=tmp_path,
+        **COMMON,
+    )
+
+    assert result.status == "succeeded"
+    assert len(launches) == 1
+    assert result.result["game"]["app_id"] == "730"
+    assert (
+        result.result["launch_info"]["launcher_pid"]
+        == 4242
+    )
+
+
+def test_kg002_generic_session_remains_backward_compatible(
+    tmp_path,
+    monkeypatch,
+):
+    _good_environment(monkeypatch)
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: None,
+    )
+
+    session_id = uuid4()
+
+    result = execute_node_job(
+        _job(
+            "gaming.session.create",
+            session_id,
+            gpu_uuid="GPU-A",
+            minimum_vram_mb=8192,
+        ),
+        gaming_state_root=tmp_path,
+        **COMMON,
+    )
+
+    assert result.status == "succeeded"
+    assert "game" not in result.result
+    assert "launch_info" not in result.result

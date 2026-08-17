@@ -224,3 +224,60 @@ def test_locate_sunshine_honors_existing_override(monkeypatch, tmp_path):
     monkeypatch.setenv("KHAN_SUNSHINE_EXECUTABLE", str(executable))
     monkeypatch.setattr(gaming_backends.shutil, "which", lambda command: None)
     assert gaming_backends.locate_sunshine() == executable
+
+
+def test_kg002_locate_steam_honors_override(
+    monkeypatch,
+    tmp_path,
+):
+    executable = tmp_path / "steam.exe"
+    executable.write_text("test")
+
+    monkeypatch.setenv(
+        "KHAN_STEAM_EXECUTABLE",
+        str(executable),
+    )
+
+    monkeypatch.setattr(
+        gaming_backends.shutil,
+        "which",
+        lambda command: None,
+    )
+
+    assert gaming_backends.locate_steam() == executable
+
+
+def test_kg002_steam_launch_uses_applaunch_without_shell(
+    monkeypatch,
+):
+    calls = []
+
+    class FakeProcess:
+        pid = 4242
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        gaming_backends.subprocess,
+        "Popen",
+        fake_popen,
+    )
+
+    result = gaming_backends.launch_steam_app(
+        gaming_backends.Path(
+            r"C:\Steam\steam.exe"
+        ),
+        "730",
+    )
+
+    assert calls[0][0] == [
+        r"C:\Steam\steam.exe",
+        "-applaunch",
+        "730",
+    ]
+
+    assert calls[0][1]["shell"] is False
+    assert result["launcher_game_id"] == "730"
+    assert result["launcher_pid"] == 4242

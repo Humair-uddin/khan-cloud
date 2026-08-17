@@ -217,3 +217,112 @@ def probe_proxmox_vm(vm_id: int) -> dict[str, Any]:
     result["gpu_passthrough_configured"] = bool(result["hostpci"])
 
     return result
+
+
+def locate_steam() -> Path | None:
+    """Locate an existing Steam client without installing or modifying it."""
+    override = os.environ.get("KHAN_STEAM_EXECUTABLE", "").strip()
+
+    if override:
+        candidate = Path(override)
+        if candidate.is_file():
+            return candidate
+
+    discovered = shutil.which("steam")
+
+    if discovered:
+        return Path(discovered)
+
+    if platform.system() == "Windows":
+        roots = [
+            os.environ.get(
+                "ProgramFiles(x86)",
+                r"C:\Program Files (x86)",
+            ),
+            os.environ.get(
+                "ProgramFiles",
+                r"C:\Program Files",
+            ),
+        ]
+
+        for root in roots:
+            candidate = (
+                Path(root)
+                / "Steam"
+                / "steam.exe"
+            )
+
+            if candidate.is_file():
+                return candidate
+
+    return None
+
+
+def launch_steam_app(
+    steam_executable: Path,
+    app_id: str,
+) -> dict[str, Any]:
+    """
+    Ask the existing Steam client to launch one installed AppID.
+
+    Khan Cloud does not install, update, crack, modify, or bypass licensing
+    for Steam or the requested title.
+    """
+
+    normalized = str(app_id).strip()
+
+    if not normalized.isdigit() or int(normalized) <= 0:
+        raise ValueError(
+            "Steam AppID must be a positive integer."
+        )
+
+    command = [
+        str(steam_executable),
+        "-applaunch",
+        normalized,
+    ]
+
+    if platform.system() == "Windows":
+        from khan_agent.windows_interactive import (
+            InteractiveSessionError,
+            launch_in_active_session,
+        )
+
+        try:
+            launched = launch_in_active_session(command)
+        except InteractiveSessionError as exc:
+            raise RuntimeError(
+                f"Unable to start Steam AppID {normalized} "
+                "in the active Windows user session."
+            ) from exc
+
+        return {
+            "launcher_type": "steam",
+            "launcher_game_id": normalized,
+            "command_mode": "steam_applaunch",
+            "launcher_pid": launched.pid,
+            "session_id": launched.session_id,
+            "execution_context": launched.execution_context,
+        }
+
+    try:
+        process = subprocess.Popen(
+            command,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to start Steam AppID {normalized}."
+        ) from exc
+
+    return {
+        "launcher_type": "steam",
+        "launcher_game_id": normalized,
+        "command_mode": "steam_applaunch",
+        "launcher_pid": process.pid,
+        "execution_context": "local_process",
+    }
