@@ -252,6 +252,15 @@ def test_kg002_steam_launch_uses_applaunch_without_shell(
 ):
     calls = []
 
+    # This test validates the non-Windows subprocess backend.
+    # Windows interactive-session execution is covered separately by
+    # test_windows_interactive_kg002.py and the real SYSTEM acceptance.
+    monkeypatch.setattr(
+        gaming_backends.platform,
+        "system",
+        lambda: "Linux",
+    )
+
     class FakeProcess:
         pid = 4242
 
