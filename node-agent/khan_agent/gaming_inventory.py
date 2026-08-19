@@ -78,12 +78,13 @@ def collect_interactive_session() -> dict[str, Any]:
         "-NonInteractive",
         "-Command",
         (
-            "$p = Get-CimInstance Win32_Process -Filter "
-            "\\\"Name='explorer.exe'\\\" | Select-Object -First 1; "
+            "$p = Get-CimInstance Win32_Process | "
+            "Where-Object { $_.Name -eq 'explorer.exe' } | "
+            "Select-Object -First 1; "
             "if ($null -eq $p) { exit 3 }; "
             "$o = $p | Invoke-CimMethod -MethodName GetOwner; "
             "Write-Output ($p.SessionId.ToString() + '|' + "
-            "$o.Domain + '\\\\' + $o.User)"
+            "$o.Domain + [char]92 + $o.User)"
         ),
     ]
 
