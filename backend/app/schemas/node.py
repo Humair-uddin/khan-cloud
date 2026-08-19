@@ -47,6 +47,11 @@ class NodeHeartbeatRequest(BaseModel):
 class NodeActionRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
 
+
+class NodeGamingAvailabilityRequest(BaseModel):
+    accepting_work: bool
+    reason: str = Field(default="", max_length=500)
+
 class NodeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -60,6 +65,7 @@ class NodeRead(BaseModel):
     connectivity_state: str
     marketplace_state: str
     is_enabled: bool
+    gaming_accepting_work: bool
     deployment_profile_id: UUID | None
     intended_purpose: str
     capabilities: dict[str, Any]

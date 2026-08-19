@@ -8,7 +8,14 @@ from app.core.config import settings
 from app.db.database import get_db
 from app.models.node import Node
 from app.models.user import User
-from app.schemas.node import NodeActionRequest,NodeHeartbeatRequest,NodeRead,NodeRegistrationRequest,NodeRegistrationResponse
+from app.schemas.node import (
+    NodeActionRequest,
+    NodeGamingAvailabilityRequest,
+    NodeHeartbeatRequest,
+    NodeRead,
+    NodeRegistrationRequest,
+    NodeRegistrationResponse,
+)
 from app.services.deployment_profile_service import (
     DeploymentProfileError,
     consume_profile_code,
@@ -138,6 +145,32 @@ def maintenance_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends
 @router.post("/{node_id}/retire",response_model=NodeRead)
 def retire_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends(require_permission("nodes.retire")),db: Session=Depends(get_db)):
     return _transition(node_id,payload,"retired",user,db)
+
+
+@router.post(
+    "/{node_id}/gaming-availability",
+    response_model=NodeRead,
+)
+def set_gaming_availability(
+    node_id: UUID,
+    payload: NodeGamingAvailabilityRequest,
+    user: User = Depends(require_permission("gaming.manage")),
+    db: Session = Depends(get_db),
+):
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    if node.intended_purpose != "gaming_host":
+        raise HTTPException(
+            status_code=409,
+            detail="Node is not configured as a gaming host.",
+        )
+
+    node.gaming_accepting_work = payload.accepting_work
+    db.commit()
+    db.refresh(node)
+    return node
 
 # Installation telemetry is node-authenticated and intentionally sanitized.
 from app.schemas.installation_event import InstallationEventCreate, InstallationEventRead

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +64,101 @@ def collect_steam_inventory() -> dict[str, Any]:
     return {"installed": bool(roots), "roots": [str(path) for path in roots], "libraries": sorted(set(library_paths)), "games": games}
 
 
+def collect_interactive_session() -> dict[str, Any]:
+    if platform.system() != "Windows":
+        return {
+            "available": False,
+            "session_id": None,
+            "username": "",
+        }
+
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        (
+            "$p = Get-CimInstance Win32_Process -Filter "
+            "\\\"Name='explorer.exe'\\\" | Select-Object -First 1; "
+            "if ($null -eq $p) { exit 3 }; "
+            "$o = $p | Invoke-CimMethod -MethodName GetOwner; "
+            "Write-Output ($p.SessionId.ToString() + '|' + "
+            "$o.Domain + '\\\\' + $o.User)"
+        ),
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {
+            "available": False,
+            "session_id": None,
+            "username": "",
+        }
+
+    if result.returncode != 0:
+        return {
+            "available": False,
+            "session_id": None,
+            "username": "",
+        }
+
+    raw = result.stdout.strip().splitlines()
+    if not raw:
+        return {
+            "available": False,
+            "session_id": None,
+            "username": "",
+        }
+
+    parts = raw[-1].split("|", 1)
+    if len(parts) != 2:
+        return {
+            "available": False,
+            "session_id": None,
+            "username": "",
+        }
+
+    try:
+        session_id = int(parts[0])
+    except ValueError:
+        return {
+            "available": False,
+            "session_id": None,
+            "username": "",
+        }
+
+    return {
+        "available": session_id > 0,
+        "session_id": session_id,
+        "username": parts[1].strip(),
+    }
+
+
 def collect_gaming_inventory() -> dict[str, Any]:
     steam = collect_steam_inventory()
     sunshine = locate_sunshine()
-    return {"launchers": {"steam": {key: value for key, value in steam.items() if key != "games"}}, "games": steam["games"], "streaming": {"sunshine": {"installed": bool(sunshine), "ready": bool(sunshine), "executable": str(sunshine) if sunshine else ""}}}
+    return {
+        "launchers": {
+            "steam": {
+                key: value
+                for key, value in steam.items()
+                if key != "games"
+            }
+        },
+        "games": steam["games"],
+        "streaming": {
+            "sunshine": {
+                "installed": bool(sunshine),
+                "ready": bool(sunshine),
+                "executable": str(sunshine) if sunshine else "",
+            }
+        },
+        "interactive_session": collect_interactive_session(),
+    }

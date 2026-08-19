@@ -16,6 +16,92 @@ from app.services.organization_service import visible_organizations
 GIB = 1024 ** 3
 ACTIVE_RESERVATION_STATES = {"reserved", "active"}
 TERMINAL_SESSION_STATES = {"terminated", "failed"}
+GAMING_HEARTBEAT_STALE_AFTER_SECONDS = 300
+
+
+def _gaming_inventory(node: Node) -> dict:
+    inventory = node.inventory or {}
+    gaming = inventory.get("gaming", {})
+    return gaming if isinstance(gaming, dict) else {}
+
+
+def _interactive_session_ready(node: Node) -> bool:
+    gaming = _gaming_inventory(node)
+    session = gaming.get("interactive_session", {})
+    return bool(
+        isinstance(session, dict)
+        and session.get("available", False)
+        and session.get("session_id") is not None
+    )
+
+
+def _sunshine_ready(node: Node) -> bool:
+    gaming = _gaming_inventory(node)
+    streaming = gaming.get("streaming", {})
+    if not isinstance(streaming, dict):
+        return False
+    sunshine = streaming.get("sunshine", {})
+    return bool(
+        isinstance(sunshine, dict)
+        and sunshine.get("installed", False)
+        and sunshine.get("ready", False)
+    )
+
+
+def gaming_host_readiness_reasons(
+    node: Node,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = GAMING_HEARTBEAT_STALE_AFTER_SECONDS,
+) -> list[str]:
+    from app.services.deployment_operations_service import effective_connectivity
+
+    reasons: list[str] = []
+    current = now or datetime.now(UTC)
+
+    if node.lifecycle_state != "approved":
+        reasons.append("node_not_approved")
+
+    if not node.is_enabled:
+        reasons.append("node_disabled")
+
+    if node.intended_purpose != "gaming_host":
+        reasons.append("node_not_gaming_host")
+
+    if not node.gaming_accepting_work:
+        reasons.append("gaming_work_disabled")
+
+    connectivity = effective_connectivity(
+        node,
+        now=current,
+        stale_after_seconds=stale_after_seconds,
+    )
+    if connectivity != "online":
+        reasons.append(f"node_{connectivity}")
+
+    if not _interactive_session_ready(node):
+        reasons.append("interactive_session_unavailable")
+
+    if not _sunshine_ready(node):
+        reasons.append("sunshine_unavailable")
+
+    if not node.nvidia_available or node.gpu_count <= 0:
+        reasons.append("gpu_unavailable")
+
+    return reasons
+
+
+def gaming_host_is_ready(
+    node: Node,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = GAMING_HEARTBEAT_STALE_AFTER_SECONDS,
+) -> bool:
+    return not gaming_host_readiness_reasons(
+        node,
+        now=now,
+        stale_after_seconds=stale_after_seconds,
+    )
 
 
 def _gpu_inventory(node: Node) -> list[dict]:
@@ -76,14 +162,16 @@ def select_gaming_host(db: Session, *, minimum_vram_mb: int, cpu: int, memory_by
         select(NodeCapacity, Node)
         .join(Node, Node.id == NodeCapacity.node_id)
         .where(Node.lifecycle_state == "approved")
-        .where(Node.connectivity_state == "online")
         .where(Node.is_enabled.is_(True))
+        .where(Node.gaming_accepting_work.is_(True))
         .where(Node.intended_purpose == "gaming_host")
         .with_for_update(of=NodeCapacity)
     ).all()
     candidates = []
     qualified_nodes = _qualified_node_ids(db, gaming_title) if gaming_title is not None else None
     for capacity, node in rows:
+        if not gaming_host_is_ready(node):
+            continue
         if qualified_nodes is not None and node.id not in qualified_nodes:
             continue
         if not has_capacity(capacity, cpu=cpu, memory_bytes=memory_bytes, storage_bytes=storage_bytes):

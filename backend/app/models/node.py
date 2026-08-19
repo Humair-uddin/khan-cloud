@@ -19,6 +19,12 @@ class Node(BaseModel):
     connectivity_state: Mapped[str] = mapped_column(String(30), default="unknown", index=True)
     marketplace_state: Mapped[str] = mapped_column(String(30), default="not_eligible", index=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    gaming_accepting_work: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+        index=True,
+    )
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     deployment_profile_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
     intended_purpose: Mapped[str] = mapped_column(String(50), default="internal_lab", index=True)
