@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.rbac_dependencies import require_permission
 from app.db.database import get_db
 from app.models.user import User
-from app.schemas.compute import GamingConnectionLeaseCreate, GamingConnectionLeaseRead, GamingConnectionPairRequest
+from app.schemas.compute import GamingConnectionLeaseCreate, GamingConnectionLeaseRead, GamingConnectionPairRequest, GamingVmBlueprintCreate, GamingVmBlueprintRead
 from app.schemas.compute import (ComputeHostRead, GamingSessionAction, GamingSessionCreate, GamingSessionRead, VPSAction, VPSCreate, VPSImageRead, VPSRead)
 from app.services.compute_service import (
     ComputeError, create_vps, get_visible_vps, list_compute_hosts, list_vps_images, queue_vps_action, visible_vps,
@@ -268,3 +268,18 @@ def revoke_gaming_connection(
             status_code=409,
             detail=str(exc),
         ) from exc
+
+
+@router.get("/gaming/vm-blueprints", response_model=list[GamingVmBlueprintRead])
+def list_gaming_vm_blueprints(user: User = Depends(require_permission("gaming.read")), db: Session = Depends(get_db)):
+    from sqlalchemy import select
+    from app.models.compute import GamingVmBlueprint
+    return list(db.scalars(select(GamingVmBlueprint).order_by(GamingVmBlueprint.slug)).unique())
+
+@router.post("/gaming/vm-blueprints", response_model=GamingVmBlueprintRead, status_code=status.HTTP_201_CREATED)
+def create_gaming_vm_blueprint(payload: GamingVmBlueprintCreate, user: User = Depends(require_permission("gaming.manage")), db: Session = Depends(get_db)):
+    from sqlalchemy import select
+    from app.models.compute import GamingVmBlueprint
+    existing=db.scalar(select(GamingVmBlueprint).where(GamingVmBlueprint.slug==payload.slug))
+    if existing is not None: raise HTTPException(status_code=409, detail="Gaming VM blueprint slug already exists.")
+    item=GamingVmBlueprint(**payload.model_dump()); db.add(item); db.commit(); db.refresh(item); return item

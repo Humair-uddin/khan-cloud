@@ -54,7 +54,7 @@ def sync_legacy_status(node: Node) -> None:
     else: node.status="offline"
 
 def _purpose_code(purpose: str) -> str:
-    return {"gaming_host":"GAME","vps_host":"VPS","ai_compute":"GPU","internal_lab":"LAB"}.get(purpose, "NODE")
+    return {"gaming_host":"GAME","gaming_hypervisor":"GHV","vps_host":"VPS","vps_infrastructure":"VPS","ai_compute":"GPU","internal_lab":"LAB"}.get(purpose, "NODE")
 
 def _host_suffix(host: PhysicalHost) -> str:
     serial = "".join(ch for ch in (host.serial_number or "").upper() if ch.isalnum())
@@ -152,6 +152,12 @@ def register_node(
     node.inventory=payload.inventory; node.capabilities=caps; node.last_seen_at=datetime.now(UTC)
     for k,v in summary.items(): setattr(node,k,v)
     sync_legacy_status(node)
+    if node.deployment_profile_id:
+        try:
+            from app.services.gaming_vm_service import reconcile_guest_registration
+            reconcile_guest_registration(db, node=node)
+        except Exception:
+            pass
     if commit: db.commit(); db.refresh(node)
     else: db.flush()
     return node, secret
@@ -173,7 +179,13 @@ def heartbeat_node(db: Session,node: Node,payload: NodeHeartbeatRequest) -> Node
     node.capabilities=normalized_capabilities(payload.capabilities,payload.inventory)
     node.last_seen_at=datetime.now(UTC)
     for k,v in summary.items(): setattr(node,k,v)
-    sync_legacy_status(node); db.commit(); db.refresh(node); return node
+    sync_legacy_status(node)
+    try:
+        from app.services.gaming_vm_service import reconcile_guest_readiness
+        reconcile_guest_readiness(db, node=node)
+    except Exception:
+        pass
+    db.commit(); db.refresh(node); return node
 
 def transition_node(db: Session,*,node: Node,new_state: str,actor_user_id: UUID,reason: str="") -> Node:
     current=node.lifecycle_state

@@ -123,6 +123,8 @@ class NodeJobResult(BaseModel):
 
 class GamingSessionCreate(BaseModel):
     game_slug: str | None = None
+    deployment_mode: Literal["bare_metal", "proxmox_windows_vm"] = "bare_metal"
+    blueprint_slug: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
     organization_id: UUID | None = None
     name: str = Field(min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     minimum_vram_mb: int = Field(default=8192, ge=8192, le=196608)
@@ -137,7 +139,12 @@ class GamingSessionRead(BaseModel):
     id: UUID
     organization_id: UUID
     node_id: UUID | None
+    guest_node_id: UUID | None
     gaming_title_id: UUID | None
+    deployment_mode: str
+    deployment_blueprint_id: UUID | None
+    guest_vm_id: int | None
+    deployment_stage: str
     name: str
     status: str
     desired_state: str
@@ -194,5 +201,37 @@ class GamingConnectionLeaseRead(BaseModel):
     paired_at: datetime | None
     revoked_at: datetime | None
     failure_message: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class GamingVmBlueprintCreate(BaseModel):
+    slug: str = Field(min_length=2, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
+    name: str = Field(min_length=2, max_length=150)
+    enabled: bool = False
+    template_vmid: int = Field(ge=100, le=999999999)
+    storage: str = Field(default="local-lvm", min_length=1, max_length=80)
+    bridge: str = Field(default="vmbr0", min_length=1, max_length=80)
+    machine: Literal["q35"] = "q35"
+    bios: Literal["ovmf"] = "ovmf"
+    bootstrap_mode: Literal["prebaked_agent_qga"] = "prebaked_agent_qga"
+    reset_policy: Literal["destroy_on_terminate"] = "destroy_on_terminate"
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class GamingVmBlueprintRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    slug: str
+    name: str
+    enabled: bool
+    template_vmid: int
+    storage: str
+    bridge: str
+    machine: str
+    bios: str
+    bootstrap_mode: str
+    reset_policy: str
+    metadata_json: dict[str, Any]
     created_at: datetime
     updated_at: datetime

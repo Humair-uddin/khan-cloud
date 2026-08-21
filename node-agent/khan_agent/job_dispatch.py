@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from khan_agent.gaming import execute_gaming_job
+from khan_agent.proxmox_gaming_vm import execute_proxmox_gaming_vm_job
 from khan_agent.virtualization import JobExecutionResult, execute_virtualization_job
 
 
@@ -34,6 +35,13 @@ def execute_node_job(
             storage_root=virtualization_storage_root,
             base_image_path=virtualization_base_image_path,
             network_name=virtualization_network_name,
+        )
+
+    if job_type.startswith("gaming.vm."):
+        return execute_proxmox_gaming_vm_job(
+            job,
+            execution_enabled=virtualization_execution_enabled,
+            state_root=virtualization_storage_root,
         )
 
     if job_type.startswith("gaming."):

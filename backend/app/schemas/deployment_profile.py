@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 class DeploymentProfileCreate(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     purpose: str = Field(
-        pattern=r"^(gaming_host|gpu_compute|vps_infrastructure|organization_private|internal_lab)$"
+        pattern=r"^(gaming_host|gaming_hypervisor|gpu_compute|vps_infrastructure|organization_private|internal_lab)$"
     )
     ownership_type: str = Field(
         pattern=r"^(khan_cloud|trusted_partner|organization|third_party_provider)$"

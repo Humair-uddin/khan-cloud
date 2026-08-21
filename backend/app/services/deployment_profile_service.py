@@ -47,6 +47,20 @@ def _validate_profile_policy(payload: DeploymentProfileCreate) -> None:
                 "Gaming host profiles cannot enable VPS or enterprise VM services."
             )
 
+    if payload.purpose == "gaming_hypervisor":
+        if payload.ownership_type not in {"khan_cloud", "trusted_partner"}:
+            raise DeploymentProfileError(
+                "Gaming hypervisors are restricted to Khan Cloud or trusted partners."
+            )
+        if payload.visibility == "public_marketplace":
+            raise DeploymentProfileError(
+                "Gaming hypervisors cannot be public provider listings."
+            )
+        if not payload.allowed_services.get("gaming_vm", False):
+            raise DeploymentProfileError(
+                "Gaming hypervisor profiles must explicitly enable gaming_vm."
+            )
+
 
 def create_profile(
     db: Session,

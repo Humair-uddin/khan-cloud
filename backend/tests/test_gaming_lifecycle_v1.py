@@ -81,7 +81,9 @@ def test_gaming_lifecycle_state_vocabulary_is_consistent():
     # Start remains an immediate lifecycle transition.
     assert 'session.desired_state = "running"' in service
     assert 'session.status = "starting"' in service
-    assert 'job_type="gaming.session.start"' in service
+    assert '_gaming_runtime_job_type(session, "start")' in service
+    assert '"gaming.session.start"' in service
+    assert '"gaming.vm.start"' in service
 
     # Stop and terminate retain the canonical vocabulary while
     # KG-004B may defer runtime shutdown until connection

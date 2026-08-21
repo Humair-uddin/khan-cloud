@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.compute import GamingReservation, GamingSession, NodeCapacity, NodeJob
+from app.models.compute import GamingReservation, GamingSession, GamingVmBlueprint, NodeCapacity, NodeJob
 from app.models.gaming_catalog import GamingTitle, NodeGameQualification
 from app.services.gaming_catalog_service import qualification_is_fresh
 from app.models.node import Node
@@ -196,37 +196,28 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
     storage_bytes = payload.storage_gb * GIB
     gaming_title = _resolve_gaming_title(db, payload.game_slug)
     effective_vram = max(payload.minimum_vram_mb, gaming_title.minimum_vram_mb if gaming_title else 0)
-    capacity, node, gpu_uuid, gpu_name, gpu_vram = select_gaming_host(
-        db, minimum_vram_mb=effective_vram, cpu=payload.cpu,
-        memory_bytes=memory_bytes, storage_bytes=storage_bytes,
-        gaming_title=gaming_title,
-    )
-    session = GamingSession(
-        gaming_title_id=(gaming_title.id if gaming_title else None),
-        organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id,
-        name=payload.name, status="provisioning", desired_state="running",
-        minimum_vram_mb=effective_vram, requested_cpu=payload.cpu,
-        requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes,
-        gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram,
-        streaming_backend=payload.streaming_backend,
-    )
+
+    if payload.deployment_mode == "proxmox_windows_vm":
+        from app.services.gaming_vm_service import resolve_blueprint, select_gaming_hypervisor, queue_windows_vm_create
+        blueprint = resolve_blueprint(db, payload.blueprint_slug)
+        capacity, node, gpu = select_gaming_hypervisor(db, cpu=payload.cpu, memory_bytes=memory_bytes, storage_bytes=storage_bytes, minimum_vram_mb=effective_vram)
+        gpu_uuid = str(gpu.get("uuid") or gpu.get("slot") or "")
+        gpu_name = str(gpu.get("name") or "passthrough-gpu")
+        gpu_vram = int(gpu.get("memory_total_mib") or 0)
+        session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="proxmox_windows_vm", deployment_blueprint_id=blueprint.id, deployment_stage="reserving", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
+        db.add(session); db.flush()
+        db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
+        capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
+        queue_windows_vm_create(db, session=session, capacity=capacity, hypervisor=node, blueprint=blueprint, gpu=gpu)
+        db.commit(); db.refresh(session); return session
+
+    capacity, node, gpu_uuid, gpu_name, gpu_vram = select_gaming_host(db, minimum_vram_mb=effective_vram, cpu=payload.cpu, memory_bytes=memory_bytes, storage_bytes=storage_bytes, gaming_title=gaming_title)
+    session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="bare_metal", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
     db.add(session); db.flush()
-    reservation = GamingReservation(
-        gaming_session_id=session.id, node_id=node.id, gpu_uuid=gpu_uuid,
-        cpu=payload.cpu, memory_bytes=memory_bytes, storage_bytes=storage_bytes,
-        status="reserved",
-    )
-    db.add(reservation)
-    capacity.cpu_allocated += payload.cpu
-    capacity.memory_allocated_bytes += memory_bytes
-    capacity.storage_allocated_bytes += storage_bytes
-    db.add(NodeJob(
-        node_id=node.id, gaming_session_id=session.id, job_type="gaming.session.create",
-        payload={"session_id": str(session.id), "gpu_uuid": gpu_uuid, "gpu_name": gpu_name,
-                 "minimum_vram_mb": effective_vram, "streaming_backend": payload.streaming_backend, "game_slug": (gaming_title.slug if gaming_title else None), "launcher": (gaming_title.launcher if gaming_title else None), "launcher_app_id": (gaming_title.launcher_app_id if gaming_title else None)},
-    ))
-    db.commit(); db.refresh(session)
-    return session
+    db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
+    capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
+    db.add(NodeJob(node_id=node.id,gaming_session_id=session.id,job_type="gaming.session.create",payload={"session_id":str(session.id),"gpu_uuid":gpu_uuid,"gpu_name":gpu_name,"minimum_vram_mb":effective_vram,"streaming_backend":payload.streaming_backend,"game_slug":(gaming_title.slug if gaming_title else None),"launcher":(gaming_title.launcher if gaming_title else None),"launcher_app_id":(gaming_title.launcher_app_id if gaming_title else None)}))
+    db.commit(); db.refresh(session); return session
 
 
 def visible_gaming_sessions(db: Session, actor: User) -> list[GamingSession]:
@@ -253,6 +244,13 @@ def release_gaming_reservation(db: Session, session: GamingSession) -> None:
         capacity.memory_allocated_bytes = max(0, capacity.memory_allocated_bytes - reservation.memory_bytes)
         capacity.storage_allocated_bytes = max(0, capacity.storage_allocated_bytes - reservation.storage_bytes)
     reservation.status = "released"; reservation.released_at = datetime.now(UTC)
+
+
+def _gaming_runtime_job_type(session: GamingSession, action: str) -> str:
+    if session.deployment_mode == "proxmox_windows_vm":
+        mapping = {"start":"gaming.vm.start","stop":"gaming.vm.stop","delete":"gaming.vm.delete"}
+        return mapping[action]
+    return f"gaming.session.{action}"
 
 
 def queue_gaming_action(
@@ -296,7 +294,7 @@ def queue_gaming_action(
             NodeJob(
                 node_id=session.node_id,
                 gaming_session_id=session.id,
-                job_type="gaming.session.start",
+                job_type=_gaming_runtime_job_type(session, "start"),
                 payload={
                     "session_id": str(session.id),
                     "gpu_uuid": session.gpu_uuid,
@@ -342,7 +340,7 @@ def queue_gaming_action(
             NodeJob(
                 node_id=session.node_id,
                 gaming_session_id=session.id,
-                job_type=f"gaming.session.{job_action}",
+                job_type=_gaming_runtime_job_type(session, job_action),
                 payload={
                     "session_id": str(session.id),
                     "gpu_uuid": session.gpu_uuid,
@@ -405,6 +403,30 @@ def finish_gaming_job(
             GamingReservation.gaming_session_id == session.id
         )
     )
+
+    if job.job_type.startswith("gaming.vm."):
+        from app.services.gaming_vm_service import scrub_vm_job_secret
+        scrub_vm_job_secret(job)
+        if status != "succeeded":
+            session.status = "error" if job.job_type != "gaming.vm.create" else "failed"
+            session.failure_category = "gaming_vm_job_failed"
+            session.failure_message = error_message[:500]
+            if job.job_type == "gaming.vm.create": release_gaming_reservation(db, session)
+            return
+        session.failure_category = ""; session.failure_message = ""
+        if job.job_type == "gaming.vm.create":
+            session.runtime_id = str(result.get("runtime_id") or "")
+            session.guest_vm_id = int(result.get("vmid") or 0) or None
+            session.status = "bootstrapping"
+            session.deployment_stage = "waiting_for_guest_agent"
+            info=dict(session.connection_info or {}); info.update({"hypervisor_runtime_id":session.runtime_id,"guest_vm_id":session.guest_vm_id}); session.connection_info=info
+        elif job.job_type == "gaming.vm.start":
+            session.status = "bootstrapping"; session.deployment_stage = "waiting_for_guest_agent"
+        elif job.job_type == "gaming.vm.stop":
+            session.status = "stopped"; session.connection_info = {}
+        elif job.job_type == "gaming.vm.delete":
+            session.status = "terminated"; session.ended_at = datetime.now(UTC); session.connection_info = {}; release_gaming_reservation(db, session)
+        return
 
     if status == "succeeded":
         session.failure_category = ""

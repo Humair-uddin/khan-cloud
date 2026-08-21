@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -198,8 +199,43 @@ def collect_safe_inventory() -> dict[str, Any]:
         "nvidia": _nvidia_inventory(),
         "filesystem": _filesystem_inventory(),
         "virtualization": _virtualization_inventory(),
+        "gpu_passthrough": _gpu_passthrough_inventory(),
     }
 
+
+
+
+def _gpu_passthrough_inventory() -> dict[str, Any]:
+    """Discover Linux PCI display GPUs suitable for explicit VM passthrough."""
+    if platform.system() == "Windows":
+        return {"available": False, "devices": [], "reason": "windows_host"}
+    lspci = shutil.which("lspci")
+    if not lspci:
+        return {"available": False, "devices": [], "reason": "lspci_missing"}
+    result = _run([lspci, "-Dnnk"], timeout=10.0)
+    if result is None or result.returncode != 0:
+        return {"available": False, "devices": [], "reason": "lspci_failed"}
+    devices=[]; current=None
+    for line in result.stdout.splitlines():
+        if line and not line[0].isspace():
+            if current: devices.append(current)
+            m=re.match(r"^(?P<pci>[0-9a-fA-F:.]+)\s+.*?(VGA compatible controller|3D controller).*?\[(?P<vendor>[0-9a-fA-F]{4}):(?P<device>[0-9a-fA-F]{4})\]", line)
+            current=None
+            if m:
+                pci=m.group("pci"); slot=pci.rsplit(".",1)[0]
+                current={"pci_address":pci,"slot":slot.split(":",1)[1] if pci.count(":")>=2 else slot,"vendor_id":m.group("vendor").lower(),"device_id":m.group("device").lower(),"name":line.split("[",1)[0].split(None,1)[1].strip(),"driver":"","iommu_group":"","memory_total_mib":0}
+        elif current:
+            stripped=line.strip()
+            if stripped.startswith("Kernel driver in use:"):
+                current["driver"]=stripped.split(":",1)[1].strip()
+    if current: devices.append(current)
+    for item in devices:
+        addr=item["pci_address"]
+        group=Path("/sys/bus/pci/devices")/addr/"iommu_group"
+        try: item["iommu_group"]=group.resolve().name if group.exists() else ""
+        except OSError: item["iommu_group"]=""
+        item["assignable"]=bool(item["iommu_group"] and item["driver"] in {"vfio-pci","vfio_pci"})
+    return {"available": bool(devices), "assignable_count": sum(bool(d["assignable"]) for d in devices), "devices": devices}
 
 def _virtualization_inventory() -> dict[str, Any]:
     if platform.system() == "Windows":

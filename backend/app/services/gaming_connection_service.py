@@ -76,7 +76,7 @@ def create_connection_lease(
         gaming_session_id=session.id,
         organization_id=session.organization_id,
         user_id=actor.id,
-        node_id=session.node_id,
+        node_id=(session.guest_node_id or session.node_id),
         state="pending",
         client_name=(
             f"KC-{str(session.id)[:8]}-"
@@ -391,11 +391,16 @@ def continue_deferred_session_action(
         else "stopping"
     )
 
+    job_type = (
+        f"gaming.vm.{action}"
+        if session.deployment_mode == "proxmox_windows_vm"
+        else f"gaming.session.{action}"
+    )
     db.add(
         NodeJob(
             node_id=session.node_id,
             gaming_session_id=session.id,
-            job_type=f"gaming.session.{action}",
+            job_type=job_type,
             payload={
                 "session_id": str(session.id),
                 "gpu_uuid": session.gpu_uuid,

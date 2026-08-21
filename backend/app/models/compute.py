@@ -125,6 +125,25 @@ class NodeJob(BaseModel):
     error_message: Mapped[str] = mapped_column(String(500), default="")
 
 
+class GamingVmBlueprint(BaseModel):
+    __tablename__ = "gaming_vm_blueprints"
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_gaming_vm_blueprints_slug"),
+    )
+
+    slug: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    template_vmid: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage: Mapped[str] = mapped_column(String(80), nullable=False, default="local-lvm")
+    bridge: Mapped[str] = mapped_column(String(80), nullable=False, default="vmbr0")
+    machine: Mapped[str] = mapped_column(String(40), nullable=False, default="q35")
+    bios: Mapped[str] = mapped_column(String(20), nullable=False, default="ovmf")
+    bootstrap_mode: Mapped[str] = mapped_column(String(50), nullable=False, default="prebaked_agent_qga")
+    reset_policy: Mapped[str] = mapped_column(String(40), nullable=False, default="destroy_on_terminate")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
 class GamingSession(BaseModel):
     __tablename__ = "gaming_sessions"
 
@@ -132,6 +151,11 @@ class GamingSession(BaseModel):
     organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True)
     created_by_user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
     node_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    guest_node_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    deployment_mode: Mapped[str] = mapped_column(String(40), nullable=False, default="bare_metal", index=True)
+    deployment_blueprint_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("gaming_vm_blueprints.id", ondelete="SET NULL"), nullable=True, index=True)
+    guest_vm_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    deployment_stage: Mapped[str] = mapped_column(String(60), nullable=False, default="", index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending", index=True)
     desired_state: Mapped[str] = mapped_column(String(40), nullable=False, default="running")
