@@ -27,3 +27,15 @@ def test_connection_lease_targets_guest_node_when_present():
 def test_vm_job_secret_is_redacted_after_completion():
     root=Path(__file__).resolve().parents[1]; src=(root/"app/services/gaming_vm_service.py").read_text()
     assert "scrub_vm_job_secret" in src and '"[REDACTED]"' in src
+
+
+def test_kg005b_blueprint_metadata_reaches_hypervisor_job():
+    root=Path(__file__).resolve().parents[1]
+    src=(root/"app/services/gaming_vm_service.py").read_text()
+    assert '"blueprint_metadata":dict(blueprint.metadata_json or {})' in src
+
+def test_kg005b_guest_registration_updates_connection_identity():
+    root=Path(__file__).resolve().parents[1]
+    src=(root/"app/services/gaming_vm_service.py").read_text()
+    assert '"guest_node_id":str(node.id)' in src
+    assert '"guest_ip":node.production_ip or node.management_ip' in src

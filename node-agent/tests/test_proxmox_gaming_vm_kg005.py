@@ -18,5 +18,25 @@ def test_create_contract_uses_clone_gpu_qga_and_rollback():
 
 def test_enrollment_secret_not_written_to_runtime_state():
     src=Path(proxmox_gaming_vm.__file__).read_text()
-    state_section=src[src.index('state={"session_id"'):src.index('return JobExecutionResult("succeeded"',src.index('state={"session_id"'))]
+    start=src.index('state = {"session_id": sid')
+    end=src.index('_write_state(state_file, state)', start)
+    state_section=src[start:end]
     assert "deployment_enrollment_code" not in state_section
+
+
+def test_kg005b_template_preflight_and_idempotency_contract():
+    src=Path(proxmox_gaming_vm.__file__).read_text()
+    for token in ("_validate_template", "template:\\s*1", "_validate_storage_and_bridge", "idempotent_replay", "ready_for_guest"):
+        assert token in src
+
+def test_kg005b_bootstrap_scrubs_one_time_enrollment_code():
+    src=Path(proxmox_gaming_vm.__file__).read_text()
+    assert "deployment_enrollment_code key missing" in src
+    assert "Restart-Service KhanCloudAgent" in src
+    assert "'$1 \"\"'" in src
+
+def test_kg005b_clone_state_is_atomic_and_rollback_removes_state():
+    src=Path(proxmox_gaming_vm.__file__).read_text()
+    assert 'temp.replace(path)' in src
+    assert '_rollback_clone' in src
+    assert 'state_file.unlink(missing_ok=True)' in src

@@ -79,7 +79,7 @@ def queue_windows_vm_create(db: Session, *, session: GamingSession, capacity: No
     profile,code=create_guest_enrollment_profile(db,session=session,hypervisor=hypervisor)
     session.deployment_stage="vm_queued"
     session.connection_info={"gpu_pci_slot":str(gpu.get("slot") or ""),"guest_profile_id":str(profile.id)}
-    db.add(NodeJob(node_id=hypervisor.id,gaming_session_id=session.id,job_type="gaming.vm.create",payload={"session_id":str(session.id),"name":session.name,"template_vmid":blueprint.template_vmid,"storage":blueprint.storage,"bridge":blueprint.bridge,"machine":blueprint.machine,"bios":blueprint.bios,"cpu":session.requested_cpu,"memory_bytes":session.requested_memory_bytes,"storage_bytes":session.requested_storage_bytes,"gpu_pci_slot":str(gpu.get("slot") or ""),"deployment_enrollment_code":code,"control_plane_url":profile.control_plane_url,"guest_profile_id":str(profile.id),"bootstrap_mode":blueprint.bootstrap_mode}))
+    db.add(NodeJob(node_id=hypervisor.id,gaming_session_id=session.id,job_type="gaming.vm.create",payload={"session_id":str(session.id),"name":session.name,"template_vmid":blueprint.template_vmid,"storage":blueprint.storage,"bridge":blueprint.bridge,"machine":blueprint.machine,"bios":blueprint.bios,"cpu":session.requested_cpu,"memory_bytes":session.requested_memory_bytes,"storage_bytes":session.requested_storage_bytes,"gpu_pci_slot":str(gpu.get("slot") or ""),"deployment_enrollment_code":code,"control_plane_url":profile.control_plane_url,"guest_profile_id":str(profile.id),"bootstrap_mode":blueprint.bootstrap_mode,"blueprint_metadata":dict(blueprint.metadata_json or {})}))
 
 def scrub_vm_job_secret(job: NodeJob) -> None:
     payload=dict(job.payload or {})
@@ -99,6 +99,9 @@ def reconcile_guest_registration(db: Session, *, node: Node) -> None:
     if session is None or session.deployment_mode != "proxmox_windows_vm": return
     session.guest_node_id=node.id
     session.deployment_stage="guest_enrolled"
+    info=dict(session.connection_info or {})
+    info.update({"guest_node_id":str(node.id),"guest_ip":node.production_ip or node.management_ip})
+    session.connection_info=info
 
 def reconcile_guest_readiness(db: Session, *, node: Node) -> None:
     sessions=list(db.scalars(select(GamingSession).where(GamingSession.guest_node_id==node.id, GamingSession.deployment_mode=="proxmox_windows_vm", GamingSession.status.in_({"provisioning","bootstrapping"}))))
