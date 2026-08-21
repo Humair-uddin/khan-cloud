@@ -18,6 +18,10 @@ def execute_node_job(
     gaming_execution_backend: str = "none",
     gaming_streaming_backend: str = "none",
     gaming_state_root: Path = Path("/var/lib/khan-cloud-agent/gaming"),
+    gaming_sunshine_api_url: str = "https://127.0.0.1:47990",
+    gaming_sunshine_api_username: str = "",
+    gaming_sunshine_api_password: str = "",
+    gaming_sunshine_verify_tls: bool = False,
 ) -> JobExecutionResult:
     """Route a node job to the executor responsible for its workload family."""
 
@@ -39,6 +43,10 @@ def execute_node_job(
             execution_backend=gaming_execution_backend,
             streaming_backend=gaming_streaming_backend,
             state_root=gaming_state_root,
+            sunshine_api_url=gaming_sunshine_api_url,
+            sunshine_api_username=gaming_sunshine_api_username,
+            sunshine_api_password=gaming_sunshine_api_password,
+            sunshine_verify_tls=gaming_sunshine_verify_tls,
         )
 
     return JobExecutionResult(

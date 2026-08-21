@@ -294,6 +294,20 @@ def finish_gaming_job(
     if job.gaming_session_id is None:
         return
 
+    if job.job_type.startswith("gaming.connection."):
+        from app.services.gaming_connection_service import (
+            finish_connection_job,
+        )
+
+        finish_connection_job(
+            db,
+            job=job,
+            status=status,
+            result=result,
+            error_message=error_message,
+        )
+        return
+
     session = db.get(GamingSession, job.gaming_session_id)
     if session is None:
         return

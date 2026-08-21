@@ -14,6 +14,11 @@ from khan_agent.gaming_launchers import (
     launch_prepared_game,
     prepare_game_launch,
 )
+from khan_agent.sunshine_broker import (
+    SunshineBrokerError,
+    pair_client,
+    unpair_client,
+)
 from khan_agent.virtualization import JobExecutionResult
 
 
@@ -256,6 +261,10 @@ def change_session_state(
     execution_backend: str,
     streaming_backend: str,
     action: str,
+    sunshine_api_url: str = "https://127.0.0.1:47990",
+    sunshine_api_username: str = "",
+    sunshine_api_password: str = "",
+    sunshine_verify_tls: bool = False,
 ) -> JobExecutionResult:
     session_id = str(payload.get("session_id") or "")
     try:
@@ -268,6 +277,29 @@ def change_session_state(
                     {"runtime_id": runtime_id, "deleted": True, "idempotent": True},
                 )
             raise GamingRuntimeError("Gaming runtime does not exist on this node.")
+
+        if action in {"stop", "delete"}:
+            paired_clients = [
+                item
+                for item in state.get("paired_clients", [])
+                if isinstance(item, dict)
+            ]
+
+            for client in paired_clients:
+                client_uuid = str(
+                    client.get("sunshine_client_uuid") or ""
+                )
+
+                if client_uuid:
+                    unpair_client(
+                        client_uuid=client_uuid,
+                        api_url=sunshine_api_url,
+                        username=sunshine_api_username,
+                        password=sunshine_api_password,
+                        verify_tls=sunshine_verify_tls,
+                    )
+
+            state["paired_clients"] = []
 
         if action == "delete":
             try:
@@ -310,5 +342,160 @@ def change_session_state(
         if desired == "running":
             result["connection_info"] = _connection_info(runtime_id)
         return JobExecutionResult("succeeded", result)
-    except (GamingRuntimeError, ValueError) as exc:
+    except (
+        GamingRuntimeError,
+        SunshineBrokerError,
+        ValueError,
+    ) as exc:
         return JobExecutionResult("blocked", {}, str(exc))
+
+
+
+def pair_connection(
+    payload: dict[str, Any],
+    *,
+    state_root: Path,
+    sunshine_api_url: str,
+    sunshine_api_username: str,
+    sunshine_api_password: str,
+    sunshine_verify_tls: bool,
+) -> JobExecutionResult:
+    session_id = str(payload.get("session_id") or "")
+    pin = str(payload.get("pin") or "")
+    client_name = str(payload.get("client_name") or "")
+
+    try:
+        _, runtime_id, state_file = _state_paths(
+            state_root,
+            session_id,
+        )
+        state = _read_state(state_file)
+
+        if state is None:
+            raise GamingRuntimeError(
+                "Gaming runtime does not exist on this node."
+            )
+
+        if state.get("status") != "running":
+            raise GamingRuntimeError(
+                "Gaming connection pairing requires a running runtime."
+            )
+
+        paired = pair_client(
+            pin=pin,
+            client_name=client_name,
+            api_url=sunshine_api_url,
+            username=sunshine_api_username,
+            password=sunshine_api_password,
+            verify_tls=sunshine_verify_tls,
+        )
+
+        clients = [
+            item
+            for item in state.get("paired_clients", [])
+            if isinstance(item, dict)
+        ]
+
+        client_uuid = str(
+            paired["sunshine_client_uuid"]
+        )
+
+        if not any(
+            str(item.get("sunshine_client_uuid"))
+            == client_uuid
+            for item in clients
+        ):
+            clients.append(
+                {
+                    "sunshine_client_uuid": client_uuid,
+                    "client_name": client_name,
+                }
+            )
+
+        state["paired_clients"] = clients
+        _write_state(state_file, state)
+
+        return JobExecutionResult(
+            "succeeded",
+            {
+                "runtime_id": runtime_id,
+                **paired,
+            },
+        )
+
+    except (
+        GamingRuntimeError,
+        SunshineBrokerError,
+    ) as exc:
+        return JobExecutionResult(
+            "blocked",
+            {},
+            str(exc),
+        )
+
+
+def revoke_connection(
+    payload: dict[str, Any],
+    *,
+    state_root: Path,
+    sunshine_api_url: str,
+    sunshine_api_username: str,
+    sunshine_api_password: str,
+    sunshine_verify_tls: bool,
+) -> JobExecutionResult:
+    session_id = str(payload.get("session_id") or "")
+    client_uuid = str(
+        payload.get("sunshine_client_uuid") or ""
+    )
+
+    try:
+        _, runtime_id, state_file = _state_paths(
+            state_root,
+            session_id,
+        )
+        state = _read_state(state_file)
+
+        if state is None:
+            raise GamingRuntimeError(
+                "Gaming runtime does not exist on this node."
+            )
+
+        result = unpair_client(
+            client_uuid=client_uuid,
+            api_url=sunshine_api_url,
+            username=sunshine_api_username,
+            password=sunshine_api_password,
+            verify_tls=sunshine_verify_tls,
+        )
+
+        clients = [
+            item
+            for item in state.get("paired_clients", [])
+            if (
+                isinstance(item, dict)
+                and str(
+                    item.get("sunshine_client_uuid")
+                ) != client_uuid
+            )
+        ]
+
+        state["paired_clients"] = clients
+        _write_state(state_file, state)
+
+        return JobExecutionResult(
+            "succeeded",
+            {
+                "runtime_id": runtime_id,
+                **result,
+            },
+        )
+
+    except (
+        GamingRuntimeError,
+        SunshineBrokerError,
+    ) as exc:
+        return JobExecutionResult(
+            "blocked",
+            {},
+            str(exc),
+        )

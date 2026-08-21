@@ -161,3 +161,38 @@ class GamingSessionRead(BaseModel):
 
 class GamingSessionAction(BaseModel):
     action: Literal["start", "stop", "terminate"]
+
+
+class GamingConnectionLeaseCreate(BaseModel):
+    pairing_ttl_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=900,
+    )
+
+
+class GamingConnectionPairRequest(BaseModel):
+    pin: str = Field(
+        min_length=4,
+        max_length=4,
+        pattern=r"^[0-9]{4}$",
+    )
+
+
+class GamingConnectionLeaseRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    gaming_session_id: UUID
+    organization_id: UUID
+    user_id: UUID
+    node_id: UUID
+    state: str
+    client_name: str
+    sunshine_client_uuid: str
+    pairing_expires_at: datetime
+    paired_at: datetime | None
+    revoked_at: datetime | None
+    failure_message: str
+    created_at: datetime
+    updated_at: datetime

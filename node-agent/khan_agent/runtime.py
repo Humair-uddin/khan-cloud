@@ -190,6 +190,18 @@ class AgentRuntime:
                 gaming_state_root=(
                     self.settings.agent.state_directory / "gaming"
                 ),
+                gaming_sunshine_api_url=(
+                    self.settings.gaming.sunshine_api_url
+                ),
+                gaming_sunshine_api_username=(
+                    self.settings.gaming.sunshine_api_username
+                ),
+                gaming_sunshine_api_password=(
+                    self.settings.gaming.sunshine_api_password
+                ),
+                gaming_sunshine_verify_tls=(
+                    self.settings.gaming.sunshine_verify_tls
+                ),
             )
         except Exception:  # defensive boundary around workload executors
             logger.exception(

@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from khan_agent.gaming_backends import probe_gaming_backend, probe_proxmox_vm
-from khan_agent.gaming_runtime import change_session_state, create_session
+from khan_agent.gaming_runtime import (
+    change_session_state,
+    create_session,
+    pair_connection,
+    revoke_connection,
+)
 from khan_agent.virtualization import JobExecutionResult
 
 
@@ -15,6 +20,10 @@ def execute_gaming_job(
     execution_backend: str = "none",
     streaming_backend: str = "none",
     state_root: Path = Path("/var/lib/khan-cloud-agent/gaming"),
+    sunshine_api_url: str = "https://127.0.0.1:47990",
+    sunshine_api_username: str = "",
+    sunshine_api_password: str = "",
+    sunshine_verify_tls: bool = False,
 ) -> JobExecutionResult:
     """Execute Khan Cloud gaming workload operations."""
 
@@ -55,6 +64,54 @@ def execute_gaming_job(
 
         return JobExecutionResult("succeeded", result)
 
+    if (
+        job_type.startswith("gaming.connection.")
+        and not execution_enabled
+    ):
+        return JobExecutionResult(
+            "blocked",
+            {},
+            "Gaming execution is disabled by node policy.",
+        )
+
+    if job_type == "gaming.connection.pair":
+        payload = job.get("payload") or {}
+
+        if not isinstance(payload, dict):
+            return JobExecutionResult(
+                "failed",
+                {},
+                "Gaming connection payload must be an object.",
+            )
+
+        return pair_connection(
+            payload,
+            state_root=state_root,
+            sunshine_api_url=sunshine_api_url,
+            sunshine_api_username=sunshine_api_username,
+            sunshine_api_password=sunshine_api_password,
+            sunshine_verify_tls=sunshine_verify_tls,
+        )
+
+    if job_type == "gaming.connection.revoke":
+        payload = job.get("payload") or {}
+
+        if not isinstance(payload, dict):
+            return JobExecutionResult(
+                "failed",
+                {},
+                "Gaming connection payload must be an object.",
+            )
+
+        return revoke_connection(
+            payload,
+            state_root=state_root,
+            sunshine_api_url=sunshine_api_url,
+            sunshine_api_username=sunshine_api_username,
+            sunshine_api_password=sunshine_api_password,
+            sunshine_verify_tls=sunshine_verify_tls,
+        )
+
     lifecycle = {
         "gaming.session.create",
         "gaming.session.start",
@@ -85,6 +142,10 @@ def execute_gaming_job(
             execution_backend=execution_backend,
             streaming_backend=streaming_backend,
             action=action,
+            sunshine_api_url=sunshine_api_url,
+            sunshine_api_username=sunshine_api_username,
+            sunshine_api_password=sunshine_api_password,
+            sunshine_verify_tls=sunshine_verify_tls,
         )
 
     return JobExecutionResult(

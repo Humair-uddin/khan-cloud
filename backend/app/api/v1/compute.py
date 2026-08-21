@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.rbac_dependencies import require_permission
 from app.db.database import get_db
 from app.models.user import User
+from app.schemas.compute import GamingConnectionLeaseCreate, GamingConnectionLeaseRead, GamingConnectionPairRequest
 from app.schemas.compute import (ComputeHostRead, GamingSessionAction, GamingSessionCreate, GamingSessionRead, VPSAction, VPSCreate, VPSImageRead, VPSRead)
 from app.services.compute_service import (
     ComputeError, create_vps, get_visible_vps, list_compute_hosts, list_vps_images, queue_vps_action, visible_vps,
@@ -123,3 +124,147 @@ def gaming_session_action(
         return queue_gaming_action(db, session=item, action=payload.action)
     except ComputeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+
+@router.post(
+    "/gaming/sessions/{session_id}/connection-leases",
+    response_model=GamingConnectionLeaseRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_gaming_connection_lease(
+    session_id: UUID,
+    payload: GamingConnectionLeaseCreate,
+    user: User = Depends(
+        require_permission("gaming.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_connection_service import (
+        create_connection_lease,
+    )
+    from app.services.gaming_service import (
+        get_visible_gaming_session,
+    )
+
+    try:
+        session = get_visible_gaming_session(
+            db,
+            user,
+            session_id,
+        )
+        return create_connection_lease(
+            db,
+            session=session,
+            actor=user,
+            pairing_ttl_seconds=(
+                payload.pairing_ttl_seconds
+            ),
+        )
+    except ComputeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/gaming/sessions/{session_id}/connection-leases/{lease_id}",
+    response_model=GamingConnectionLeaseRead,
+)
+def get_gaming_connection_lease(
+    session_id: UUID,
+    lease_id: UUID,
+    user: User = Depends(
+        require_permission("gaming.read")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_connection_service import (
+        get_visible_connection_lease,
+    )
+
+    try:
+        return get_visible_connection_lease(
+            db,
+            actor=user,
+            session_id=session_id,
+            lease_id=lease_id,
+        )
+    except ComputeError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/gaming/sessions/{session_id}/connection-leases/{lease_id}/pair",
+    response_model=GamingConnectionLeaseRead,
+)
+def pair_gaming_connection(
+    session_id: UUID,
+    lease_id: UUID,
+    payload: GamingConnectionPairRequest,
+    user: User = Depends(
+        require_permission("gaming.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_connection_service import (
+        get_visible_connection_lease,
+        queue_pairing,
+    )
+
+    try:
+        lease = get_visible_connection_lease(
+            db,
+            actor=user,
+            session_id=session_id,
+            lease_id=lease_id,
+        )
+        return queue_pairing(
+            db,
+            lease=lease,
+            pin=payload.pin,
+        )
+    except ComputeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/gaming/sessions/{session_id}/connection-leases/{lease_id}/revoke",
+    response_model=GamingConnectionLeaseRead,
+)
+def revoke_gaming_connection(
+    session_id: UUID,
+    lease_id: UUID,
+    user: User = Depends(
+        require_permission("gaming.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_connection_service import (
+        get_visible_connection_lease,
+        queue_revocation,
+    )
+
+    try:
+        lease = get_visible_connection_lease(
+            db,
+            actor=user,
+            session_id=session_id,
+            lease_id=lease_id,
+        )
+        return queue_revocation(
+            db,
+            lease=lease,
+        )
+    except ComputeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc

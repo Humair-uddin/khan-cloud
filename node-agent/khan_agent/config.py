@@ -63,6 +63,10 @@ class GamingConfig(BaseModel):
     enabled: bool = False
     execution_backend: str = "none"
     streaming_backend: str = "none"
+    sunshine_api_url: str = "https://127.0.0.1:47990"
+    sunshine_api_username: str = ""
+    sunshine_api_password: str = ""
+    sunshine_verify_tls: bool = False
 
 
 class VirtualizationConfig(BaseModel):
