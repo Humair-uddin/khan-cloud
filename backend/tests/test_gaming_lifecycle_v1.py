@@ -78,11 +78,19 @@ def test_gaming_lifecycle_state_vocabulary_is_consistent():
         "app/services/gaming_service.py"
     ).read_text()
 
-    assert (
-        '("running" if action == "start" else "stopped")'
-        in service
-    )
+    # Start remains an immediate lifecycle transition.
+    assert 'session.desired_state = "running"' in service
+    assert 'session.status = "starting"' in service
+    assert 'job_type="gaming.session.start"' in service
 
-    assert 'session.status = "stopped"' in service
+    # Stop and terminate retain the canonical vocabulary while
+    # KG-004B may defer runtime shutdown until connection
+    # authorization has been revoked.
+    assert '"stopped"' in service
     assert '"terminated"' in service
+    assert '"stopping"' in service
+    assert '"terminating"' in service
+
+    # Failure remains a canonical lifecycle outcome.
     assert '"failed"' in service
+    assert 'session.status = "error"' in service

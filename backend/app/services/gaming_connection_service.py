@@ -18,7 +18,13 @@ from app.services.gaming_service import get_visible_gaming_session
 
 
 PAIRABLE_STATES = {"pending", "failed"}
-ACTIVE_PAIRING_JOB_STATES = {"pending", "running"}
+ACTIVE_CONNECTION_JOB_STATES = {"pending", "running"}
+NON_PAIRED_INVALIDATABLE_STATES = {
+    "pending",
+    "pairing",
+    "failed",
+    "expired",
+}
 
 
 def _now() -> datetime:
@@ -142,7 +148,9 @@ def queue_pairing(
             == lease.gaming_session_id,
             NodeJob.job_type
             == "gaming.connection.pair",
-            NodeJob.status.in_(ACTIVE_PAIRING_JOB_STATES),
+            NodeJob.status.in_(ACTIVE_CONNECTION_JOB_STATES),
+            NodeJob.payload["lease_id"].astext
+            == str(lease.id),
         )
         .limit(1)
     )
@@ -201,7 +209,9 @@ def queue_revocation(
             == lease.gaming_session_id,
             NodeJob.job_type
             == "gaming.connection.revoke",
-            NodeJob.status.in_(ACTIVE_PAIRING_JOB_STATES),
+            NodeJob.status.in_(ACTIVE_CONNECTION_JOB_STATES),
+            NodeJob.payload["lease_id"].astext
+            == str(lease.id),
         )
         .limit(1)
     )
@@ -232,6 +242,168 @@ def queue_revocation(
     return lease
 
 
+def prepare_connection_shutdown(
+    db: Session,
+    *,
+    session: GamingSession,
+) -> bool:
+    """Prepare every connection lease before runtime shutdown.
+
+    Returns True when runtime stop/delete may proceed immediately.
+    Returns False when at least one Sunshine revocation must complete first.
+    """
+
+    leases = list(
+        db.scalars(
+            select(GamingConnectionLease)
+            .where(
+                GamingConnectionLease.gaming_session_id == session.id,
+                GamingConnectionLease.state.in_(
+                    {
+                        "pending",
+                        "pairing",
+                        "paired",
+                        "revoking",
+                        "failed",
+                        "expired",
+                    }
+                ),
+            )
+            .order_by(GamingConnectionLease.created_at)
+        )
+    )
+
+    waiting = False
+    now = _now()
+
+    for lease in leases:
+        if lease.state == "paired":
+            if not lease.sunshine_client_uuid:
+                lease.state = "failed"
+                lease.failure_message = (
+                    "Paired connection is missing its Sunshine "
+                    "client identity during session shutdown."
+                )
+                continue
+
+            pending = db.scalar(
+                select(NodeJob)
+                .where(
+                    NodeJob.gaming_session_id == session.id,
+                    NodeJob.job_type == "gaming.connection.revoke",
+                    NodeJob.status.in_(ACTIVE_CONNECTION_JOB_STATES),
+                    NodeJob.payload["lease_id"].astext
+                    == str(lease.id),
+                )
+                .limit(1)
+            )
+
+            if pending is None:
+                lease.state = "revoking"
+                lease.failure_message = ""
+                db.add(
+                    NodeJob(
+                        node_id=lease.node_id,
+                        gaming_session_id=session.id,
+                        job_type="gaming.connection.revoke",
+                        payload={
+                            "session_id": str(session.id),
+                            "lease_id": str(lease.id),
+                            "sunshine_client_uuid":
+                                lease.sunshine_client_uuid,
+                            "automatic_shutdown": True,
+                        },
+                    )
+                )
+
+            waiting = True
+            continue
+
+        if lease.state == "revoking":
+            waiting = True
+            continue
+
+        if lease.state in NON_PAIRED_INVALIDATABLE_STATES:
+            lease.state = "revoked"
+            lease.revoked_at = now
+            lease.failure_message = ""
+
+    return not waiting
+
+
+def continue_deferred_session_action(
+    db: Session,
+    *,
+    session: GamingSession,
+) -> None:
+    """Continue stop/delete after all connection teardown is complete."""
+
+    if session.desired_state not in {"stopped", "terminated"}:
+        return
+
+    blocking = db.scalar(
+        select(GamingConnectionLease)
+        .where(
+            GamingConnectionLease.gaming_session_id == session.id,
+            GamingConnectionLease.state.in_({"paired", "revoking"}),
+        )
+        .limit(1)
+    )
+
+    if blocking is not None:
+        return
+
+    pending_session_job = db.scalar(
+        select(NodeJob)
+        .where(
+            NodeJob.gaming_session_id == session.id,
+            NodeJob.job_type.in_(
+                {
+                    "gaming.session.stop",
+                    "gaming.session.delete",
+                }
+            ),
+            NodeJob.status.in_(ACTIVE_CONNECTION_JOB_STATES),
+        )
+        .limit(1)
+    )
+
+    if pending_session_job is not None:
+        return
+
+    if session.node_id is None:
+        session.status = "error"
+        session.failure_category = "missing_node"
+        session.failure_message = (
+            "Gaming session lost its assigned node during shutdown."
+        )
+        return
+
+    action = (
+        "delete"
+        if session.desired_state == "terminated"
+        else "stop"
+    )
+
+    session.status = (
+        "terminating"
+        if action == "delete"
+        else "stopping"
+    )
+
+    db.add(
+        NodeJob(
+            node_id=session.node_id,
+            gaming_session_id=session.id,
+            job_type=f"gaming.session.{action}",
+            payload={
+                "session_id": str(session.id),
+                "gpu_uuid": session.gpu_uuid,
+            },
+        )
+    )
+
+
 def finish_connection_job(
     db: Session,
     *,
@@ -260,12 +432,17 @@ def finish_connection_job(
     if lease is None:
         return
 
-    if status != "succeeded":
-        lease.state = "failed"
-        lease.failure_message = error_message[:500]
-        return
-
     if job.job_type == "gaming.connection.pair":
+        # A late pairing result must never resurrect an invalidated,
+        # revoked, or otherwise superseded lease.
+        if lease.state != "pairing":
+            return
+
+        if status != "succeeded":
+            lease.state = "failed"
+            lease.failure_message = error_message[:500]
+            return
+
         client_uuid = str(
             result.get("sunshine_client_uuid") or ""
         ).strip()
@@ -282,8 +459,44 @@ def finish_connection_job(
         lease.sunshine_client_uuid = client_uuid
         lease.paired_at = _now()
         lease.failure_message = ""
+        return
 
-    elif job.job_type == "gaming.connection.revoke":
+    if job.job_type == "gaming.connection.revoke":
+        # Likewise, only the revocation operation that owns the
+        # current revoking state may reconcile it.
+        if lease.state != "revoking":
+            return
+
+        session = db.get(
+            GamingSession,
+            lease.gaming_session_id,
+        )
+
+        if status != "succeeded":
+            lease.state = "failed"
+            lease.failure_message = error_message[:500]
+
+            if (
+                session is not None
+                and session.desired_state
+                in {"stopped", "terminated"}
+            ):
+                session.status = "error"
+                session.failure_category = (
+                    "connection_revocation_failed"
+                )
+                session.failure_message = (
+                    "Secure gaming connection revocation failed; "
+                    "runtime shutdown was not attempted."
+                )
+            return
+
         lease.state = "revoked"
         lease.revoked_at = _now()
         lease.failure_message = ""
+
+        if session is not None:
+            continue_deferred_session_action(
+                db,
+                session=session,
+            )

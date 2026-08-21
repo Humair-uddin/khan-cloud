@@ -255,23 +255,111 @@ def release_gaming_reservation(db: Session, session: GamingSession) -> None:
     reservation.status = "released"; reservation.released_at = datetime.now(UTC)
 
 
-def queue_gaming_action(db: Session, *, session: GamingSession, action: str) -> GamingSession:
+def queue_gaming_action(
+    db: Session,
+    *,
+    session: GamingSession,
+    action: str,
+) -> GamingSession:
     if action not in {"start", "stop", "terminate"}:
         raise ComputeError("Unsupported gaming session action.")
+
     if session.status in TERMINAL_SESSION_STATES:
         if action == "terminate" and session.status == "terminated":
             return session
         raise ComputeError("Gaming session is already terminal.")
-    pending = db.scalar(select(NodeJob).where(
-        NodeJob.gaming_session_id == session.id, NodeJob.status.in_({"pending", "running"})
-    ).limit(1))
+
+    pending = db.scalar(
+        select(NodeJob)
+        .where(
+            NodeJob.gaming_session_id == session.id,
+            NodeJob.status.in_({"pending", "running"}),
+        )
+        .limit(1)
+    )
+
     if pending is not None:
-        raise ComputeError("Gaming session already has an in-flight operation.")
-    job_action = "delete" if action == "terminate" else action
-    session.desired_state = "terminated" if action == "terminate" else ("running" if action == "start" else "stopped")
-    session.status = "terminating" if action == "terminate" else f"{action}ing"
-    db.add(NodeJob(node_id=session.node_id, gaming_session_id=session.id, job_type=f"gaming.session.{job_action}", payload={"session_id": str(session.id), "gpu_uuid": session.gpu_uuid}))
-    db.commit(); db.refresh(session)
+        raise ComputeError(
+            "Gaming session already has an in-flight operation."
+        )
+
+    if session.node_id is None:
+        raise ComputeError(
+            "Gaming session is not assigned to a node."
+        )
+
+    if action == "start":
+        session.desired_state = "running"
+        session.status = "starting"
+
+        db.add(
+            NodeJob(
+                node_id=session.node_id,
+                gaming_session_id=session.id,
+                job_type="gaming.session.start",
+                payload={
+                    "session_id": str(session.id),
+                    "gpu_uuid": session.gpu_uuid,
+                },
+            )
+        )
+
+        db.commit()
+        db.refresh(session)
+        return session
+
+    # Stop and terminate are security-sensitive. Revoke any active
+    # Sunshine client authorization before stopping/deleting runtime.
+    from app.services.gaming_connection_service import (
+        prepare_connection_shutdown,
+    )
+
+    session.desired_state = (
+        "terminated"
+        if action == "terminate"
+        else "stopped"
+    )
+
+    ready = prepare_connection_shutdown(
+        db,
+        session=session,
+    )
+
+    if ready:
+        job_action = (
+            "delete"
+            if action == "terminate"
+            else "stop"
+        )
+
+        session.status = (
+            "terminating"
+            if action == "terminate"
+            else "stopping"
+        )
+
+        db.add(
+            NodeJob(
+                node_id=session.node_id,
+                gaming_session_id=session.id,
+                job_type=f"gaming.session.{job_action}",
+                payload={
+                    "session_id": str(session.id),
+                    "gpu_uuid": session.gpu_uuid,
+                },
+            )
+        )
+    else:
+        # The desired state persists the deferred action. Successful
+        # connection revocation will enqueue the runtime operation.
+        session.status = (
+            "terminating"
+            if action == "terminate"
+            else "stopping"
+        )
+
+    db.commit()
+    db.refresh(session)
     return session
 
 
