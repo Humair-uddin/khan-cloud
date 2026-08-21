@@ -39,3 +39,11 @@ def test_kg005b_guest_registration_updates_connection_identity():
     src=(root/"app/services/gaming_vm_service.py").read_text()
     assert '"guest_node_id":str(node.id)' in src
     assert '"guest_ip":node.production_ip or node.management_ip' in src
+
+
+def test_kg006_blueprint_requires_template_contract():
+    service=Path("app/services/gaming_vm_service.py").read_text()
+    api=Path("app/api/v1/compute.py").read_text()
+    assert 'template_contract_version' in service
+    assert 'kg006-v1' in service
+    assert 'template_contract_version=kg006-v1' in api

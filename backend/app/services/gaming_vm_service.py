@@ -48,6 +48,11 @@ def resolve_blueprint(db: Session, slug: str | None) -> GamingVmBlueprint:
         raise ComputeError(f"Unknown or disabled gaming VM blueprint: {slug}")
     if item.template_vmid < 100:
         raise ComputeError("Gaming VM blueprint has no valid Proxmox template VMID.")
+    metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+    if metadata.get("template_contract_version") != "kg006-v1":
+        raise ComputeError(
+            "Gaming VM blueprint is not bound to the Khan Cloud kg006-v1 golden-template contract."
+        )
     return item
 
 def select_gaming_hypervisor(db: Session, *, cpu: int, memory_bytes: int, storage_bytes: int, minimum_vram_mb: int):

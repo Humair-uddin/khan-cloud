@@ -91,6 +91,10 @@ def _validate_template(qm: str, template_vmid: int) -> None:
         raise ProxmoxGamingVmError("Configured Windows gaming source VM is not a Proxmox template.")
     if not re.search(r"(?m)^agent:\s*enabled=1", config):
         raise ProxmoxGamingVmError("Windows gaming template must have QEMU guest agent enabled.")
+    if "khan-gaming-template-v1" not in config:
+        raise ProxmoxGamingVmError(
+            "Windows gaming template is not sealed with the Khan Cloud kg006-v1 contract."
+        )
 
 
 def _validate_storage_and_bridge(pvesh: str, storage: str, bridge: str) -> None:
@@ -138,6 +142,7 @@ if ($LASTEXITCODE -ne 0) { throw 'KhanCloud Agent enrollment failed' }
 $raw=Get-Content -Raw -Path $cfg
 $raw=[regex]::Replace($raw,'(?m)^(\s*deployment_enrollment_code:)\s*.*$','$1 ""')
 Set-Content -Path $cfg -Value $raw -Encoding UTF8
+Set-Service KhanCloudAgent -StartupType Automatic
 Restart-Service KhanCloudAgent
 '''
     _run([qm, "guest", "exec", str(vmid), "--", "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script, enrollment_code, control_plane_url], timeout=float(timeout_seconds + 60))

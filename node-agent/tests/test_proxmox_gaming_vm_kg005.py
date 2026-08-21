@@ -40,3 +40,13 @@ def test_kg005b_clone_state_is_atomic_and_rollback_removes_state():
     assert 'temp.replace(path)' in src
     assert '_rollback_clone' in src
     assert 'state_file.unlink(missing_ok=True)' in src
+
+
+def test_kg006_template_requires_sealed_contract_marker():
+    src=Path(proxmox_gaming_vm.__file__).read_text()
+    assert "khan-gaming-template-v1" in src
+    assert "kg006-v1 contract" in src
+
+def test_kg006_bootstrap_reenables_agent_after_template_clone():
+    src=Path(proxmox_gaming_vm.__file__).read_text()
+    assert "Set-Service KhanCloudAgent -StartupType Automatic" in src
