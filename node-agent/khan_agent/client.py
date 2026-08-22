@@ -118,3 +118,37 @@ class ControlPlaneClient:
             )
             response.raise_for_status()
             return response.json()
+    async def report_provisioning_event(
+        self, payload: dict[str, Any], credentials: NodeCredentials
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.settings.agent.request_timeout_seconds,
+            verify=self.settings.security.verify_tls,
+        ) as client:
+            response = await client.post(
+                f"{self.base_url}{self.settings.provisioning.endpoint}",
+                json=payload,
+                headers={
+                    "X-Node-ID": credentials.node_id,
+                    "X-Node-Secret": credentials.node_secret,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def desired_state(
+        self, credentials: NodeCredentials
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.settings.agent.request_timeout_seconds,
+            verify=self.settings.security.verify_tls,
+        ) as client:
+            response = await client.get(
+                f"{self.base_url}{self.settings.provisioning.desired_state_endpoint}",
+                headers={
+                    "X-Node-ID": credentials.node_id,
+                    "X-Node-Secret": credentials.node_secret,
+                },
+            )
+            response.raise_for_status()
+            return response.json()

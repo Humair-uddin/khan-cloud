@@ -59,6 +59,17 @@ class TelemetryConfig(BaseModel):
     installer_database_path: Path = Path("/opt/khan-cloud/state/installer/installer.db")
 
 
+
+
+class ProvisioningConfig(BaseModel):
+    enabled: bool = True
+    endpoint: str = "/api/v1/nodes/provisioning-events"
+    desired_state_endpoint: str = "/api/v1/nodes/desired-state"
+    artifact_cache_directory: Path = Field(default_factory=lambda: _default_state_directory() / "artifacts")
+    download_chunk_bytes: int = Field(default=4 * 1024 * 1024, ge=262144, le=67108864)
+    download_timeout_seconds: int = Field(default=60, ge=5, le=600)
+    capacity_mode: str = "shared"
+
 class GamingConfig(BaseModel):
     enabled: bool = False
     execution_backend: str = "none"
@@ -84,6 +95,7 @@ class AgentSettings(BaseModel):
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     enrollment: EnrollmentConfig = EnrollmentConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
+    provisioning: ProvisioningConfig = ProvisioningConfig()
     virtualization: VirtualizationConfig = VirtualizationConfig()
     gaming: GamingConfig = GamingConfig()
 

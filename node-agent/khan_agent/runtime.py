@@ -17,6 +17,7 @@ from khan_agent.installer_telemetry import read_latest_installer_snapshot
 from khan_agent.plugins import PluginManager
 from khan_agent.job_dispatch import execute_node_job
 from khan_agent.state import AgentState, StateMachine
+from khan_agent.provisioning import ProvisioningStateStore
 
 logger = logging.getLogger("khan_agent")
 
@@ -41,6 +42,8 @@ class AgentRuntime:
         self.client = ControlPlaneClient(settings)
         self.plugin_manager = PluginManager(settings.agent.plugin_directory)
         self._last_installer_telemetry_key: tuple[str, str, str] | None = None
+        self.provisioning_store = ProvisioningStateStore(settings.agent.state_directory)
+        self._last_provisioning_key: tuple[object, ...] | None = None
 
     def _inventory_payload(self) -> dict[str, object]:
         inventory = collect_safe_inventory()
@@ -156,6 +159,38 @@ class AgentRuntime:
                 }
             )
         )
+
+    async def _report_provisioning_state(self, credentials: NodeCredentials) -> None:
+        if not self.settings.provisioning.enabled:
+            return
+        state = self.provisioning_store.load()
+        payload = state.as_payload()
+        key = (
+            payload.get("deployment_id"), payload.get("stage"), payload.get("status"),
+            payload.get("downloaded_bytes"), payload.get("total_bytes"),
+            payload.get("last_checkpoint"), payload.get("retry_count"),
+        )
+        if key == self._last_provisioning_key:
+            return
+        reporter = getattr(self.client, "report_provisioning_event", None)
+        if reporter is None:
+            return
+        await reporter(payload, credentials)
+        self._last_provisioning_key = key
+
+    async def _sync_desired_state(self, credentials: NodeCredentials) -> None:
+        if not self.settings.provisioning.enabled:
+            return
+        getter = getattr(self.client, "desired_state", None)
+        if getter is None:
+            return
+        desired = await getter(credentials)
+        state = self.provisioning_store.load()
+        wanted = str(desired.get("desired_image_version") or "")
+        if wanted and state.desired_image_version != wanted:
+            state.desired_image_version = wanted
+            state.message = "Desired image version received from control plane."
+            self.provisioning_store.save(state)
 
     async def _process_one_node_job(self, credentials: NodeCredentials) -> None:
         next_job = getattr(self.client, "next_job", None)
@@ -315,6 +350,8 @@ class AgentRuntime:
                     credentials,
                 )
                 await self._report_installer_telemetry(credentials)
+                await self._sync_desired_state(credentials)
+                await self._report_provisioning_state(credentials)
                 await self._process_one_node_job(credentials)
                 self.state.transition(AgentState.CONNECTED)
                 logger.info(

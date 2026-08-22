@@ -200,3 +200,47 @@ def installation_events(node_id: UUID, limit: int = 100, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="Node not found.")
     safe_limit = max(1, min(limit, 500))
     return list_node_installation_events(db, node_id, limit=safe_limit)
+
+
+# KG-008A durable host provisioning telemetry. Reuses the existing Node installation
+# summary columns so the operations/dashboard model stays single-owner.
+from app.schemas.provisioning import ProvisioningEventCreate, ProvisioningEventRead, DesiredStateRead
+
+
+@router.post("/provisioning-events", response_model=ProvisioningEventRead)
+def provisioning_event(
+    payload: ProvisioningEventCreate,
+    node: Node = Depends(get_authenticated_node),
+    db: Session = Depends(get_db),
+):
+    from datetime import UTC, datetime
+    node.installation_status = payload.status
+    node.installation_stage = payload.stage
+    node.installation_failure_category = (
+        "retryable" if payload.status == "failed_retryable" else
+        "manual_action" if payload.status == "failed_manual_action" else ""
+    )
+    node.installation_message = (payload.message or "")[:500]
+    node.installation_updated_at = datetime.now(UTC)
+    inventory = dict(node.inventory or {})
+    inventory["provisioning"] = payload.model_dump()
+    node.inventory = inventory
+    db.commit()
+    db.refresh(node)
+    return ProvisioningEventRead(node_id=str(node.id), **payload.model_dump())
+
+
+@router.get("/desired-state", response_model=DesiredStateRead)
+def desired_state(
+    node: Node = Depends(get_authenticated_node),
+):
+    policy = dict(node.capabilities or {}).get("provisioning_policy", {})
+    desired_image_version = str(policy.get("desired_image_version") or "")
+    capacity_mode = str(policy.get("capacity_mode") or "shared")
+    current = dict(node.inventory or {}).get("provisioning", {})
+    current_image = str(current.get("desired_image_version") or "")
+    return DesiredStateRead(
+        desired_image_version=desired_image_version,
+        provisioning_required=bool(desired_image_version and current_image != desired_image_version),
+        capacity_mode=capacity_mode,
+    )
