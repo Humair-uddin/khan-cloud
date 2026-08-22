@@ -78,7 +78,11 @@ if ($Stage -eq "finalize") {
     $vhd = Get-VHD -Path $OutputVhdx
     if ($vhd.VhdType -ne 'Dynamic') { throw "Golden VHDX must be dynamic." }
     if ($vhd.Size -lt 40GB) { throw "Golden VHDX virtual size is unexpectedly small." }
-    $manifest = [ordered]@{ contract_version='kg008b-v1'; image_version=(Split-Path $OutputVhdx -LeafBase); edition=$meta.ImageName; image_index=[int]$meta.ImageIndex; vhdx=$OutputVhdx; virtual_size=[int64]$vhd.Size; prepared_at=(Get-Date).ToUniversalTime().ToString('o'); generalized=$false }
+    $ImageVersion = [System.IO.Path]::GetFileNameWithoutExtension($OutputVhdx)
+    if ([string]::IsNullOrWhiteSpace($ImageVersion)) {
+        throw "Unable to derive image version from VHDX path: $OutputVhdx"
+    }
+    $manifest = [ordered]@{ contract_version='kg008c-v1'; image_version=$ImageVersion; edition=$meta.ImageName; image_index=[int]$meta.ImageIndex; vhdx=$OutputVhdx; virtual_size=[int64]$vhd.Size; prepared_at=(Get-Date).ToUniversalTime().ToString('o'); generalized=$false }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $Workspace 'golden-image-manifest.json')
     Write-Host "FINALIZE_OK vhdx=$OutputVhdx"
     exit 0

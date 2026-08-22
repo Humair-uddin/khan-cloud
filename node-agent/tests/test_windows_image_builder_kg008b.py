@@ -43,3 +43,18 @@ def test_failure_is_retryable_and_increments_counter(tmp_path: Path):
         try: b.build(p)
         except Exception: pass
     state=store.load(); assert state.status == "failed_retryable"; assert state.retry_count == 1
+
+
+def test_windows_worker_is_windows_powershell_51_compatible():
+    from pathlib import Path
+
+    worker = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "build-windows-golden-image.ps1"
+    )
+
+    text = worker.read_text(encoding="utf-8")
+
+    assert "-LeafBase" not in text
+    assert "[System.IO.Path]::GetFileNameWithoutExtension($OutputVhdx)" in text
