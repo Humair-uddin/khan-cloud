@@ -36,26 +36,171 @@ if ($Stage -eq "preflight") {
 }
 $meta = Load-Meta
 if ($Stage -eq "apply_windows") {
-    if (Test-Path $OutputVhdx) { Remove-Item -Force $OutputVhdx }
-    New-VHD -Path $OutputVhdx -Dynamic -SizeBytes ($DiskSizeGB * 1GB) | Out-Null
+    $EfiGptType = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
+    $BasicDataGptType = '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'
+
+    $ReuseExisting = $false
+
+    if (Test-Path $OutputVhdx -PathType Leaf) {
+        Write-Host "RECOVERY_CHECK existing_vhdx=$OutputVhdx"
+
+        $existingVhd = Mount-VHD -Path $OutputVhdx -PassThru
+
+        try {
+            $existingDisk = $existingVhd | Get-Disk
+            $existingParts = Get-Partition -DiskNumber $existingDisk.Number
+
+            $existingOs = $existingParts |
+                Where-Object {
+                    $_.DriveLetter -and
+                    $_.Size -gt 10GB -and
+                    (Test-Path "$($_.DriveLetter):\Windows\System32\ntoskrnl.exe") -and
+                    (Test-Path "$($_.DriveLetter):\Windows\System32\config\SYSTEM") -and
+                    (Test-Path "$($_.DriveLetter):\Windows\System32\config\SOFTWARE")
+                } |
+                Select-Object -First 1
+
+            $existingEfi = $existingParts |
+                Where-Object {
+                    $_.PartitionNumber -ne $existingOs.PartitionNumber -and
+                    $_.Size -ge 200MB -and
+                    $_.Size -le 350MB
+                } |
+                Select-Object -First 1
+
+            if ($existingOs -and $existingEfi) {
+                Write-Host "RECOVERY_WINDOWS_PAYLOAD=VALID"
+                Write-Host "RECOVERY_OS_PARTITION=$($existingOs.PartitionNumber)"
+                Write-Host "RECOVERY_EFI_PARTITION=$($existingEfi.PartitionNumber)"
+
+                if ($existingEfi.GptType -ne $EfiGptType) {
+                    Write-Host "RECOVERY_EFI_GPT_TYPE=REPAIR"
+
+                    Set-Partition `
+                        -DiskNumber $existingDisk.Number `
+                        -PartitionNumber $existingEfi.PartitionNumber `
+                        -GptType $EfiGptType
+
+                    $existingEfi = Get-Partition `
+                        -DiskNumber $existingDisk.Number `
+                        -PartitionNumber $existingEfi.PartitionNumber
+                }
+
+                if (!$existingEfi.DriveLetter) {
+                    $existingEfi |
+                        Add-PartitionAccessPath -AssignDriveLetter
+
+                    $existingEfi = Get-Partition `
+                        -DiskNumber $existingDisk.Number `
+                        -PartitionNumber $existingEfi.PartitionNumber
+                }
+
+                $meta | Add-Member -Force NoteProperty OsPartitionGuid ([string]$existingOs.Guid)
+                $meta | Add-Member -Force NoteProperty EfiPartitionGuid ([string]$existingEfi.Guid)
+                $meta | Add-Member -Force NoteProperty OsPartitionNumber ([int]$existingOs.PartitionNumber)
+                $meta | Add-Member -Force NoteProperty EfiPartitionNumber ([int]$existingEfi.PartitionNumber)
+
+                Save-Meta $meta
+                $ReuseExisting = $true
+            }
+        }
+        finally {
+            Dismount-VHD -Path $OutputVhdx -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($ReuseExisting) {
+        Write-Host "APPLY_WINDOWS_RECOVERED"
+        exit 0
+    }
+
+    if (Test-Path $OutputVhdx) {
+        Remove-Item -Force $OutputVhdx
+    }
+
+    New-VHD `
+        -Path $OutputVhdx `
+        -Dynamic `
+        -SizeBytes ($DiskSizeGB * 1GB) |
+        Out-Null
+
     $vhd = Mount-VHD -Path $OutputVhdx -PassThru
+
     try {
         $disk = $vhd | Get-Disk
-        Initialize-Disk -Number $disk.Number -PartitionStyle GPT
-        $efi = New-Partition -DiskNumber $disk.Number -Size 260MB -AssignDriveLetter
-        Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel SYSTEM -Confirm:$false | Out-Null
-        $os = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter
-        Format-Volume -Partition $os -FileSystem NTFS -NewFileSystemLabel WINDOWS -Confirm:$false | Out-Null
+
+        Initialize-Disk `
+            -Number $disk.Number `
+            -PartitionStyle GPT
+
+        $efi = New-Partition `
+            -DiskNumber $disk.Number `
+            -Size 260MB `
+            -GptType $EfiGptType `
+            -AssignDriveLetter
+
+        Format-Volume `
+            -Partition $efi `
+            -FileSystem FAT32 `
+            -NewFileSystemLabel SYSTEM `
+            -Confirm:$false |
+            Out-Null
+
+        $os = New-Partition `
+            -DiskNumber $disk.Number `
+            -UseMaximumSize `
+            -GptType $BasicDataGptType `
+            -AssignDriveLetter
+
+        Format-Volume `
+            -Partition $os `
+            -FileSystem NTFS `
+            -NewFileSystemLabel WINDOWS `
+            -Confirm:$false |
+            Out-Null
+
         $iso = Mount-DiskImage -ImagePath $IsoPath -PassThru
+
         try {
-            $ivol = $iso | Get-Volume | Where-Object DriveLetter | Select-Object -First 1
+            $ivol = $iso |
+                Get-Volume |
+                Where-Object DriveLetter |
+                Select-Object -First 1
+
+            if (!$ivol) {
+                throw "Mounted ISO has no readable volume."
+            }
+
             $install = "$($ivol.DriveLetter):$($meta.InstallRelative)"
-            Dism-Apply $install ([int]$meta.ImageIndex) "$($os.DriveLetter):\"
-        } finally { Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue }
-        $meta | Add-Member -Force NoteProperty OsPartitionGuid $os.Guid.Guid
-        $meta | Add-Member -Force NoteProperty EfiPartitionGuid $efi.Guid.Guid
+
+            Dism-Apply `
+                $install `
+                ([int]$meta.ImageIndex) `
+                "$($os.DriveLetter):\"
+        }
+        finally {
+            Dismount-DiskImage `
+                -ImagePath $IsoPath `
+                -ErrorAction SilentlyContinue
+        }
+
+        if (!(Test-Path "$($os.DriveLetter):\Windows\System32\ntoskrnl.exe")) {
+            throw "Applied Windows payload validation failed."
+        }
+
+        $meta | Add-Member -Force NoteProperty OsPartitionGuid ([string]$os.Guid)
+        $meta | Add-Member -Force NoteProperty EfiPartitionGuid ([string]$efi.Guid)
+        $meta | Add-Member -Force NoteProperty OsPartitionNumber ([int]$os.PartitionNumber)
+        $meta | Add-Member -Force NoteProperty EfiPartitionNumber ([int]$efi.PartitionNumber)
+
         Save-Meta $meta
-    } finally { Dismount-VHD -Path $OutputVhdx -ErrorAction SilentlyContinue }
+    }
+    finally {
+        Dismount-VHD `
+            -Path $OutputVhdx `
+            -ErrorAction SilentlyContinue
+    }
+
     Write-Host "APPLY_WINDOWS_OK"
     exit 0
 }
@@ -64,11 +209,46 @@ if ($Stage -eq "boot_files") {
     try {
         $disk = $vhd | Get-Disk
         $parts = Get-Partition -DiskNumber $disk.Number
-        $efi = $parts | Where-Object GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' | Select-Object -First 1
-        $os = $parts | Where-Object { $_.Type -eq 'Basic' -and $_.Size -gt 10GB } | Select-Object -First 1
-        if (!$efi.DriveLetter) { $efi | Add-PartitionAccessPath -AssignDriveLetter; $efi = Get-Partition -DiskNumber $disk.Number -PartitionNumber $efi.PartitionNumber }
-        if (!$os.DriveLetter) { $os | Add-PartitionAccessPath -AssignDriveLetter; $os = Get-Partition -DiskNumber $disk.Number -PartitionNumber $os.PartitionNumber }
-        & bcdboot.exe "$($os.DriveLetter):\Windows" /s "$($efi.DriveLetter):" /f UEFI
+        $efi = $parts |
+            Where-Object GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' |
+            Select-Object -First 1
+
+        $os = $parts |
+            Where-Object {
+                $_.DriveLetter -and
+                $_.Size -gt 10GB -and
+                (Test-Path "$($_.DriveLetter):\Windows\System32\ntoskrnl.exe")
+            } |
+            Select-Object -First 1
+
+        if (!$efi) {
+            throw "EFI System Partition not found."
+        }
+
+        if (!$os) {
+            throw "Applied Windows partition not found."
+        }
+
+        if (!$efi.DriveLetter) {
+            $efi | Add-PartitionAccessPath -AssignDriveLetter
+
+            $efi = Get-Partition `
+                -DiskNumber $disk.Number `
+                -PartitionNumber $efi.PartitionNumber
+        }
+
+        if (!$os.DriveLetter) {
+            $os | Add-PartitionAccessPath -AssignDriveLetter
+
+            $os = Get-Partition `
+                -DiskNumber $disk.Number `
+                -PartitionNumber $os.PartitionNumber
+        }
+
+        & bcdboot.exe `
+            "$($os.DriveLetter):\Windows" `
+            /s "$($efi.DriveLetter):" `
+            /f UEFI
         if ($LASTEXITCODE -ne 0) { throw "BCDBoot failed with exit code $LASTEXITCODE" }
     } finally { Dismount-VHD -Path $OutputVhdx -ErrorAction SilentlyContinue }
     Write-Host "BOOT_FILES_OK"

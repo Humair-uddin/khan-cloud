@@ -58,3 +58,53 @@ def test_windows_worker_is_windows_powershell_51_compatible():
 
     assert "-LeafBase" not in text
     assert "[System.IO.Path]::GetFileNameWithoutExtension($OutputVhdx)" in text
+
+
+def test_windows_worker_uses_real_partition_guid_contract():
+    from pathlib import Path
+
+    worker = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "build-windows-golden-image.ps1"
+    )
+
+    text = worker.read_text(encoding="utf-8")
+
+    assert ".Guid.Guid" not in text
+    assert "([string]$os.Guid)" in text
+    assert "([string]$efi.Guid)" in text
+
+
+def test_windows_worker_creates_uefi_system_partition():
+    from pathlib import Path
+
+    worker = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "build-windows-golden-image.ps1"
+    )
+
+    text = worker.read_text(encoding="utf-8")
+
+    assert "$EfiGptType = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'" in text
+    assert "-GptType $EfiGptType" in text
+    assert "EFI System Partition not found." in text
+
+
+def test_windows_worker_can_recover_completed_dism_payload():
+    from pathlib import Path
+
+    worker = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "build-windows-golden-image.ps1"
+    )
+
+    text = worker.read_text(encoding="utf-8")
+
+    assert "RECOVERY_WINDOWS_PAYLOAD=VALID" in text
+    assert "APPLY_WINDOWS_RECOVERED" in text
+    assert "Windows\\System32\\ntoskrnl.exe" in text
+    assert "Windows\\System32\\config\\SYSTEM" in text
+    assert "Windows\\System32\\config\\SOFTWARE" in text
