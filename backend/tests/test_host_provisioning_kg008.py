@@ -15,3 +15,10 @@ def test_provisioning_schema_contains_dashboard_progress_contract():
         "eta_seconds", "last_checkpoint", "retry_count", "desired_image_version",
     ):
         assert field in source
+
+
+def test_desired_state_exposes_image_build_plan():
+    source = Path("app/api/v1/nodes.py").read_text()
+    schema = Path("app/schemas/provisioning.py").read_text()
+    assert 'image_build_plan=dict(policy.get("image_build_plan") or {})' in source
+    assert "image_build_plan:" in schema

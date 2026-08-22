@@ -18,6 +18,7 @@ from khan_agent.plugins import PluginManager
 from khan_agent.job_dispatch import execute_node_job
 from khan_agent.state import AgentState, StateMachine
 from khan_agent.provisioning import ProvisioningStateStore
+from khan_agent.windows_image_builder import WindowsGoldenImageBuilder, WindowsImageBuildPlan
 
 logger = logging.getLogger("khan_agent")
 
@@ -44,6 +45,7 @@ class AgentRuntime:
         self._last_installer_telemetry_key: tuple[str, str, str] | None = None
         self.provisioning_store = ProvisioningStateStore(settings.agent.state_directory)
         self._last_provisioning_key: tuple[object, ...] | None = None
+        self._desired_image_build_plan: dict[str, object] = {}
 
     def _inventory_payload(self) -> dict[str, object]:
         inventory = collect_safe_inventory()
@@ -191,6 +193,20 @@ class AgentRuntime:
             state.desired_image_version = wanted
             state.message = "Desired image version received from control plane."
             self.provisioning_store.save(state)
+        self._desired_image_build_plan = dict(desired.get("image_build_plan") or {})
+
+    async def _run_desired_image_build(self) -> None:
+        if not self.settings.provisioning.image_builder_enabled or not self._desired_image_build_plan:
+            return
+        plan = WindowsImageBuildPlan.from_dict(self._desired_image_build_plan)
+        state = self.provisioning_store.load()
+        if state.desired_image_version == plan.image_version and state.last_checkpoint == "golden_vhdx_ready":
+            return
+        builder = WindowsGoldenImageBuilder(
+            self.provisioning_store,
+            worker_script=self.settings.provisioning.image_builder_worker_script,
+        )
+        await asyncio.to_thread(builder.build, plan)
 
     async def _process_one_node_job(self, credentials: NodeCredentials) -> None:
         next_job = getattr(self.client, "next_job", None)
@@ -351,6 +367,8 @@ class AgentRuntime:
                 )
                 await self._report_installer_telemetry(credentials)
                 await self._sync_desired_state(credentials)
+                await self._report_provisioning_state(credentials)
+                await self._run_desired_image_build()
                 await self._report_provisioning_state(credentials)
                 await self._process_one_node_job(credentials)
                 self.state.transition(AgentState.CONNECTED)

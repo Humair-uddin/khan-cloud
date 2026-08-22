@@ -243,4 +243,5 @@ def desired_state(
         desired_image_version=desired_image_version,
         provisioning_required=bool(desired_image_version and current_image != desired_image_version),
         capacity_mode=capacity_mode,
+        image_build_plan=dict(policy.get("image_build_plan") or {}),
     )

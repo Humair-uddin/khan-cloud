@@ -69,6 +69,8 @@ class ProvisioningConfig(BaseModel):
     download_chunk_bytes: int = Field(default=4 * 1024 * 1024, ge=262144, le=67108864)
     download_timeout_seconds: int = Field(default=60, ge=5, le=600)
     capacity_mode: str = "shared"
+    image_builder_enabled: bool = False
+    image_builder_worker_script: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[1] / "deploy" / "build-windows-golden-image.ps1")
 
 class GamingConfig(BaseModel):
     enabled: bool = False

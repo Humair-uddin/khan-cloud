@@ -29,3 +29,4 @@ class DesiredStateRead(BaseModel):
     desired_image_version: str = ""
     provisioning_required: bool = False
     capacity_mode: str = "shared"
+    image_build_plan: dict[str, Any] = Field(default_factory=dict)
