@@ -3373,6 +3373,20 @@ void SwapChainProcessor::Run()
 	}
 }
 
+void SwapChainProcessor::ResetFrameHandoff()
+{
+        m_FrameHandoffMutex.Reset();
+        m_FrameHandoffTexture.Reset();
+
+        if (m_FrameHandoffSharedHandle != nullptr)
+        {
+                CloseHandle(m_FrameHandoffSharedHandle);
+                m_FrameHandoffSharedHandle = nullptr;
+        }
+
+        m_FrameHandoffDesc = {};
+}
+
 HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
         const D3D11_TEXTURE2D_DESC& SourceDesc)
 {
@@ -3403,7 +3417,9 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
         handoffDesc.Usage = D3D11_USAGE_DEFAULT;
         handoffDesc.CPUAccessFlags = 0;
         handoffDesc.BindFlags = 0;
-        handoffDesc.MiscFlags = 0;
+        handoffDesc.MiscFlags =
+            D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+            D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
 
         ComPtr<ID3D11Texture2D> newTexture;
 
@@ -3418,7 +3434,7 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
         {
                 stringstream logStream;
                 logStream
-                    << "Failed to create Khan GPU frame handoff texture. "
+                    << "Failed to create Khan shared GPU handoff texture. "
                     << "HRESULT: "
                     << hr;
 
@@ -3430,12 +3446,65 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
                 return hr;
         }
 
+        ComPtr<IDXGIKeyedMutex> newMutex;
+
+        hr = newTexture.As(&newMutex);
+
+        if (FAILED(hr))
+        {
+                vddlog(
+                    "e",
+                    "Khan shared handoff texture has no keyed mutex."
+                );
+
+                return hr;
+        }
+
+        ComPtr<IDXGIResource1> sharedResource;
+
+        hr = newTexture.As(&sharedResource);
+
+        if (FAILED(hr))
+        {
+                vddlog(
+                    "e",
+                    "Khan shared handoff texture has no IDXGIResource1."
+                );
+
+                return hr;
+        }
+
+        HANDLE newSharedHandle = nullptr;
+
+        hr = sharedResource->CreateSharedHandle(
+            nullptr,
+            DXGI_SHARED_RESOURCE_READ |
+                DXGI_SHARED_RESOURCE_WRITE,
+            nullptr,
+            &newSharedHandle
+        );
+
+        if (FAILED(hr))
+        {
+                vddlog(
+                    "e",
+                    "Failed to create Khan NT shared GPU handle."
+                );
+
+                return hr;
+        }
+
+        ResetFrameHandoff();
+
         m_FrameHandoffTexture = newTexture;
+        m_FrameHandoffMutex = newMutex;
+        m_FrameHandoffSharedHandle = newSharedHandle;
         m_FrameHandoffDesc = handoffDesc;
+        ++m_FrameHandoffGeneration;
 
         vddlog(
             "i",
-            "Khan GPU frame handoff texture created."
+            "Khan NT shared GPU frame handoff texture created."
         );
 
         return S_OK;
@@ -3511,10 +3580,60 @@ HRESULT SwapChainProcessor::ProcessFrame(
                 return hr;
         }
 
+        if (!m_FrameHandoffMutex)
+        {
+                ++m_FrameProcessingFailureCount;
+                return E_UNEXPECTED;
+        }
+
+        HRESULT mutexHr =
+            m_FrameHandoffMutex->AcquireSync(
+                0,
+                0
+            );
+
+        if (
+            mutexHr == static_cast<HRESULT>(WAIT_TIMEOUT)
+        )
+        {
+                ++m_FrameHandoffDroppedCount;
+
+                //
+                // The consumer still owns the shared texture.
+                // Never stall the IddCx processing thread.
+                //
+                return S_FALSE;
+        }
+
+        if (
+            mutexHr == static_cast<HRESULT>(WAIT_ABANDONED)
+        )
+        {
+                ++m_FrameProcessingFailureCount;
+                ResetFrameHandoff();
+                return E_FAIL;
+        }
+
+        if (FAILED(mutexHr))
+        {
+                ++m_FrameProcessingFailureCount;
+                return mutexHr;
+        }
+
         m_Device->DeviceContext->CopyResource(
             m_FrameHandoffTexture.Get(),
             frameTexture.Get()
         );
+
+        HRESULT releaseHr =
+            m_FrameHandoffMutex->ReleaseSync(1);
+
+        if (FAILED(releaseHr))
+        {
+                ++m_FrameProcessingFailureCount;
+                ResetFrameHandoff();
+                return releaseHr;
+        }
 
         ++m_ProcessedFrameCount;
 

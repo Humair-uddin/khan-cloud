@@ -104,11 +104,21 @@ namespace Microsoft
             Microsoft::WRL::ComPtr<ID3D11Texture2D>
                 m_FrameHandoffTexture;
 
+            Microsoft::WRL::ComPtr<IDXGIKeyedMutex>
+                m_FrameHandoffMutex;
+
+            HANDLE m_FrameHandoffSharedHandle = nullptr;
+
             D3D11_TEXTURE2D_DESC
                 m_FrameHandoffDesc = {};
 
+            UINT64 m_FrameHandoffGeneration = 0;
+            UINT64 m_FrameHandoffDroppedCount = 0;
+
             HRESULT EnsureFrameHandoffTexture(
                 const D3D11_TEXTURE2D_DESC& SourceDesc);
+
+            void ResetFrameHandoff();
 
         public:
             IDDCX_MONITOR m_Monitor;
