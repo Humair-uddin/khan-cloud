@@ -1,3 +1,14 @@
+/*
+ * Khan Virtual Display — MIT production-core candidate
+ *
+ * Derived from VirtualDrivers/Virtual-Display-Driver commit
+ * d7244969b2aa8bb38e76d79505eda217996cefea under the MIT License.
+ *
+ * Khan Cloud owns product identity, packaging, configuration namespace,
+ * quality policy, orchestration boundary, and downstream modifications.
+ * Internal upstream callback symbol names are intentionally retained in
+ * KG-008K6 to reduce semantic risk during the initial production-core rebase.
+ */
 #pragma once
 
 #define NOMINMAX
@@ -5,7 +16,7 @@
 #include <bugcodes.h>
 #include <wudfwdm.h>
 #include <wdf.h>
-#include <iddcx.h>
+#include <IddCx.h>
 
 #include <dxgi1_5.h>
 #include <d3d11_2.h>
@@ -13,10 +24,25 @@
 #include <wrl.h>
 
 #include <memory>
-#include "KhanModes.h"
 #include <vector>
+#include <map>
+#include <mutex>
+#include <string>
+#include <sstream>
 
 #include "Trace.h"
+
+// Utility function declarations
+std::vector<std::string> split(std::string& input, char delimiter);
+std::string WStringToString(const std::wstring& wstr);
+
+// Phase 5: Final Integration function declarations
+NTSTATUS ValidateEdidIntegration();
+NTSTATUS PerformanceMonitor();
+NTSTATUS CreateFallbackConfiguration();
+NTSTATUS ValidateAndSanitizeConfiguration();
+NTSTATUS RunComprehensiveDiagnostics();
+NTSTATUS InitializePhase5Integration();
 
 namespace Microsoft
 {
@@ -34,23 +60,6 @@ namespace Microsoft
 {
     namespace IndirectDisp
     {
-        /// <summary>
-        /// Manages the creation and lifetime of a Direct3D render device.
-        /// </summary>
-        struct IndirectSampleMonitor
-        {
-            static constexpr size_t szEdidBlock = 128;
-            static constexpr size_t szModeList = 3;
-
-            const BYTE pEdidBlock[szEdidBlock];
-            const struct SampleMonitorMode {
-                DWORD Width;
-                DWORD Height;
-                DWORD VSync;
-            } pModeList[szModeList];
-            const DWORD ulPreferredModeIdx;
-        };
-
         /// <summary>
         /// Manages the creation and lifetime of a Direct3D render device.
         /// </summary>
@@ -73,7 +82,11 @@ namespace Microsoft
         class SwapChainProcessor
         {
         public:
-            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent);
+            SwapChainProcessor(
+                IDDCX_MONITOR Monitor,
+                IDDCX_SWAPCHAIN hSwapChain,
+                std::shared_ptr<Direct3DDevice> Device,
+                HANDLE NewFrameEvent);
             ~SwapChainProcessor();
 
         private:
@@ -82,11 +95,26 @@ namespace Microsoft
             void Run();
             void RunCore();
 
+        public:
+            IDDCX_MONITOR m_Monitor;
             IDDCX_SWAPCHAIN m_hSwapChain;
             std::shared_ptr<Direct3DDevice> m_Device;
             HANDLE m_hAvailableBufferEvent;
             Microsoft::WRL::Wrappers::Thread m_hThread;
             Microsoft::WRL::Wrappers::Event m_hTerminateEvent;
+        };
+
+        /// <summary>
+        /// Custom comparator for LUID to be used in std::map
+        /// </summary>
+        struct LuidComparator
+        {
+            bool operator()(const LUID& a, const LUID& b) const
+            {
+                if (a.HighPart != b.HighPart)
+                    return a.HighPart < b.HighPart;
+                return a.LowPart < b.LowPart;
+            }
         };
 
         /// <summary>
@@ -99,25 +127,32 @@ namespace Microsoft
             virtual ~IndirectDeviceContext();
 
             void InitAdapter();
-            void FinishInit(UINT ConnectorIndex);
+            void FinishInit();
+
+            void CreateMonitor(unsigned int index);
+
+            void AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
+            void UnassignSwapChain(IDDCX_MONITOR Monitor);
 
         protected:
+
             WDFDEVICE m_WdfDevice;
             IDDCX_ADAPTER m_Adapter;
-        };
+            IDDCX_MONITOR m_Monitor;
+            IDDCX_MONITOR m_Monitor2;
 
-        class IndirectMonitorContext
-        {
+            std::map<IDDCX_MONITOR, std::unique_ptr<SwapChainProcessor>> m_ProcessingThreads;
+            std::mutex m_ProcessingThreadsMutex;
+
         public:
-            IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor);
-            virtual ~IndirectMonitorContext();
-
-            void AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
-            void UnassignSwapChain();
+            static const DISPLAYCONFIG_VIDEO_SIGNAL_INFO s_KnownMonitorModes[];
+            static std::vector<BYTE> s_KnownMonitorEdid;
 
         private:
-            IDDCX_MONITOR m_Monitor;
-            std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
-        } ;
+            static std::map<LUID, std::shared_ptr<Direct3DDevice>, LuidComparator> s_DeviceCache;
+            static std::mutex s_DeviceCacheMutex;
+            static std::shared_ptr<Direct3DDevice> GetOrCreateDevice(LUID RenderAdapter);
+            static void CleanupExpiredDevices();
+        };
     }
 }

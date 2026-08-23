@@ -6,8 +6,8 @@ V1 compatibility policy:
 
 - SDR must always remain available.
 - HDR target path is 10 bits per component.
-- Windows HDR capability is not considered implemented merely because this
-  document or KhanModes.h enables the architecture.
+- Windows HDR capability is not considered implemented merely because the
+  driver architecture and this design contract allow for HDR support.
 - HDR becomes production-ready only after Windows reports the virtual display
   as HDR capable and the complete streaming chain passes validation.
 

@@ -1,31 +1,16 @@
-# Khan Virtual Display — driver scaffold provenance
+# Khan Virtual Display upstream provenance
 
-The initial IddCx/UMDF lifecycle scaffold in this directory is derived from:
+KG-008K6 rebases the production driver core onto the MIT-licensed
+VirtualDrivers/Virtual-Display-Driver implementation at commit
+`d7244969b2aa8bb38e76d79505eda217996cefea`.
 
-Microsoft Windows-driver-samples
-Repository:
-https://github.com/microsoft/Windows-driver-samples.git
+The previous Microsoft-sample-derived Khan driver remains preserved in Git
+history at commit `e68311976d4a3331a56809443697f67a0cbdc181` as the known-good
+rollback/reference implementation.
 
-Pinned commit:
-717778a20ba4dd2440fe609f69153a1f8a64f597
+Khan product identity, INF/package identity, policy, runtime configuration
+namespace, orchestration boundary, tests, and deployment are Khan-owned.
 
-Original path:
-video/IndirectDisplay/IddSampleDriver
-
-License:
-Microsoft Public License (MS-PL)
-
-Khan-specific changes include:
-
-- Khan device/endpoint identity
-- Khan hardware ID
-- one-monitor gaming-cloud policy
-- Khan display mode catalogue
-- removal of Microsoft sample monitor identities
-- future Guest Agent control boundary
-- future HDR/WCG implementation
-- future health telemetry
-
-The Microsoft Public License is recorded at:
-
-../../LICENSES/MS-PL.txt
+Windows Driver Framework public UMDF 2.15 headers are pinned from
+Microsoft/Windows-Driver-Frameworks at commit
+`3b9780e847cf68d6199dafe0f87650cf1f9c227f`.

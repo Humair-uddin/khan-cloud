@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "component": "KhanVirtualDisplay",
+  "batch": "KG-008K6",
+  "base_commit": "e68311976d4a3331a56809443697f67a0cbdc181",
+  "upstreams": [
+    {
+      "name": "VirtualDrivers/Virtual-Display-Driver",
+      "commit": "d7244969b2aa8bb38e76d79505eda217996cefea",
+      "license": "MIT",
+      "derived_files": [
+        "driver/KhanVirtualDisplay/Driver.cpp",
+        "driver/KhanVirtualDisplay/Driver.h",
+        "driver/KhanVirtualDisplay/Trace.h",
+        "driver/KhanVirtualDisplay/KhanVirtualDisplay.vcxproj",
+        "driver/KhanVirtualDisplay/KhanVirtualDisplay.vcxproj.filters",
+        "config/EDID/monitor_profile.xml",
+        "Common/Include/AdapterOption.h"
+      ]
+    },
+    {
+      "name": "Microsoft/Windows-Driver-Frameworks",
+      "commit": "3b9780e847cf68d6199dafe0f87650cf1f9c227f",
+      "license": "see upstream repository notices",
+      "purpose": "UMDF 2.15 public headers required by pinned VirtualDrivers project"
+    }
+  ],
+  "policy": {
+    "upstream_customer_branding_removed": true,
+    "upstream_config_namespace_replaced": true,
+    "runtime_config_path": "C:\\ProgramData\\KhanCloud\\VirtualDisplay\\khan-vdd-settings.xml",
+    "named_pipe": "\\\\.\\pipe\\KhanCloudVirtualDisplay",
+    "registry_namespace": "HKLM\\SOFTWARE\\KhanCloud\\VirtualDisplay",
+    "canonical_mode_count": 7
+  }
+}

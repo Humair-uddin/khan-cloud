@@ -1,3 +1,14 @@
+/*
+ * Khan Virtual Display — MIT production-core candidate
+ *
+ * Derived from VirtualDrivers/Virtual-Display-Driver commit
+ * d7244969b2aa8bb38e76d79505eda217996cefea under the MIT License.
+ *
+ * Khan Cloud owns product identity, packaging, configuration namespace,
+ * quality policy, orchestration boundary, and downstream modifications.
+ * Internal upstream callback symbol names are intentionally retained in
+ * KG-008K6 to reduce semantic risk during the initial production-core rebase.
+ */
 /*++
 
 Module Name:
@@ -57,7 +68,7 @@ Environment:
 //
 // Driver specific #defines
 //
-
-// TODO: Use a unique driver tracing ID here,
-// see https://docs.microsoft.com/en-us/windows-hardware/drivers/devtest/adding-wpp-software-tracing-to-a-windows-driver
-#define MYDRIVER_TRACING_ID L"KhanCloud\KhanVirtualDisplay"
+#if UMDF_VERSION_MAJOR == 2 && UMDF_VERSION_MINOR == 0
+    // TODO: Update the name of the tracing provider
+    #define MYDRIVER_TRACING_ID      L"Microsoft\\UMDF2.0\\IddSampleDriver V1.0"
+#endif

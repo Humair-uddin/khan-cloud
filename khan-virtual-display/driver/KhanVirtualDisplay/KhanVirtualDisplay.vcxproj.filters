@@ -37,8 +37,14 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="KhanVirtualDisplay.rc">
+    <None Include="readme.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <Xml Include="..\..\config\khan-vdd-settings.xml">
       <Filter>Resource Files</Filter>
-    </ResourceCompile>
+    </Xml>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="KhanVirtualDisplay.rc" />
   </ItemGroup>
 </Project>

@@ -1,64 +1,44 @@
 #include <windows.h>
 #include <ntverp.h>
 
-/*
- * Khan Virtual Display
- *
- * ntverp.h provides Microsoft/Windows defaults used by common.ver.
- * Explicitly undefine those inherited values before supplying Khan's
- * product identity.
- */
-
 #ifdef VER_FILEDESCRIPTION_STR
 #undef VER_FILEDESCRIPTION_STR
 #endif
-
 #ifdef VER_INTERNALNAME_STR
 #undef VER_INTERNALNAME_STR
 #endif
-
 #ifdef VER_ORIGINALFILENAME_STR
 #undef VER_ORIGINALFILENAME_STR
 #endif
-
 #ifdef VER_PRODUCTNAME_STR
 #undef VER_PRODUCTNAME_STR
 #endif
-
 #ifdef VER_COMPANYNAME_STR
 #undef VER_COMPANYNAME_STR
 #endif
-
 #ifdef VER_FILEVERSION
 #undef VER_FILEVERSION
 #endif
-
 #ifdef VER_FILEVERSION_STR
 #undef VER_FILEVERSION_STR
 #endif
-
 #ifdef VER_PRODUCTVERSION
 #undef VER_PRODUCTVERSION
 #endif
-
 #ifdef VER_PRODUCTVERSION_STR
 #undef VER_PRODUCTVERSION_STR
 #endif
 
 #define VER_FILETYPE                 VFT_DLL
 #define VER_FILESUBTYPE              VFT_UNKNOWN
-
 #define VER_FILEDESCRIPTION_STR      "Khan Virtual Display Driver"
 #define VER_INTERNALNAME_STR         "KhanVirtualDisplay"
 #define VER_ORIGINALFILENAME_STR     "KhanVirtualDisplay.dll"
-
 #define VER_PRODUCTNAME_STR          "Khan Cloud Virtual Display"
 #define VER_COMPANYNAME_STR          "Khan Cloud"
-
-#define VER_FILEVERSION              0,1,0,0
-#define VER_FILEVERSION_STR          "0.1.0.0"
-
-#define VER_PRODUCTVERSION           0,1,0,0
-#define VER_PRODUCTVERSION_STR       "0.1.0.0"
+#define VER_FILEVERSION              0,2,0,0
+#define VER_FILEVERSION_STR          "0.2.0.0"
+#define VER_PRODUCTVERSION           0,2,0,0
+#define VER_PRODUCTVERSION_STR       "0.2.0.0"
 
 #include "common.ver"
