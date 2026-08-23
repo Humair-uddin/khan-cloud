@@ -3373,6 +3373,83 @@ void SwapChainProcessor::Run()
 	}
 }
 
+HRESULT SwapChainProcessor::ProcessFrame(
+        IDXGIResource* FrameResource)
+{
+        if (FrameResource == nullptr)
+        {
+                ++m_FrameProcessingFailureCount;
+                vddlog(
+                    "e",
+                    "Khan frame pipeline received a null DXGI resource."
+                );
+                return E_POINTER;
+        }
+
+        if (!m_Device || !m_Device->Device || !m_Device->DeviceContext)
+        {
+                ++m_FrameProcessingFailureCount;
+                vddlog(
+                    "e",
+                    "Khan frame pipeline has no valid Direct3D device."
+                );
+                return E_UNEXPECTED;
+        }
+
+        ComPtr<ID3D11Texture2D> frameTexture;
+        HRESULT hr = FrameResource->QueryInterface(
+            IID_PPV_ARGS(&frameTexture)
+        );
+
+        if (FAILED(hr))
+        {
+                ++m_FrameProcessingFailureCount;
+
+                stringstream logStream;
+                logStream
+                    << "Khan frame pipeline could not resolve "
+                    << "ID3D11Texture2D. HRESULT: "
+                    << hr;
+
+                vddlog("e", logStream.str().c_str());
+                return hr;
+        }
+
+        D3D11_TEXTURE2D_DESC frameDesc = {};
+        frameTexture->GetDesc(&frameDesc);
+
+        if (
+            frameDesc.Width == 0 ||
+            frameDesc.Height == 0 ||
+            frameDesc.ArraySize == 0 ||
+            frameDesc.MipLevels == 0
+        )
+        {
+                ++m_FrameProcessingFailureCount;
+                vddlog(
+                    "e",
+                    "Khan frame pipeline received an invalid texture description."
+                );
+                return E_INVALIDARG;
+        }
+
+        ++m_ProcessedFrameCount;
+
+        //
+        // KG-008K17 foundation boundary.
+        //
+        // At this point Khan Cloud has resolved the IddCx frame into the
+        // actual D3D11 texture produced for this virtual monitor.
+        //
+        // Do not perform CPU mapping, synchronous encoding, networking,
+        // or blocking IPC here. Future frame consumers must preserve this
+        // low-latency swap-chain boundary and hand GPU work off without
+        // extending ownership of the IddCx frame unnecessarily.
+        //
+
+        return S_OK;
+}
+
 void SwapChainProcessor::RunCore()
 {
 	stringstream logStream;
@@ -3597,8 +3674,23 @@ void SwapChainProcessor::RunCore()
 			//  * a GPU custom compute shader encode operation
 			// ==============================
 
+			HRESULT frameProcessingHr =
+			    ProcessFrame(AcquiredBuffer.Get());
+
+			if (FAILED(frameProcessingHr))
+			{
+			    stringstream frameLog;
+			    frameLog
+			        << "Khan frame processing failed. HRESULT: "
+			        << frameProcessingHr;
+
+			    vddlog(
+			        "e",
+			        frameLog.str().c_str()
+			    );
+			}
+
 			AcquiredBuffer.Reset();
-			//vddlog("d", "Reset buffer");
 			hr = IddCxSwapChainFinishedProcessingFrame(m_hSwapChain);
 			if (FAILED(hr))
 			{

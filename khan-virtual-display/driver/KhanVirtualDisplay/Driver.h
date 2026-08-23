@@ -95,6 +95,12 @@ namespace Microsoft
             void Run();
             void RunCore();
 
+            HRESULT ProcessFrame(
+                IDXGIResource* FrameResource);
+
+            UINT64 m_ProcessedFrameCount = 0;
+            UINT64 m_FrameProcessingFailureCount = 0;
+
         public:
             IDDCX_MONITOR m_Monitor;
             IDDCX_SWAPCHAIN m_hSwapChain;
