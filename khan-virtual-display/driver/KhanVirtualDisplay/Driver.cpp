@@ -2970,11 +2970,11 @@ NTSTATUS VirtualDisplayDriverDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDevice
 	if (IDD_IS_FIELD_AVAILABLE(IDD_CX_CLIENT_CONFIG, EvtIddCxAdapterQueryTargetInfo))
 	{
 		IddConfig.EvtIddCxAdapterQueryTargetInfo = VirtualDisplayDriverEvtIddCxAdapterQueryTargetInfo;
+		IddConfig.EvtIddCxMonitorSetGammaRamp = VirtualDisplayDriverEvtIddCxMonitorSetGammaRamp;
 		IddConfig.EvtIddCxMonitorSetDefaultHdrMetaData = VirtualDisplayDriverEvtIddCxMonitorSetDefaultHdrMetadata;
 		IddConfig.EvtIddCxParseMonitorDescription2 = VirtualDisplayDriverEvtIddCxParseMonitorDescription2;
 		IddConfig.EvtIddCxMonitorQueryTargetModes2 = VirtualDisplayDriverEvtIddCxMonitorQueryTargetModes2;
 		IddConfig.EvtIddCxAdapterCommitModes2 = VirtualDisplayDriverEvtIddCxAdapterCommitModes2;
-		IddConfig.EvtIddCxMonitorSetGammaRamp = VirtualDisplayDriverEvtIddCxMonitorSetGammaRamp;
 	}
 	else {
 		IddConfig.EvtIddCxParseMonitorDescription = VirtualDisplayDriverParseMonitorDescription;
@@ -3672,14 +3672,14 @@ vector<BYTE> hardcodedEdid =
 0xff, 0x37, 0x00, 0x0a, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc,
 0x00, 0x4b, 0x68, 0x61, 0x6e, 0x43, 0x6c, 0x6f, 0x75, 0x64, 0x20, 0x56, 0x44, 0x44, 0x01, 0x66,
-0x02, 0x03, 0x20, 0x40, 0xe6, 0x06, 0x0d, 0x01, 0xa2, 0xa2, 0x10, 0xe3, 0x05, 0xd8, 0x00, 0x67,
+0x02, 0x03, 0x20, 0x40, 0xe6, 0x06, 0x05, 0x01, 0xa2, 0xa2, 0x10, 0xe3, 0x05, 0xd8, 0x00, 0x67,
 0xd8, 0x5d, 0xc4, 0x01, 0x6e, 0x80, 0x00, 0x68, 0x03, 0x0c, 0x00, 0x00, 0x00, 0x30, 0x00, 0x0b,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8c
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x94
 };
 
 
@@ -4964,119 +4964,31 @@ NTSTATUS VirtualDisplayDriverEvtIddCxAdapterCommitModes2(
 
 _Use_decl_annotations_
 NTSTATUS VirtualDisplayDriverEvtIddCxMonitorSetGammaRamp(
-	IDDCX_MONITOR MonitorObject,
-	const IDARG_IN_SET_GAMMARAMP* pInArgs
+    IDDCX_MONITOR MonitorObject,
+    const IDARG_IN_SET_GAMMARAMP* pInArgs
 )
 {
-	stringstream logStream;
-	logStream << "=== PROCESSING GAMMA RAMP REQUEST ===";
-	vddlog("d", logStream.str().c_str());
+    UNREFERENCED_PARAMETER(MonitorObject);
+    UNREFERENCED_PARAMETER(pInArgs);
 
-	logStream.str("");
-	logStream << "Monitor Object: " << MonitorObject
-			  << ", Color Space Enabled: " << (colorSpaceEnabled ? "Yes" : "No")
-			  << ", Matrix Transform Enabled: " << (enableMatrixTransform ? "Yes" : "No");
-	vddlog("d", logStream.str().c_str());
+    /*
+     * KG-008K16 — truthful gamma capability contract.
+     *
+     * Khan advertises IDDCX_FEATURE_IMPLEMENTATION_NONE for gamma.
+     * The former callback stored/calculated policy state but did not
+     * transform pixels in the swap-chain/rendering pipeline.
+     *
+     * This callback is therefore intentionally not registered.
+     * If invoked unexpectedly, fail closed instead of claiming that
+     * gamma or matrix processing was applied.
+     */
+    vddlog(
+        "w",
+        "Gamma/color transform requested but Khan does not currently "
+        "implement pixel-pipeline gamma processing"
+    );
 
-	// Check if color space processing is enabled
-	if (!colorSpaceEnabled) {
-		vddlog("i", "Color space processing is disabled, skipping gamma ramp configuration");
-		return STATUS_SUCCESS;
-	}
-
-	VddGammaRamp gammaRamp = {};
-	bool hasValidGammaRamp = false;
-
-	// Priority 1: Use EDID-derived gamma settings if available
-	if (edidIntegrationEnabled && autoConfigureFromEdid) {
-		// First check for monitor-specific gamma ramp
-		auto storeIt = g_GammaRampStore.find(MonitorObject);
-		if (storeIt != g_GammaRampStore.end() && storeIt->second.isValid) {
-			gammaRamp = storeIt->second;
-			hasValidGammaRamp = true;
-			vddlog("i", "Using monitor-specific EDID-derived gamma ramp");
-		}
-		// If no monitor-specific gamma ramp, check for template from EDID profile
-		else {
-			auto templateIt = g_GammaRampStore.find(reinterpret_cast<IDDCX_MONITOR>(0));
-			if (templateIt != g_GammaRampStore.end() && templateIt->second.isValid) {
-				gammaRamp = templateIt->second;
-				hasValidGammaRamp = true;
-				// Store it for this specific monitor for future use
-				g_GammaRampStore[MonitorObject] = gammaRamp;
-				vddlog("i", "Using template EDID-derived gamma ramp and storing for monitor");
-			}
-		}
-	}
-
-	// Priority 2: Use manual configuration if no EDID data or manual override
-	if (!hasValidGammaRamp || overrideManualSettings) {
-		gammaRamp = ConvertManualToGammaRamp();
-		hasValidGammaRamp = gammaRamp.isValid;
-		vddlog("i", "Using manually configured gamma ramp");
-	}
-
-	// If we still don't have valid gamma settings, return early
-	if (!hasValidGammaRamp) {
-		vddlog("w", "No valid gamma ramp available, skipping configuration");
-		return STATUS_SUCCESS;
-	}
-
-	// Log the gamma ramp values being applied
-	logStream.str("");
-	logStream << "=== APPLYING GAMMA RAMP AND COLOR SPACE TRANSFORM ===\n"
-			  << "Gamma Value: " << gammaRamp.gamma << "\n"
-			  << "Color Space: " << WStringToString(gammaRamp.colorSpace) << "\n"
-			  << "Use Matrix Transform: " << (gammaRamp.useMatrix ? "Yes" : "No");
-	vddlog("i", logStream.str().c_str());
-
-	// Apply gamma ramp based on type
-	if (pInArgs->Type == IDDCX_GAMMARAMP_TYPE_3x4_COLORSPACE_TRANSFORM && gammaRamp.useMatrix) {
-		// Apply 3x4 color space transformation matrix
-		logStream.str("");
-		logStream << "Applying 3x4 Color Space Matrix:\n"
-				  << "  [" << gammaRamp.matrix.matrix[0][0] << ", " << gammaRamp.matrix.matrix[0][1] << ", " << gammaRamp.matrix.matrix[0][2] << ", " << gammaRamp.matrix.matrix[0][3] << "]\n"
-				  << "  [" << gammaRamp.matrix.matrix[1][0] << ", " << gammaRamp.matrix.matrix[1][1] << ", " << gammaRamp.matrix.matrix[1][2] << ", " << gammaRamp.matrix.matrix[1][3] << "]\n"
-				  << "  [" << gammaRamp.matrix.matrix[2][0] << ", " << gammaRamp.matrix.matrix[2][1] << ", " << gammaRamp.matrix.matrix[2][2] << ", " << gammaRamp.matrix.matrix[2][3] << "]";
-		vddlog("i", logStream.str().c_str());
-
-		// Store the matrix for this monitor
-		g_GammaRampStore[MonitorObject] = gammaRamp;
-
-		// In a full implementation, you would apply the matrix to the rendering pipeline here
-		// The exact API calls would depend on IddCx version and hardware capabilities
-
-		logStream.str("");
-		logStream << "3x4 matrix transform applied successfully for monitor " << MonitorObject;
-		vddlog("i", logStream.str().c_str());
-	}
-	else if (pInArgs->Type == IDDCX_GAMMARAMP_TYPE_RGB256x3x16) {
-		// Apply traditional RGB gamma ramp
-		logStream.str("");
-		logStream << "Applying RGB 256x3x16 gamma ramp with gamma " << gammaRamp.gamma;
-		vddlog("i", logStream.str().c_str());
-
-		// In a full implementation, you would generate and apply RGB lookup tables here
-		// Based on the gamma value and color space
-
-		logStream.str("");
-		logStream << "RGB gamma ramp applied successfully for monitor " << MonitorObject;
-		vddlog("i", logStream.str().c_str());
-	}
-	else {
-		logStream.str("");
-		logStream << "Unsupported gamma ramp type: " << pInArgs->Type << ", using default gamma processing";
-		vddlog("w", logStream.str().c_str());
-	}
-
-	// Store the final gamma ramp for this monitor
-	g_GammaRampStore[MonitorObject] = gammaRamp;
-
-	logStream.str("");
-	logStream << "Gamma ramp configuration completed for monitor " << MonitorObject;
-	vddlog("i", logStream.str().c_str());
-
-	return STATUS_SUCCESS;
+    return STATUS_NOT_SUPPORTED;
 }
 
 #pragma endregion
