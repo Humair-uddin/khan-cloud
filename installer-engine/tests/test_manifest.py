@@ -159,3 +159,58 @@ def test_manifest_qualification_snapshot_is_optional_for_legacy_packs():
     })
 
     assert manifest.qualification is None
+
+
+def test_manifest_accepts_image_recipe_artifact_sources():
+    from kc_installer.models import Manifest
+
+    manifest = Manifest.model_validate({
+        "feature_pack": {"id":"FP-GAMING","name":"Gaming","version":"1"},
+        "components": {},
+        "image_recipe": {
+            "id": "gaming-win11",
+            "version": "2026.08.1",
+            "artifacts": [
+                {
+                    "id": "khan-vdd", "version": "1.0.0", "stage": "image_build",
+                    "source": {"type": "khan_artifact", "url": "https://artifacts.example/vdd.zip"},
+                    "sha256": "a" * 64,
+                },
+                {
+                    "id": "nvidia-gpup", "version": "host", "stage": "host_specific",
+                    "source": {"type": "host_projection"},
+                },
+            ],
+        },
+    })
+    assert manifest.image_recipe is not None
+    assert manifest.image_recipe.artifacts[1].source.type == "host_projection"
+
+
+def test_manifest_rejects_unpinned_download_and_wrong_host_projection_stage(tmp_path: Path):
+    (tmp_path / "manifest.yaml").write_text('''
+feature_pack:
+  id: FP-GAMING
+  name: Gaming
+  version: "1"
+components: {}
+image_recipe:
+  id: gaming-win11
+  version: 2026.08.1
+  artifacts:
+    - id: khan-vdd
+      version: 1.0.0
+      stage: image_build
+      source:
+        type: khan_artifact
+        url: https://artifacts.example/vdd.zip
+    - id: nvidia-gpup
+      version: host
+      stage: image_build
+      source:
+        type: host_projection
+''')
+    manifest = load_manifest(tmp_path)
+    errors = validate_manifest_files(tmp_path, manifest)
+    assert any("pinned SHA-256" in error for error in errors)
+    assert any("host_specific" in error for error in errors)

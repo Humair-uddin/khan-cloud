@@ -125,6 +125,43 @@ class DependencySpec(BaseModel):
     remediation: RemediationAction | None = None
 
 
+class ArtifactSourceSpec(BaseModel):
+    type: Literal[
+        "vendor_url",
+        "khan_artifact",
+        "local_cache",
+        "host_projection",
+    ]
+    url: str | None = None
+
+
+class ImageArtifactSpec(BaseModel):
+    id: str
+    version: str
+    stage: Literal[
+        "windows_source",
+        "image_build",
+        "post_deploy",
+        "host_specific",
+        "session",
+    ]
+    source: ArtifactSourceSpec
+    sha256: str = ""
+    architecture: str = "any"
+    license: str = ""
+    signer: str = ""
+    total_bytes: int = Field(default=0, ge=0)
+    install: dict = {}
+    validation: dict = {}
+
+
+class ImageRecipeSpec(BaseModel):
+    id: str
+    version: str
+    windows: dict = {}
+    artifacts: list[ImageArtifactSpec] = []
+
+
 class PreflightSpec(BaseModel):
     required_commands: list[str] = []
     dependencies: list[DependencySpec] = []
@@ -153,3 +190,4 @@ class Manifest(BaseModel):
     preflight: PreflightSpec = PreflightSpec()
     tests: TestsSpec = TestsSpec()
     health_checks: list[CommandHealthCheck] = []
+    image_recipe: ImageRecipeSpec | None = None

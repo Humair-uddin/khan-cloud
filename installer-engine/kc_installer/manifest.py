@@ -29,6 +29,26 @@ def validate_manifest_files(package_dir: Path, manifest: Manifest) -> list[str]:
     if not manifest.feature_pack.version.strip():
         errors.append("Feature pack version must not be empty.")
 
+    if manifest.image_recipe is not None:
+        seen_ids: set[str] = set()
+        for artifact in manifest.image_recipe.artifacts:
+            if artifact.id in seen_ids:
+                errors.append(f"Duplicate image artifact id: {artifact.id}")
+            seen_ids.add(artifact.id)
+
+            downloadable = artifact.source.type in {"vendor_url", "khan_artifact"}
+            if downloadable:
+                if not (artifact.source.url or "").strip():
+                    errors.append(f"Image artifact {artifact.id!r} requires a URL.")
+                value = artifact.sha256.strip().lower()
+                if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+                    errors.append(f"Image artifact {artifact.id!r} requires a pinned SHA-256.")
+
+            if artifact.source.type == "host_projection" and artifact.stage != "host_specific":
+                errors.append(
+                    f"Host-projected image artifact {artifact.id!r} must use host_specific stage."
+                )
+
     for name, component in manifest.components.items():
         if not component.enabled:
             continue
