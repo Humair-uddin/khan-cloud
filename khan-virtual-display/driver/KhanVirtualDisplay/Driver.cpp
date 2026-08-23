@@ -984,6 +984,13 @@ VddHdrMetadata ConvertManualToSmpteMetadata() {
     return metadata;
 }
 
+// Canonical mode helper declarations.
+// Definitions remain in their existing implementation sections.
+void float_to_vsync(float refresh_rate, int& num, int& den);
+
+static double ModeRefreshHz(
+    const tuple<int, int, int, int>& mode);
+
 // === ENHANCED MODE MANAGEMENT FUNCTIONS ===
 
 // Generate modes from EDID with advanced filtering and optimization
@@ -1022,6 +1029,27 @@ vector<tuple<int, int, int, int>> GenerateModesFromEdid(const EdidProfileData& p
 
         // Add custom quality filtering
         if (passesFilter) {
+            // EDID profile tuples use:
+            //   (width, height, RefreshRateMultiplier, NominalRefreshRate)
+            //
+            // monitorModes uses the canonical runtime representation:
+            //   (width, height, VSyncNumerator, VSyncDenominator)
+            //
+            // Normalize at this boundary before an EDID-derived mode can
+            // enter monitorModes.  A multiplier of 1000 represents an
+            // integral nominal refresh rate; e.g. 1000/60 -> 60/1 Hz.
+            int vsyncNum = 0;
+            int vsyncDen = 0;
+
+            const double refreshRate =
+                static_cast<double>(nominalRefreshRate) *
+                static_cast<double>(refreshRateMultiplier) / 1000.0;
+
+            float_to_vsync(
+                static_cast<float>(refreshRate),
+                vsyncNum,
+                vsyncDen);
+
             // Prefer standard aspect ratios for better compatibility
             double aspectRatio = static_cast<double>(width) / height;
             bool isStandardAspect = (abs(aspectRatio - 16.0/9.0) < 0.01) ||  // 16:9
@@ -1037,7 +1065,8 @@ vector<tuple<int, int, int, int>> GenerateModesFromEdid(const EdidProfileData& p
                 vddlog("d", ss.str().c_str());
             }
 
-            generatedModes.push_back(mode);
+            generatedModes.push_back(
+                make_tuple(width, height, vsyncNum, vsyncDen));
         }
     }
 
@@ -1049,8 +1078,8 @@ vector<tuple<int, int, int, int>> GenerateModesFromEdid(const EdidProfileData& p
              int areaB = get<0>(b) * get<1>(b);
              if (areaA != areaB) return areaA > areaB;  // Larger resolution first
 
-             // Secondary sort: refresh rate
-             return get<3>(a) > get<3>(b);  // Higher refresh rate first
+             // Secondary sort: canonical refresh rate.
+             return ModeRefreshHz(a) > ModeRefreshHz(b);
          });
 
     stringstream ss;
@@ -1060,11 +1089,51 @@ vector<tuple<int, int, int, int>> GenerateModesFromEdid(const EdidProfileData& p
     return generatedModes;
 }
 
+// Canonical runtime mode helpers.
+// Runtime tuples are:
+//   (width, height, VSyncNumerator, VSyncDenominator)
+static double ModeRefreshHz(
+    const tuple<int, int, int, int>& mode) {
+
+    const int numerator = get<2>(mode);
+    const int denominator = get<3>(mode);
+
+    if (denominator == 0) {
+        return static_cast<double>(numerator);
+    }
+
+    return static_cast<double>(numerator) /
+           static_cast<double>(denominator);
+}
+
+static bool SameRuntimeMode(
+    const tuple<int, int, int, int>& a,
+    const tuple<int, int, int, int>& b) {
+
+    return get<0>(a) == get<0>(b) &&
+           get<1>(a) == get<1>(b) &&
+           get<2>(a) == get<2>(b) &&
+           get<3>(a) == get<3>(b);
+}
+
 // Find and validate preferred mode from EDID
 tuple<int, int, int, int> FindPreferredModeFromEdid(const EdidProfileData& profile,
                                                    const vector<tuple<int, int, int, int>>& availableModes) {
-    // Default fallback mode
-    tuple<int, int, int, int> preferredMode = make_tuple(fallbackWidth, fallbackHeight, 1000, fallbackRefresh);
+    // Default fallback mode in canonical runtime representation.
+    int fallbackVsyncNum = 0;
+    int fallbackVsyncDen = 0;
+
+    float_to_vsync(
+        static_cast<float>(fallbackRefresh),
+        fallbackVsyncNum,
+        fallbackVsyncDen);
+
+    tuple<int, int, int, int> preferredMode =
+        make_tuple(
+            fallbackWidth,
+            fallbackHeight,
+            fallbackVsyncNum,
+            fallbackVsyncDen);
 
     if (!useEdidPreferred) {
         vddlog("i", "EDID preferred mode disabled, using fallback");
@@ -1080,7 +1149,8 @@ tuple<int, int, int, int> FindPreferredModeFromEdid(const EdidProfileData& profi
 
             stringstream ss;
             ss << "Found EDID preferred mode: " << profile.preferredWidth << "x" << profile.preferredHeight
-               << "@" << get<3>(mode) << "Hz";
+               << "@" << fixed << setprecision(3)
+               << ModeRefreshHz(mode) << "Hz";
             vddlog("i", ss.str().c_str());
             break;
         }
@@ -1110,9 +1180,7 @@ vector<tuple<int, int, int, int>> MergeAndOptimizeModes(const vector<tuple<int, 
         for (const auto& edidMode : edidModes) {
             bool isDuplicate = false;
             for (const auto& manualMode : manualModes) {
-                if (get<0>(edidMode) == get<0>(manualMode) &&
-                    get<1>(edidMode) == get<1>(manualMode) &&
-                    get<3>(edidMode) == get<3>(manualMode)) {
+                if (SameRuntimeMode(edidMode, manualMode)) {
                     isDuplicate = true;
                     break;
                 }
@@ -1140,9 +1208,7 @@ vector<tuple<int, int, int, int>> OptimizeModeList(const vector<tuple<int, int, 
     optimizedModes.erase(
         remove_if(optimizedModes.begin(), optimizedModes.end(),
                   [&preferredMode](const tuple<int, int, int, int>& mode) {
-                      return get<0>(mode) == get<0>(preferredMode) &&
-                             get<1>(mode) == get<1>(preferredMode) &&
-                             get<3>(mode) == get<3>(preferredMode);
+                      return SameRuntimeMode(mode, preferredMode);
                   }),
         optimizedModes.end());
 
@@ -1153,9 +1219,7 @@ vector<tuple<int, int, int, int>> OptimizeModeList(const vector<tuple<int, int, 
     sort(optimizedModes.begin(), optimizedModes.end());
     optimizedModes.erase(unique(optimizedModes.begin(), optimizedModes.end(),
                                 [](const tuple<int, int, int, int>& a, const tuple<int, int, int, int>& b) {
-                                    return get<0>(a) == get<0>(b) &&
-                                           get<1>(a) == get<1>(b) &&
-                                           get<3>(a) == get<3>(b);
+                                    return SameRuntimeMode(a, b);
                                 }),
                          optimizedModes.end());
 
@@ -1184,18 +1248,19 @@ bool ValidateModeList(const vector<tuple<int, int, int, int>>& modes) {
 
     // Analyze resolution distribution
     map<pair<int, int>, int> resolutionCount;
-    map<int, int> refreshRateCount;
+    map<double, int> refreshRateCount;
 
     for (const auto& mode : modes) {
         pair<int, int> resolution = {get<0>(mode), get<1>(mode)};
         resolutionCount[resolution]++;
-        refreshRateCount[get<3>(mode)]++;
+        refreshRateCount[ModeRefreshHz(mode)]++;
     }
 
     validationReport << "Unique resolutions: " << resolutionCount.size() << "\n";
     validationReport << "Unique refresh rates: " << refreshRateCount.size() << "\n";
     validationReport << "Preferred mode: " << get<0>(modes[0]) << "x" << get<1>(modes[0])
-                    << "@" << get<3>(modes[0]) << "Hz";
+                    << "@" << fixed << setprecision(3)
+                    << ModeRefreshHz(modes[0]) << "Hz";
 
     vddlog("i", validationReport.str().c_str());
 
@@ -1392,7 +1457,8 @@ bool ApplyEdidProfile(const EdidProfileData& profile) {
 			   << "  Generated EDID modes: " << edidModes.size() << "\n"
 			   << "  Final optimized modes: " << finalModes.size() << "\n"
 			   << "  Preferred mode: " << get<0>(preferredMode) << "x" << get<1>(preferredMode)
-			   << "@" << get<3>(preferredMode) << "Hz\n"
+			   << "@" << fixed << setprecision(3)
+			   << ModeRefreshHz(preferredMode) << "Hz\n"
 			   << "  Source priority: " << WStringToString(sourcePriority);
 			vddlog("i", ss.str().c_str());
 		} else {
@@ -3598,14 +3664,14 @@ constexpr DISPLAYCONFIG_VIDEO_SIGNAL_INFO dispinfo(UINT32 h, UINT32 v, UINT32 rn
 
 vector<BYTE> hardcodedEdid =
 {
-0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x36, 0x94, 0x37, 0x13, 0xe7, 0x1e, 0xe7, 0x1e,
+0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x2d, 0x03, 0x01, 0x00, 0xe7, 0x1e, 0xe7, 0x1e,
 0x1c, 0x22, 0x01, 0x03, 0x80, 0x32, 0x1f, 0x78, 0x07, 0xee, 0x95, 0xa3, 0x54, 0x4c, 0x99, 0x26,
 0x0f, 0x50, 0x54, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x3a, 0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c,
 0x45, 0x00, 0x63, 0xc8, 0x10, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0xfd, 0x00, 0x17, 0xf0, 0x0f,
 0xff, 0x37, 0x00, 0x0a, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc,
-0x00, 0x56, 0x44, 0x44, 0x20, 0x62, 0x79, 0x20, 0x4d, 0x54, 0x54, 0x0a, 0x20, 0x20, 0x01, 0xc2,
+0x00, 0x4b, 0x68, 0x61, 0x6e, 0x43, 0x6c, 0x6f, 0x75, 0x64, 0x20, 0x56, 0x44, 0x44, 0x01, 0x66,
 0x02, 0x03, 0x20, 0x40, 0xe6, 0x06, 0x0d, 0x01, 0xa2, 0xa2, 0x10, 0xe3, 0x05, 0xd8, 0x00, 0x67,
 0xd8, 0x5d, 0xc4, 0x01, 0x6e, 0x80, 0x00, 0x68, 0x03, 0x0c, 0x00, 0x00, 0x00, 0x30, 0x00, 0x0b,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -3618,14 +3684,16 @@ vector<BYTE> hardcodedEdid =
 
 
 void modifyEdid(vector<BYTE>& edid) {
-	if (edid.size() < 12) {
-		return;
-	}
+ if (edid.size() < 12) {
+         return;
+ }
 
-	edid[8] = 0x36;
-	edid[9] = 0x94;
-	edid[10] = 0x37;
-	edid[11] = 0x13;
+ // Khan Cloud EDID PnP identity:
+ // manufacturer KHC, product 0001.
+ edid[8] = 0x2d;
+ edid[9] = 0x03;
+ edid[10] = 0x01;
+ edid[11] = 0x00;
 }
 
 
@@ -4497,7 +4565,8 @@ NTSTATUS VirtualDisplayDriverMonitorQueryModes(IDDCX_MONITOR MonitorObject, cons
 		logStream.str("");
 		logStream << "Created target mode " << i << ": Width = " << std::get<0>(monitorModes[i])
 			<< ", Height = " << std::get<1>(monitorModes[i])
-			<< ", VSync = " << std::get<2>(monitorModes[i]);
+			<< ", VSync = " << fixed << setprecision(3)
+			<< ModeRefreshHz(monitorModes[i]) << "Hz";
 		vddlog("d", logStream.str().c_str());
 	}
 
@@ -4669,7 +4738,8 @@ NTSTATUS VirtualDisplayDriverEvtIddCxParseMonitorDescription2(
 	{
 		logStream << "\n  Mode - Width: " << std::get<0>(mode)
 			<< ", Height: " << std::get<1>(mode)
-			<< ", RefreshRate: " << std::get<2>(mode);
+			<< ", RefreshRate: " << fixed << setprecision(3)
+			<< ModeRefreshHz(mode) << "Hz";
 	}
 	vddlog("d", logStream.str().c_str());
 
@@ -4761,7 +4831,8 @@ NTSTATUS VirtualDisplayDriverEvtIddCxMonitorQueryTargetModes2(
 		logStream << "\n  TargetModeIndex: " << i
 			<< "\n    Width: " << std::get<0>(monitorModes[i])
 			<< "\n    Height: " << std::get<1>(monitorModes[i])
-			<< "\n    RefreshRate: " << std::get<2>(monitorModes[i]);
+			<< "\n    RefreshRate: " << fixed << setprecision(3)
+			<< ModeRefreshHz(monitorModes[i]) << "Hz";
 	}
 	vddlog("d", logStream.str().c_str());
 
@@ -5145,16 +5216,25 @@ NTSTATUS CreateFallbackConfiguration()
 
 	// Create safe fallback modes if EDID parsing fails
 	vector<tuple<DWORD, DWORD, DWORD, DWORD>> fallbackModes = {
-		make_tuple(1920, 1080, 60, 0),   // Full HD 60Hz
-		make_tuple(1366, 768, 60, 0),    // Common laptop resolution
-		make_tuple(1280, 720, 60, 0),    // HD 60Hz
-		make_tuple(800, 600, 60, 0)      // Safe fallback
+		make_tuple(1920, 1080, 60, 1),   // Full HD 60Hz
+		make_tuple(1366, 768, 60, 1),    // Common laptop resolution
+		make_tuple(1280, 720, 60, 1),    // HD 60Hz
+		make_tuple(800, 600, 60, 1)      // Safe fallback
 	};
 
 	logStream.str("");
 	logStream << "Fallback modes created:";
 	for (const auto& mode : fallbackModes) {
-		logStream << "\n  " << get<0>(mode) << "x" << get<1>(mode) << "@" << get<2>(mode) << "Hz";
+		const double refreshHz =
+			(get<3>(mode) == 0)
+			? static_cast<double>(get<2>(mode))
+			: static_cast<double>(get<2>(mode)) /
+			  static_cast<double>(get<3>(mode));
+
+		logStream << "\n  " << get<0>(mode)
+			<< "x" << get<1>(mode)
+			<< "@" << fixed << setprecision(3)
+			<< refreshHz << "Hz";
 	}
 	vddlog("d", logStream.str().c_str());
 

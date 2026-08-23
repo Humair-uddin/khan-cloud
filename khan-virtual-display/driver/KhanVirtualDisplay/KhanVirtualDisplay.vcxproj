@@ -258,7 +258,7 @@
       <FileDigestAlgorithm>SHA1</FileDigestAlgorithm>
     </DriverSign>
     <PostBuildEvent>
-      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay" mkdir "$(TargetDir)\KhanVirtualDisplay"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\khan-vdd-settings.xml"</Command>
+      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID" mkdir "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\khan-vdd-settings.xml"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\EDID\monitor_profile.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID\monitor_profile.xml"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -279,7 +279,7 @@
       <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
     </DriverSign>
     <PostBuildEvent>
-      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay" mkdir "$(TargetDir)\KhanVirtualDisplay"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\khan-vdd-settings.xml"</Command>
+      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID" mkdir "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\khan-vdd-settings.xml"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\EDID\monitor_profile.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID\monitor_profile.xml"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
@@ -324,7 +324,7 @@
       <FileDigestAlgorithm>SHA1</FileDigestAlgorithm>
     </DriverSign>
     <PostBuildEvent>
-      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay" mkdir "$(TargetDir)\KhanVirtualDisplay"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\khan-vdd-settings.xml"</Command>
+      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID" mkdir "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\khan-vdd-settings.xml"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\EDID\monitor_profile.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID\monitor_profile.xml"</Command>
     </PostBuildEvent>
     <Inf>
       <DateStamp>10/16/2024</DateStamp>
@@ -348,7 +348,7 @@
       <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
     </DriverSign>
     <PostBuildEvent>
-      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay" mkdir "$(TargetDir)\KhanVirtualDisplay"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\khan-vdd-settings.xml"</Command>
+      <Command>if not exist "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID" mkdir "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\khan-vdd-settings.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\khan-vdd-settings.xml"&#xD;&#xA;copy /Y "$(ProjectDir)..\..\config\EDID\monitor_profile.xml" "$(TargetDir)\KhanVirtualDisplay\RuntimeConfig\EDID\monitor_profile.xml"</Command>
     </PostBuildEvent>
     <Inf>
       <DateStamp>10/16/2024</DateStamp>
@@ -362,6 +362,7 @@
   </ItemGroup>
   <ItemGroup>
     <Xml Include="..\..\config\khan-vdd-settings.xml" />
+    <Xml Include="..\..\config\EDID\monitor_profile.xml" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
