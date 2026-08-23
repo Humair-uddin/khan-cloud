@@ -3373,6 +3373,74 @@ void SwapChainProcessor::Run()
 	}
 }
 
+HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
+        const D3D11_TEXTURE2D_DESC& SourceDesc)
+{
+        if (!m_Device || !m_Device->Device)
+        {
+                return E_UNEXPECTED;
+        }
+
+        const bool existingTextureMatches =
+            m_FrameHandoffTexture &&
+            m_FrameHandoffDesc.Width == SourceDesc.Width &&
+            m_FrameHandoffDesc.Height == SourceDesc.Height &&
+            m_FrameHandoffDesc.Format == SourceDesc.Format &&
+            m_FrameHandoffDesc.ArraySize == SourceDesc.ArraySize &&
+            m_FrameHandoffDesc.MipLevels == SourceDesc.MipLevels &&
+            m_FrameHandoffDesc.SampleDesc.Count ==
+                SourceDesc.SampleDesc.Count &&
+            m_FrameHandoffDesc.SampleDesc.Quality ==
+                SourceDesc.SampleDesc.Quality;
+
+        if (existingTextureMatches)
+        {
+                return S_OK;
+        }
+
+        D3D11_TEXTURE2D_DESC handoffDesc = SourceDesc;
+
+        handoffDesc.Usage = D3D11_USAGE_DEFAULT;
+        handoffDesc.CPUAccessFlags = 0;
+        handoffDesc.BindFlags = 0;
+        handoffDesc.MiscFlags = 0;
+
+        ComPtr<ID3D11Texture2D> newTexture;
+
+        HRESULT hr =
+            m_Device->Device->CreateTexture2D(
+                &handoffDesc,
+                nullptr,
+                &newTexture
+            );
+
+        if (FAILED(hr))
+        {
+                stringstream logStream;
+                logStream
+                    << "Failed to create Khan GPU frame handoff texture. "
+                    << "HRESULT: "
+                    << hr;
+
+                vddlog(
+                    "e",
+                    logStream.str().c_str()
+                );
+
+                return hr;
+        }
+
+        m_FrameHandoffTexture = newTexture;
+        m_FrameHandoffDesc = handoffDesc;
+
+        vddlog(
+            "i",
+            "Khan GPU frame handoff texture created."
+        );
+
+        return S_OK;
+}
+
 HRESULT SwapChainProcessor::ProcessFrame(
         IDXGIResource* FrameResource)
 {
@@ -3433,10 +3501,25 @@ HRESULT SwapChainProcessor::ProcessFrame(
                 return E_INVALIDARG;
         }
 
+        hr = EnsureFrameHandoffTexture(
+            frameDesc
+        );
+
+        if (FAILED(hr))
+        {
+                ++m_FrameProcessingFailureCount;
+                return hr;
+        }
+
+        m_Device->DeviceContext->CopyResource(
+            m_FrameHandoffTexture.Get(),
+            frameTexture.Get()
+        );
+
         ++m_ProcessedFrameCount;
 
         //
-        // KG-008K17 foundation boundary.
+        // KG-008K18 GPU handoff foundation.
         //
         // At this point Khan Cloud has resolved the IddCx frame into the
         // actual D3D11 texture produced for this virtual monitor.

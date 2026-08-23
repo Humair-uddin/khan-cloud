@@ -101,6 +101,15 @@ namespace Microsoft
             UINT64 m_ProcessedFrameCount = 0;
             UINT64 m_FrameProcessingFailureCount = 0;
 
+            Microsoft::WRL::ComPtr<ID3D11Texture2D>
+                m_FrameHandoffTexture;
+
+            D3D11_TEXTURE2D_DESC
+                m_FrameHandoffDesc = {};
+
+            HRESULT EnsureFrameHandoffTexture(
+                const D3D11_TEXTURE2D_DESC& SourceDesc);
+
         public:
             IDDCX_MONITOR m_Monitor;
             IDDCX_SWAPCHAIN m_hSwapChain;
