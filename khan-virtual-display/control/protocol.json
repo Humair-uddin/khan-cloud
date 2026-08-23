@@ -1,0 +1,49 @@
+{
+  "contract_version": "kg008k-control-v1",
+
+  "component": "khan-virtual-display",
+
+  "operations": {
+    "get_status": {
+      "request": {},
+      "response": {
+        "driver_ready": "boolean",
+        "monitor_present": "boolean",
+        "active_mode": "display_mode|null"
+      }
+    },
+
+    "list_modes": {
+      "request": {},
+      "response": {
+        "modes": "display_mode[]"
+      }
+    },
+
+    "set_mode": {
+      "request": {
+        "width": "integer",
+        "height": "integer",
+        "refresh_hz": "integer"
+      },
+      "response": {
+        "accepted": "boolean",
+        "active_mode": "display_mode|null"
+      }
+    },
+
+    "enable_monitor": {
+      "request": {},
+      "response": {
+        "enabled": "boolean"
+      }
+    },
+
+    "disable_monitor": {
+      "request": {},
+      "response": {
+        "enabled": "boolean"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+MIT License
+
+Copyright (c) 2024 Virtual Display
+
+This repository records VirtualDrivers/Virtual-Display-Driver as an upstream
+reference. Any substantial MIT-licensed material later incorporated into Khan
+Virtual Display must retain the original copyright and MIT permission notice.
+
+Authoritative license:
+https://github.com/VirtualDrivers/Virtual-Display-Driver/blob/master/LICENSE

@@ -1,0 +1,19 @@
+{
+  "id": "khan-virtual-display",
+  "version": "0.1.0-dev",
+  "source": {
+    "type": "khan_artifact",
+    "uri": "KHA​​N_ARTIFACT_URI_NOT_PUBLISHED"
+  },
+  "stage": "image_build",
+  "architecture": "x64",
+  "sha256": "TO_BE_SET_AT_RELEASE",
+  "license": {
+    "component": "Khan-owned",
+    "third_party_notices_required": true
+  },
+  "validation": {
+    "device_name": "Khan Virtual Display",
+    "control_contract": "kg008k-control-v1"
+  }
+}

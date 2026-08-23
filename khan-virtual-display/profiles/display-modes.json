@@ -1,0 +1,67 @@
+{
+  "contract_version": "kg008k-display-modes-v1",
+
+  "customer_profiles": {
+    "standard": {
+      "preferred": {
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 60
+      }
+    },
+
+    "high": {
+      "preferred": {
+        "width": 2560,
+        "height": 1440,
+        "refresh_hz": 120
+      }
+    },
+
+    "ultra": {
+      "preferred": {
+        "width": 3840,
+        "height": 2160,
+        "refresh_hz": 60
+      }
+    }
+  },
+
+  "adaptive_modes": [
+    {
+      "width": 3840,
+      "height": 2160,
+      "refresh_hz": 60
+    },
+    {
+      "width": 2560,
+      "height": 1440,
+      "refresh_hz": 120
+    },
+    {
+      "width": 2560,
+      "height": 1440,
+      "refresh_hz": 60
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 120
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 60
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "refresh_hz": 60
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "refresh_hz": 30
+    }
+  ]
+}
