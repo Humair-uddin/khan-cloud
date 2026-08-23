@@ -143,7 +143,10 @@ def test_kg008k13_canonical_seven_mode_policy():
             )
         )
 
-    assert modes == [
+    # K13 proved these seven modes through Windows runtime
+    # enumeration and activation. Preserve them as the baseline;
+    # later batches may append higher-refresh capabilities.
+    assert modes[:7] == [
         (3840, 2160, 60),
         (2560, 1440, 120),
         (2560, 1440, 60),

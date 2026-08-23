@@ -7,6 +7,7 @@
   <global></global>
 
   <resolutions>
+    <!-- K13 validated baseline modes -->
     <resolution><width>3840</width><height>2160</height><refresh_rate>60</refresh_rate></resolution>
     <resolution><width>2560</width><height>1440</height><refresh_rate>120</refresh_rate></resolution>
     <resolution><width>2560</width><height>1440</height><refresh_rate>60</refresh_rate></resolution>
@@ -14,6 +15,17 @@
     <resolution><width>1920</width><height>1080</height><refresh_rate>60</refresh_rate></resolution>
     <resolution><width>1280</width><height>720</height><refresh_rate>60</refresh_rate></resolution>
     <resolution><width>1280</width><height>720</height><refresh_rate>30</refresh_rate></resolution>
+
+    <!-- K15 high-refresh gaming expansion -->
+    <resolution><width>3840</width><height>2160</height><refresh_rate>120</refresh_rate></resolution>
+
+    <resolution><width>2560</width><height>1440</height><refresh_rate>240</refresh_rate></resolution>
+    <resolution><width>2560</width><height>1440</height><refresh_rate>165</refresh_rate></resolution>
+    <resolution><width>2560</width><height>1440</height><refresh_rate>144</refresh_rate></resolution>
+
+    <resolution><width>1920</width><height>1080</height><refresh_rate>240</refresh_rate></resolution>
+    <resolution><width>1920</width><height>1080</height><refresh_rate>165</refresh_rate></resolution>
+    <resolution><width>1920</width><height>1080</height><refresh_rate>144</refresh_rate></resolution>
   </resolutions>
 
   <logging>
@@ -78,7 +90,7 @@
     <source_priority>manual</source_priority>
     <edid_mode_filtering>
       <min_refresh_rate>24</min_refresh_rate>
-      <max_refresh_rate>120</max_refresh_rate>
+      <max_refresh_rate>240</max_refresh_rate>
       <exclude_fractional_rates>false</exclude_fractional_rates>
       <min_resolution_width>1280</min_resolution_width>
       <min_resolution_height>720</min_resolution_height>

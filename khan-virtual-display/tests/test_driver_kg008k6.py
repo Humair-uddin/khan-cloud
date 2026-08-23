@@ -52,7 +52,10 @@ def test_kg008k6_exact_seven_modes():
             int(r.findtext("height")),
             int(float(r.findtext("refresh_rate"))),
         ))
-    assert modes == [
+    # KG-008K6 established these seven production modes.
+    # Later capability batches may append modes, but must preserve
+    # the validated K6 baseline in its original order.
+    assert modes[:7] == [
         (3840, 2160, 60),
         (2560, 1440, 120),
         (2560, 1440, 60),
