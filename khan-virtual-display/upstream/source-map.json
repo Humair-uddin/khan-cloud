@@ -1,0 +1,55 @@
+{
+  "contract_version": "kg008k3-source-map-v1",
+  "microsoft": {
+    "repository": "https://github.com/microsoft/Windows-driver-samples.git",
+    "commit": "717778a20ba4dd2440fe609f69153a1f8a64f597",
+    "license": "MS-PL",
+    "derived_files": [
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/Driver.cpp",
+        "khan": "driver/KhanVirtualDisplay/Driver.cpp"
+      },
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/Driver.h",
+        "khan": "driver/KhanVirtualDisplay/Driver.h"
+      },
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/IddSampleDriver.inf",
+        "khan": "driver/KhanVirtualDisplay/KhanVirtualDisplay.inf"
+      },
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/IddSampleDriver.rc",
+        "khan": "driver/KhanVirtualDisplay/KhanVirtualDisplay.rc"
+      },
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/IddSampleDriver.vcxproj",
+        "khan": "driver/KhanVirtualDisplay/KhanVirtualDisplay.vcxproj"
+      },
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/IddSampleDriver.vcxproj.filters",
+        "khan": "driver/KhanVirtualDisplay/KhanVirtualDisplay.vcxproj.filters"
+      },
+      {
+        "upstream": "video/IndirectDisplay/IddSampleDriver/Trace.h",
+        "khan": "driver/KhanVirtualDisplay/Trace.h"
+      }
+    ]
+  },
+  "virtualdrivers": {
+    "commit": "d7244969b2aa8bb38e76d79505eda217996cefea",
+    "license": "MIT",
+    "code_imported_in_kg008k3": false,
+    "reference_topics": [
+      "render adapter selection",
+      "runtime mode catalogue",
+      "HDR/WCG capability handling",
+      "EDID policy",
+      "multi-monitor lifecycle"
+    ]
+  },
+  "khan_owned_files": [
+    "driver/KhanVirtualDisplay/KhanModes.h",
+    "driver/HDR-DESIGN.md",
+    "upstream/source-map.json"
+  ]
+}

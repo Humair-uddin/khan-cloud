@@ -27,3 +27,20 @@ Any future source import must document:
 4. destination Khan file;
 5. license;
 6. nature of modification.
+
+## KG-008K3 Microsoft-derived driver scaffold
+
+KG-008K3 introduces a derivative of Microsoft's pinned IddSampleDriver
+scaffold.
+
+Pinned revision:
+
+`717778a20ba4dd2440fe609f69153a1f8a64f597`
+
+Derived implementation files are recorded in:
+
+`upstream/source-map.json`
+
+These Microsoft-derived source portions remain subject to MS-PL obligations.
+
+No VirtualDrivers source code is imported by KG-008K3.
