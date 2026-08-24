@@ -65,6 +65,9 @@ bool g_Running = true;
 mutex g_Mutex;
 HANDLE g_pipeHandle = INVALID_HANDLE_VALUE;
 
+Microsoft::IndirectDisp::IndirectDeviceContext* g_KhanActiveDeviceContext = nullptr;
+std::mutex g_KhanActiveDeviceContextMutex;
+
 using namespace std;
 using namespace Microsoft::IndirectDisp;
 using namespace Microsoft::WRL;
@@ -2340,6 +2343,99 @@ void HandleClient(HANDLE hPipe) {
 			}
 			ReloadDriver(hPipe);
 		}
+		else if (
+		    wcsncmp(
+		        buffer,
+		        L"GETFRAMEHANDOFF",
+		        15
+		    ) == 0
+		) {
+		        std::wstring resourceName;
+		        UINT64 generation = 0;
+		        D3D11_TEXTURE2D_DESC desc = {};
+
+		        bool available = false;
+
+		        {
+		                std::lock_guard<std::mutex> lock(
+		                    g_KhanActiveDeviceContextMutex
+		                );
+
+		                if (
+		                    g_KhanActiveDeviceContext
+		                    != nullptr
+		                )
+		                {
+		                        available =
+		                            g_KhanActiveDeviceContext->
+		                            GetFrameHandoffDiscoveryMetadata(
+		                                resourceName,
+		                                generation,
+		                                desc
+		                            );
+		                }
+		        }
+
+		        std::wstring response;
+
+		        if (!available)
+		        {
+		                response =
+		                    L"FRAMEHANDOFF AVAILABLE=false";
+		        }
+		        else
+		        {
+		                response =
+		                    L"FRAMEHANDOFF AVAILABLE=true";
+
+		                response +=
+		                    L" NAME=\\\"" +
+		                    resourceName +
+		                    L"\\\"";
+
+		                response +=
+		                    L" GENERATION=" +
+		                    std::to_wstring(generation);
+
+		                response +=
+		                    L" WIDTH=" +
+		                    std::to_wstring(desc.Width);
+
+		                response +=
+		                    L" HEIGHT=" +
+		                    std::to_wstring(desc.Height);
+
+		                response +=
+		                    L" FORMAT=" +
+		                    std::to_wstring(
+		                        static_cast<UINT>(
+		                            desc.Format
+		                        )
+		                    );
+
+		                response +=
+		                    L" PRODUCER_KEY=0";
+
+		                response +=
+		                    L" CONSUMER_KEY=1";
+		        }
+
+		        DWORD bytesWritten = 0;
+
+		        DWORD bytesToWrite =
+		            static_cast<DWORD>(
+		                (response.length() + 1)
+		                * sizeof(wchar_t)
+		            );
+
+		        WriteFile(
+		            hPipe,
+		            response.c_str(),
+		            bytesToWrite,
+		            &bytesWritten,
+		            NULL
+		        );
+		}
 		else if (wcsncmp(buffer, L"GETSETTINGS", 11) == 0) {
 			//query and return settings
 			bool debugEnabled = EnabledQuery(L"DebugLoggingEnabled");
@@ -2380,8 +2476,8 @@ DWORD WINAPI NamedPipeServer(LPVOID lpParam) {
 	SECURITY_ATTRIBUTES sa;
 	sa.nLength = sizeof(SECURITY_ATTRIBUTES);
 	sa.bInheritHandle = FALSE;
-	const wchar_t* sddl = L"D:(A;;GA;;;WD)";
-	vddlog("d", "Starting pipe with parameters: D:(A;;GA;;;WD)");
+	const wchar_t* sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
+	vddlog("d", "Starting hardened Khan pipe ACL");
 	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
 		sddl, SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
 		DWORD ErrorCode = GetLastError();
@@ -3373,6 +3469,62 @@ void SwapChainProcessor::Run()
 	}
 }
 
+std::wstring SwapChainProcessor::BuildFrameHandoffResourceName() const
+{
+        GUID resourceGuid = {};
+
+        HRESULT hr = CoCreateGuid(&resourceGuid);
+
+        if (FAILED(hr))
+        {
+                return L"";
+        }
+
+        wchar_t guidBuffer[64] = {};
+
+        int chars = StringFromGUID2(
+            resourceGuid,
+            guidBuffer,
+            static_cast<int>(
+                sizeof(guidBuffer) /
+                sizeof(guidBuffer[0])
+            )
+        );
+
+        if (chars <= 0)
+        {
+                return L"";
+        }
+
+        std::wstring name =
+            L"Local\\KhanCloud.VDD.Frame.";
+
+        name += guidBuffer;
+
+        return name;
+}
+
+bool SwapChainProcessor::GetFrameHandoffDiscoveryMetadata(
+        std::wstring& ResourceName,
+        UINT64& Generation,
+        D3D11_TEXTURE2D_DESC& Desc) const
+{
+        if (
+            !m_FrameHandoffTexture ||
+            m_FrameHandoffSharedHandle == nullptr ||
+            m_FrameHandoffResourceName.empty()
+        )
+        {
+                return false;
+        }
+
+        ResourceName = m_FrameHandoffResourceName;
+        Generation = m_FrameHandoffGeneration;
+        Desc = m_FrameHandoffDesc;
+
+        return true;
+}
+
 void SwapChainProcessor::ResetFrameHandoff()
 {
         m_FrameHandoffMutex.Reset();
@@ -3384,6 +3536,7 @@ void SwapChainProcessor::ResetFrameHandoff()
                 m_FrameHandoffSharedHandle = nullptr;
         }
 
+        m_FrameHandoffResourceName.clear();
         m_FrameHandoffDesc = {};
 }
 
@@ -3474,13 +3627,26 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
                 return hr;
         }
 
+        std::wstring resourceName =
+            BuildFrameHandoffResourceName();
+
+        if (resourceName.empty())
+        {
+                vddlog(
+                    "e",
+                    "Failed to generate Khan GPU resource name."
+                );
+
+                return E_FAIL;
+        }
+
         HANDLE newSharedHandle = nullptr;
 
         hr = sharedResource->CreateSharedHandle(
             nullptr,
             DXGI_SHARED_RESOURCE_READ |
                 DXGI_SHARED_RESOURCE_WRITE,
-            nullptr,
+            resourceName.c_str(),
             &newSharedHandle
         );
 
@@ -3499,6 +3665,7 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
         m_FrameHandoffTexture = newTexture;
         m_FrameHandoffMutex = newMutex;
         m_FrameHandoffSharedHandle = newSharedHandle;
+        m_FrameHandoffResourceName = resourceName;
         m_FrameHandoffDesc = handoffDesc;
         ++m_FrameHandoffGeneration;
 
@@ -4153,6 +4320,15 @@ IndirectDeviceContext::IndirectDeviceContext(_In_ WDFDEVICE WdfDevice) :
 	m_Monitor(nullptr),
 	m_Monitor2(nullptr)
 {
+        {
+                std::lock_guard<std::mutex> lock(
+                    g_KhanActiveDeviceContextMutex
+                );
+
+                g_KhanActiveDeviceContext = this;
+        }
+
+
 	// Initialize Phase 5: Final Integration and Testing
 	NTSTATUS initStatus = InitializePhase5Integration();
 	if (!NT_SUCCESS(initStatus)) {
@@ -4162,6 +4338,20 @@ IndirectDeviceContext::IndirectDeviceContext(_In_ WDFDEVICE WdfDevice) :
 
 IndirectDeviceContext::~IndirectDeviceContext()
 {
+        {
+                std::lock_guard<std::mutex> lock(
+                    g_KhanActiveDeviceContextMutex
+                );
+
+                if (
+                    g_KhanActiveDeviceContext == this
+                )
+                {
+                        g_KhanActiveDeviceContext = nullptr;
+                }
+        }
+
+
 	stringstream logStream;
 	std::map<IDDCX_MONITOR, std::unique_ptr<SwapChainProcessor>> processingThreads;
 
@@ -4628,6 +4818,35 @@ void IndirectDeviceContext::AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHA
 	}
 }
 
+
+bool IndirectDeviceContext::GetFrameHandoffDiscoveryMetadata(
+        std::wstring& ResourceName,
+        UINT64& Generation,
+        D3D11_TEXTURE2D_DESC& Desc)
+{
+        std::lock_guard<std::mutex> lock(
+            m_ProcessingThreadsMutex
+        );
+
+        if (m_ProcessingThreads.size() != 1)
+        {
+                return false;
+        }
+
+        const auto& processor =
+            m_ProcessingThreads.begin()->second;
+
+        if (!processor)
+        {
+                return false;
+        }
+
+        return processor->GetFrameHandoffDiscoveryMetadata(
+            ResourceName,
+            Generation,
+            Desc
+        );
+}
 
 void IndirectDeviceContext::UnassignSwapChain(IDDCX_MONITOR Monitor)
 {

@@ -109,6 +109,8 @@ namespace Microsoft
 
             HANDLE m_FrameHandoffSharedHandle = nullptr;
 
+            std::wstring m_FrameHandoffResourceName;
+
             D3D11_TEXTURE2D_DESC
                 m_FrameHandoffDesc = {};
 
@@ -120,7 +122,14 @@ namespace Microsoft
 
             void ResetFrameHandoff();
 
+            std::wstring BuildFrameHandoffResourceName() const;
+
         public:
+            bool GetFrameHandoffDiscoveryMetadata(
+                std::wstring& ResourceName,
+                UINT64& Generation,
+                D3D11_TEXTURE2D_DESC& Desc) const;
+
             IDDCX_MONITOR m_Monitor;
             IDDCX_SWAPCHAIN m_hSwapChain;
             std::shared_ptr<Direct3DDevice> m_Device;
@@ -158,6 +167,11 @@ namespace Microsoft
 
             void AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
             void UnassignSwapChain(IDDCX_MONITOR Monitor);
+
+            bool GetFrameHandoffDiscoveryMetadata(
+                std::wstring& ResourceName,
+                UINT64& Generation,
+                D3D11_TEXTURE2D_DESC& Desc);
 
         protected:
 
