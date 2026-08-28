@@ -134,6 +134,21 @@ class GamingSessionCreate(BaseModel):
     streaming_backend: Literal["sunshine"] = "sunshine"
 
 
+    # KG-008K22 scheduler/display intent.
+    # These are business/client constraints only; the VDD driver
+    # remains bounded by the validated capability envelope.
+    display_profile: str = "auto"
+    display_max_width: int | None = None
+    display_max_height: int | None = None
+    display_max_refresh_hz: int | None = None
+    display_preferred_width: int | None = None
+    display_preferred_height: int | None = None
+    display_preferred_refresh_hz: int | None = None
+    hdr_requested: bool = False
+    client_hdr_capable: bool = False
+    display_allow_4k: bool | None = None
+    display_allow_240hz: bool | None = None
+
 class GamingSessionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID

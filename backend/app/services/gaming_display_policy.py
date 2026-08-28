@@ -349,3 +349,138 @@ def attach_display_policy(
     )
 
     return result
+
+
+DISPLAY_PROFILE_LIMITS: dict[str, dict[str, object]] = {
+    "auto": {
+        "max_width": 3840,
+        "max_height": 2160,
+        "max_refresh_hz": 120,
+        "allow_4k": True,
+        "allow_240hz": False,
+    },
+    "standard": {
+        "max_width": 1920,
+        "max_height": 1080,
+        "max_refresh_hz": 60,
+        "allow_4k": False,
+        "allow_240hz": False,
+    },
+    "performance": {
+        "max_width": 2560,
+        "max_height": 1440,
+        "max_refresh_hz": 120,
+        "allow_4k": False,
+        "allow_240hz": False,
+    },
+    "competitive": {
+        "max_width": 2560,
+        "max_height": 1440,
+        "max_refresh_hz": 165,
+        "allow_4k": False,
+        "allow_240hz": False,
+    },
+    "ultra_competitive": {
+        "max_width": 2560,
+        "max_height": 1440,
+        "max_refresh_hz": 240,
+        "allow_4k": False,
+        "allow_240hz": True,
+    },
+    "quality": {
+        "max_width": 3840,
+        "max_height": 2160,
+        "max_refresh_hz": 120,
+        "allow_4k": True,
+        "allow_240hz": False,
+    },
+}
+
+
+def constraints_for_session_request(
+    *,
+    display_profile: str = "auto",
+    max_width: int | None = None,
+    max_height: int | None = None,
+    max_refresh_hz: int | None = None,
+    preferred_width: int | None = None,
+    preferred_height: int | None = None,
+    preferred_refresh_hz: int | None = None,
+    hdr_requested: bool = False,
+    hdr_capable: bool = False,
+    allow_4k: bool | None = None,
+    allow_240hz: bool | None = None,
+) -> DisplayPolicyConstraints:
+    """
+    Convert customer/session intent into validated scheduler constraints.
+
+    Explicit client/session caps may only restrict the selected product
+    profile. They may not enlarge it.
+
+    This prevents a request from silently escaping the product tier's
+    validated limits.
+    """
+
+    profile = display_profile.strip().lower()
+
+    limits = DISPLAY_PROFILE_LIMITS.get(profile)
+
+    if limits is None:
+        raise GamingDisplayPolicyError(
+            f"Unsupported gaming display_profile: {display_profile}"
+        )
+
+    profile_width = int(limits["max_width"])
+    profile_height = int(limits["max_height"])
+    profile_refresh = int(limits["max_refresh_hz"])
+
+    effective_width = min(
+        profile_width,
+        max_width if max_width is not None else profile_width,
+    )
+
+    effective_height = min(
+        profile_height,
+        max_height if max_height is not None else profile_height,
+    )
+
+    effective_refresh = min(
+        profile_refresh,
+        (
+            max_refresh_hz
+            if max_refresh_hz is not None
+            else profile_refresh
+        ),
+    )
+
+    profile_allow_4k = bool(limits["allow_4k"])
+    profile_allow_240 = bool(limits["allow_240hz"])
+
+    effective_allow_4k = (
+        profile_allow_4k
+        if allow_4k is None
+        else profile_allow_4k and allow_4k
+    )
+
+    effective_allow_240 = (
+        profile_allow_240
+        if allow_240hz is None
+        else profile_allow_240 and allow_240hz
+    )
+
+    constraints = DisplayPolicyConstraints(
+        max_width=effective_width,
+        max_height=effective_height,
+        max_refresh_hz=effective_refresh,
+        preferred_width=preferred_width,
+        preferred_height=preferred_height,
+        preferred_refresh_hz=preferred_refresh_hz,
+        hdr_requested=hdr_requested,
+        hdr_capable=hdr_capable,
+        allow_4k=effective_allow_4k,
+        allow_240hz=effective_allow_240,
+    )
+
+    constraints.validate()
+
+    return constraints

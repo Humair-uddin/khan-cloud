@@ -10,6 +10,11 @@ from app.services.gaming_catalog_service import qualification_is_fresh
 from app.models.node import Node
 from app.models.user import User
 from app.schemas.compute import GamingSessionCreate
+from app.services.gaming_display_policy import (
+    GamingDisplayPolicyError,
+    attach_display_policy,
+    constraints_for_session_request,
+)
 from app.services.compute_service import ComputeError, has_capacity, _resolve_organization
 from app.services.organization_service import visible_organizations
 
@@ -190,6 +195,45 @@ def select_gaming_host(db: Session, *, minimum_vram_mb: int, cpu: int, memory_by
     return capacity, node, gpu_uuid, name, vram
 
 
+
+def _gaming_session_display_policy(
+    payload: GamingSessionCreate,
+) -> dict[str, object]:
+    """
+    Build the VDD policy for one gaming session.
+
+    The control plane owns product/client constraints. The Node Agent
+    independently validates the resulting runtime policy before applying it.
+    """
+
+    constraints = constraints_for_session_request(
+        display_profile=payload.display_profile,
+        max_width=payload.display_max_width,
+        max_height=payload.display_max_height,
+        max_refresh_hz=payload.display_max_refresh_hz,
+        preferred_width=payload.display_preferred_width,
+        preferred_height=payload.display_preferred_height,
+        preferred_refresh_hz=payload.display_preferred_refresh_hz,
+        hdr_requested=payload.hdr_requested,
+        hdr_capable=payload.client_hdr_capable,
+        allow_4k=payload.display_allow_4k,
+        allow_240hz=payload.display_allow_240hz,
+    )
+
+    wrapped = attach_display_policy(
+        {},
+        constraints,
+    )
+
+    policy = wrapped["display_policy"]
+
+    if not isinstance(policy, dict):
+        raise GamingDisplayPolicyError(
+            "Derived gaming display policy is invalid."
+        )
+
+    return policy
+
 def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: User) -> GamingSession:
     organization_id = _resolve_organization(db, actor, payload.organization_id)
     memory_bytes = payload.memory_mb * 1024 ** 2
@@ -216,7 +260,9 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
     db.add(session); db.flush()
     db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
     capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
-    db.add(NodeJob(node_id=node.id,gaming_session_id=session.id,job_type="gaming.session.create",payload={"session_id":str(session.id),"gpu_uuid":gpu_uuid,"gpu_name":gpu_name,"minimum_vram_mb":effective_vram,"streaming_backend":payload.streaming_backend,"game_slug":(gaming_title.slug if gaming_title else None),"launcher":(gaming_title.launcher if gaming_title else None),"launcher_app_id":(gaming_title.launcher_app_id if gaming_title else None)}))
+    display_policy = _gaming_session_display_policy(payload)
+
+    db.add(NodeJob(node_id=node.id,gaming_session_id=session.id,job_type="gaming.session.create",payload={"session_id":str(session.id),"gpu_uuid":gpu_uuid,"gpu_name":gpu_name,"minimum_vram_mb":effective_vram,"streaming_backend":payload.streaming_backend,"game_slug":(gaming_title.slug if gaming_title else None),"launcher":(gaming_title.launcher if gaming_title else None),"launcher_app_id":(gaming_title.launcher_app_id if gaming_title else None),"display_policy":display_policy}))
     db.commit(); db.refresh(session); return session
 
 
