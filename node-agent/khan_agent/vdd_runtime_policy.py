@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import hashlib
 import json
 import os
@@ -283,7 +285,96 @@ def render_settings_xml(
     return xml + b"\n"
 
 
-def apply_policy_atomic(
+
+def _transaction_file_snapshot(
+    path: Path,
+) -> tuple[bool, bytes]:
+    """Capture exact pre-transaction file state."""
+
+    path = Path(path)
+
+    if not path.exists():
+        return False, b""
+
+    return True, path.read_bytes()
+
+
+def _restore_transaction_file(
+    path: Path,
+    snapshot: tuple[bool, bytes],
+) -> None:
+    """
+    Restore exact pre-transaction state.
+
+    Files that did not exist before the transaction are removed.
+    """
+
+    path = Path(path)
+    existed, content = snapshot
+
+    if existed:
+        path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        path.write_bytes(content)
+        return
+
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _runtime_transaction_paths(
+    target_root: Path,
+) -> tuple[Path, Path, Path]:
+    root = Path(target_root)
+
+    return (
+        root / "khan-vdd-settings.xml",
+        root / STATE_NAME,
+        root / LKG_NAME,
+    )
+
+
+def _capture_runtime_transaction(
+    target_root: Path,
+) -> dict[Path, tuple[bool, bytes]]:
+    return {
+        path: _transaction_file_snapshot(path)
+        for path in _runtime_transaction_paths(
+            target_root
+        )
+    }
+
+
+def _rollback_runtime_transaction(
+    snapshots: dict[
+        Path,
+        tuple[bool, bytes],
+    ],
+) -> None:
+    errors: list[str] = []
+
+    for path, snapshot in snapshots.items():
+        try:
+            _restore_transaction_file(
+                path,
+                snapshot,
+            )
+        except Exception as exc:
+            errors.append(
+                f"{path}: {exc}"
+            )
+
+    if errors:
+        raise VddRuntimePolicyError(
+            "VDD runtime-policy rollback failed: "
+            + "; ".join(errors)
+        )
+
+def _apply_policy_atomic_unprotected(
     *,
     template_path: Path,
     target_root: Path,
@@ -348,6 +439,68 @@ def apply_policy_atomic(
     os.replace(state_tmp, state)
 
     return state_payload
+
+
+def apply_policy_atomic(*args, **kwargs):
+    """
+    Transactional facade for the canonical runtime-policy apply.
+
+    Argument binding is delegated to the original canonical function's
+    actual Python signature. This avoids maintaining a second signature
+    or a second policy implementation.
+    """
+
+    signature = inspect.signature(
+        _apply_policy_atomic_unprotected
+    )
+
+    bound = signature.bind(
+        *args,
+        **kwargs,
+    )
+
+    bound.apply_defaults()
+
+    if "target_root" not in bound.arguments:
+        raise VddRuntimePolicyError(
+            "Runtime policy target_root is required."
+        )
+
+    target_root = Path(
+        bound.arguments["target_root"]
+    )
+
+    snapshots = _capture_runtime_transaction(
+        target_root
+    )
+
+    try:
+        return _apply_policy_atomic_unprotected(
+            *args,
+            **kwargs,
+        )
+
+    except Exception as apply_error:
+        try:
+            _rollback_runtime_transaction(
+                snapshots
+            )
+
+        except Exception as rollback_error:
+            raise VddRuntimePolicyError(
+                "VDD runtime-policy apply failed and "
+                "rollback also failed. "
+                f"apply={apply_error}; "
+                f"rollback={rollback_error}"
+            ) from rollback_error
+
+        raise
+
+
+# Preserve introspection compatibility for callers and tests.
+apply_policy_atomic.__signature__ = inspect.signature(
+    _apply_policy_atomic_unprotected
+)
 
 
 def apply_display_policy(

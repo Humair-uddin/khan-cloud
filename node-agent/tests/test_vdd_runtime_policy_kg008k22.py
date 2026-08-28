@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -765,3 +766,190 @@ def test_policy_bound_session_replay_cannot_silently_drop_policy(
         "must include the same display_policy"
         in replay.error_message
     )
+
+
+def test_policy_transaction_restores_existing_files_on_state_commit_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+
+    target = tmp_path / "programdata"
+    target.mkdir()
+
+    settings = (
+        target
+        / "khan-vdd-settings.xml"
+    )
+
+    state = (
+        target
+        / vdd_runtime_policy.STATE_NAME
+    )
+
+    lkg = (
+        target
+        / vdd_runtime_policy.LKG_NAME
+    )
+
+    old_settings = b"OLD-SETTINGS"
+    old_state = b'{"old":"state"}'
+    old_lkg = b"OLD-LKG"
+
+    settings.write_bytes(old_settings)
+    state.write_bytes(old_state)
+    lkg.write_bytes(old_lkg)
+
+    real_replace = (
+        vdd_runtime_policy.os.replace
+    )
+
+    def fail_state_replace(
+        source,
+        destination,
+    ):
+        destination = Path(destination)
+
+        if (
+            destination.name
+            == vdd_runtime_policy.STATE_NAME
+        ):
+            raise OSError(
+                "simulated state write failure"
+            )
+
+        return real_replace(
+            source,
+            destination,
+        )
+
+    monkeypatch.setattr(
+        vdd_runtime_policy.os,
+        "replace",
+        fail_state_replace,
+    )
+
+    with pytest.raises(OSError):
+        vdd_runtime_policy.apply_display_policy(
+            _policy(),
+            template_path=template,
+            target_root=target,
+        )
+
+    assert settings.read_bytes() == old_settings
+    assert state.read_bytes() == old_state
+    assert lkg.read_bytes() == old_lkg
+
+
+def test_first_policy_transaction_removes_partial_files_on_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+
+    target = tmp_path / "programdata"
+
+    settings = (
+        target
+        / "khan-vdd-settings.xml"
+    )
+
+    state = (
+        target
+        / vdd_runtime_policy.STATE_NAME
+    )
+
+    lkg = (
+        target
+        / vdd_runtime_policy.LKG_NAME
+    )
+
+    real_replace = (
+        vdd_runtime_policy.os.replace
+    )
+
+    def fail_state_replace(
+        source,
+        destination,
+    ):
+        destination = Path(destination)
+
+        if (
+            destination.name
+            == vdd_runtime_policy.STATE_NAME
+        ):
+            raise OSError(
+                "simulated first-apply failure"
+            )
+
+        return real_replace(
+            source,
+            destination,
+        )
+
+    monkeypatch.setattr(
+        vdd_runtime_policy.os,
+        "replace",
+        fail_state_replace,
+    )
+
+    with pytest.raises(OSError):
+        vdd_runtime_policy.apply_display_policy(
+            _policy(),
+            template_path=template,
+            target_root=target,
+        )
+
+    assert not settings.exists()
+    assert not state.exists()
+    assert not lkg.exists()
+
+
+def test_successful_transaction_keeps_normal_policy_behavior(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+
+    target = tmp_path / "programdata"
+
+    result = (
+        vdd_runtime_policy.apply_display_policy(
+            _policy(),
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    settings = (
+        target
+        / "khan-vdd-settings.xml"
+    )
+
+    state = (
+        target
+        / vdd_runtime_policy.STATE_NAME
+    )
+
+    assert settings.exists()
+    assert state.exists()
+
+    saved = json.loads(
+        state.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert isinstance(saved, dict)
+    assert result["mode_count"] == 14
