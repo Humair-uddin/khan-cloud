@@ -253,6 +253,12 @@ class AgentRuntime:
                 gaming_sunshine_verify_tls=(
                     self.settings.gaming.sunshine_verify_tls
                 ),
+                gaming_vdd_template_path=(
+                    self.settings.gaming.vdd_template_path
+                ),
+                gaming_vdd_target_root=(
+                    self.settings.gaming.vdd_target_root
+                ),
             )
         except Exception:  # defensive boundary around workload executors
             logger.exception(

@@ -23,6 +23,13 @@ def execute_node_job(
     gaming_sunshine_api_username: str = "",
     gaming_sunshine_api_password: str = "",
     gaming_sunshine_verify_tls: bool = False,
+    gaming_vdd_template_path: Path = Path(
+        "C:/ProgramData/KhanCloud/VirtualDisplay/"
+        "RuntimeConfig/khan-vdd-settings.xml"
+    ),
+    gaming_vdd_target_root: Path = Path(
+        "C:/ProgramData/KhanCloud/VirtualDisplay"
+    ),
 ) -> JobExecutionResult:
     """Route a node job to the executor responsible for its workload family."""
 
@@ -55,6 +62,8 @@ def execute_node_job(
             sunshine_api_username=gaming_sunshine_api_username,
             sunshine_api_password=gaming_sunshine_api_password,
             sunshine_verify_tls=gaming_sunshine_verify_tls,
+            vdd_template_path=gaming_vdd_template_path,
+            vdd_target_root=gaming_vdd_target_root,
         )
 
     return JobExecutionResult(

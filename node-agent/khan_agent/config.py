@@ -80,6 +80,12 @@ class GamingConfig(BaseModel):
     sunshine_api_username: str = ""
     sunshine_api_password: str = ""
     sunshine_verify_tls: bool = False
+    vdd_template_path: Path = Path(
+        r"C:\ProgramData\KhanCloud\VirtualDisplay\RuntimeConfig\khan-vdd-settings.xml"
+    )
+    vdd_target_root: Path = Path(
+        r"C:\ProgramData\KhanCloud\VirtualDisplay"
+    )
 
 
 class VirtualizationConfig(BaseModel):

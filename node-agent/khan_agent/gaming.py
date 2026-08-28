@@ -10,6 +10,11 @@ from khan_agent.gaming_runtime import (
     pair_connection,
     revoke_connection,
 )
+from khan_agent.vdd_runtime_policy import (
+    VddRuntimePolicyError,
+    apply_display_policy,
+    restore_last_known_good,
+)
 from khan_agent.virtualization import JobExecutionResult
 
 
@@ -24,6 +29,13 @@ def execute_gaming_job(
     sunshine_api_username: str = "",
     sunshine_api_password: str = "",
     sunshine_verify_tls: bool = False,
+    vdd_template_path: Path = Path(
+        "C:/ProgramData/KhanCloud/VirtualDisplay/"
+        "RuntimeConfig/khan-vdd-settings.xml"
+    ),
+    vdd_target_root: Path = Path(
+        "C:/ProgramData/KhanCloud/VirtualDisplay"
+    ),
 ) -> JobExecutionResult:
     """Execute Khan Cloud gaming workload operations."""
 
@@ -63,6 +75,60 @@ def execute_gaming_job(
             result["vm"] = probe_proxmox_vm(normalized_vm_id)
 
         return JobExecutionResult("succeeded", result)
+
+    if job_type.startswith("gaming.display.policy."):
+        if not execution_enabled:
+            return JobExecutionResult(
+                "blocked",
+                {},
+                "Gaming execution is disabled by node policy.",
+            )
+
+        payload = job.get("payload") or {}
+
+        if not isinstance(payload, dict):
+            return JobExecutionResult(
+                "failed",
+                {},
+                "Gaming display policy payload must be an object.",
+            )
+
+        try:
+            if job_type == "gaming.display.policy.apply":
+                result = apply_display_policy(
+                    payload,
+                    template_path=vdd_template_path,
+                    target_root=vdd_target_root,
+                )
+                return JobExecutionResult(
+                    "succeeded",
+                    result,
+                )
+
+            if job_type == "gaming.display.policy.restore":
+                restored = restore_last_known_good(
+                    target_root=vdd_target_root,
+                )
+                return JobExecutionResult(
+                    "succeeded",
+                    {
+                        "restored": True,
+                        "settings_path": str(restored),
+                    },
+                )
+
+            return JobExecutionResult(
+                "failed",
+                {},
+                f"Unsupported gaming display policy job type: {job_type}.",
+            )
+
+        except VddRuntimePolicyError as exc:
+            return JobExecutionResult(
+                "blocked",
+                {},
+                str(exc),
+            )
 
     if (
         job_type.startswith("gaming.connection.")
