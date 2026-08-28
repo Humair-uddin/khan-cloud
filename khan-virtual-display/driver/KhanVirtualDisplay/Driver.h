@@ -27,6 +27,7 @@
 #include <vector>
 #include <map>
 #include <mutex>
+#include <atomic>
 #include <string>
 #include <sstream>
 
@@ -98,8 +99,8 @@ namespace Microsoft
             HRESULT ProcessFrame(
                 IDXGIResource* FrameResource);
 
-            UINT64 m_ProcessedFrameCount = 0;
-            UINT64 m_FrameProcessingFailureCount = 0;
+            std::atomic<UINT64> m_ProcessedFrameCount{0};
+            std::atomic<UINT64> m_FrameProcessingFailureCount{0};
 
             Microsoft::WRL::ComPtr<ID3D11Texture2D>
                 m_FrameHandoffTexture;
@@ -115,7 +116,11 @@ namespace Microsoft
                 m_FrameHandoffDesc = {};
 
             UINT64 m_FrameHandoffGeneration = 0;
-            UINT64 m_FrameHandoffDroppedCount = 0;
+            std::atomic<UINT64> m_FrameHandoffDroppedCount{0};
+
+            mutable std::mutex m_FrameHandoffStateMutex;
+
+            void ResetFrameHandoffUnlocked();
 
             HRESULT EnsureFrameHandoffTexture(
                 const D3D11_TEXTURE2D_DESC& SourceDesc);
@@ -128,7 +133,10 @@ namespace Microsoft
             bool GetFrameHandoffDiscoveryMetadata(
                 std::wstring& ResourceName,
                 UINT64& Generation,
-                D3D11_TEXTURE2D_DESC& Desc) const;
+                D3D11_TEXTURE2D_DESC& Desc,
+                UINT64& ProcessedFrames,
+                UINT64& ProcessingFailures,
+                UINT64& DroppedFrames) const;
 
             IDDCX_MONITOR m_Monitor;
             IDDCX_SWAPCHAIN m_hSwapChain;
@@ -168,10 +176,21 @@ namespace Microsoft
             void AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
             void UnassignSwapChain(IDDCX_MONITOR Monitor);
 
+            void GetSwapChainLifecycleTelemetry(
+                UINT64& AssignCalls,
+                UINT64& UnassignCalls,
+                UINT64& ActiveProcessors,
+                LONG& RenderAdapterLuidHigh,
+                ULONG& RenderAdapterLuidLow);
+
             bool GetFrameHandoffDiscoveryMetadata(
                 std::wstring& ResourceName,
                 UINT64& Generation,
-                D3D11_TEXTURE2D_DESC& Desc);
+                D3D11_TEXTURE2D_DESC& Desc,
+                UINT64& ProcessorCount,
+                UINT64& ProcessedFrames,
+                UINT64& ProcessingFailures,
+                UINT64& DroppedFrames);
 
         protected:
 
@@ -182,6 +201,12 @@ namespace Microsoft
 
             std::map<IDDCX_MONITOR, std::unique_ptr<SwapChainProcessor>> m_ProcessingThreads;
             std::mutex m_ProcessingThreadsMutex;
+
+            std::atomic<UINT64> m_AssignSwapChainCallCount{0};
+            std::atomic<UINT64> m_UnassignSwapChainCallCount{0};
+
+            std::atomic<LONG> m_LastRenderAdapterLuidHigh{0};
+            std::atomic<ULONG> m_LastRenderAdapterLuidLow{0};
 
         public:
             static const DISPLAYCONFIG_VIDEO_SIGNAL_INFO s_KnownMonitorModes[];

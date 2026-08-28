@@ -110,20 +110,55 @@ def test_k19_abandoned_mutex_resets_shared_resource():
 def test_k19_closes_nt_handle_on_reset():
     text = read(CPP)
 
-    start = text.index(
-        "void SwapChainProcessor::ResetFrameHandoff()"
+    unlocked_start = text.index(
+        "void SwapChainProcessor::"
+        "ResetFrameHandoffUnlocked()"
     )
 
-    end = text.index(
-        "HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(",
-        start,
+    locked_start = text.index(
+        "void SwapChainProcessor::"
+        "ResetFrameHandoff()",
+        unlocked_start,
     )
 
-    block = text[start:end]
+    ensure_start = text.index(
+        "HRESULT SwapChainProcessor::"
+        "EnsureFrameHandoffTexture(",
+        locked_start,
+    )
 
-    assert "CloseHandle(m_FrameHandoffSharedHandle)" in block
-    assert "m_FrameHandoffSharedHandle = nullptr;" in block
+    unlocked_block = text[
+        unlocked_start:locked_start
+    ]
 
+    locked_block = text[
+        locked_start:ensure_start
+    ]
+
+    assert (
+        "CloseHandle(m_FrameHandoffSharedHandle)"
+        in unlocked_block
+    )
+
+    assert (
+        "m_FrameHandoffSharedHandle = nullptr;"
+        in unlocked_block
+    )
+
+    assert (
+        "m_FrameHandoffResourceName.clear();"
+        in unlocked_block
+    )
+
+    assert (
+        "ResetFrameHandoffUnlocked();"
+        in locked_block
+    )
+
+    assert (
+        "m_FrameHandoffStateMutex"
+        in locked_block
+    )
 
 def test_k19_preserves_gpu_only_path():
     block = process_block().lower()

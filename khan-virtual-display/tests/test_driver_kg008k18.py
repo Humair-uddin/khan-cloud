@@ -88,9 +88,16 @@ def test_k18_processframe_copies_gpu_resource():
 
     assert "EnsureFrameHandoffTexture(" in block
     assert "DeviceContext->CopyResource(" in block
-    assert "m_FrameHandoffTexture.Get()" in block
-    assert "frameTexture.Get()" in block
 
+    # K21P intentionally snapshots the shared COM object
+    # under the handoff-state mutex before GPU work.
+    assert (
+        "ComPtr<ID3D11Texture2D> "
+        "handoffTexture;"
+        in block
+    )
+
+    assert "handoffTexture.Get()" in block
 
 def test_k18_does_not_cpu_map_frame():
     block = process_block().lower()

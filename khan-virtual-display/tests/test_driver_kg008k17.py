@@ -46,9 +46,17 @@ def test_k17_frame_processor_declared():
 def test_k17_frame_counters_are_per_processor():
     text = read(HDR)
 
-    assert "UINT64 m_ProcessedFrameCount = 0;" in text
-    assert "UINT64 m_FrameProcessingFailureCount = 0;" in text
+    assert (
+        "std::atomic<UINT64> "
+        "m_ProcessedFrameCount{0};"
+        in text
+    )
 
+    assert (
+        "std::atomic<UINT64> "
+        "m_FrameProcessingFailureCount{0};"
+        in text
+    )
 
 def test_k17_resolves_real_iddcx_resource_to_d3d11_texture():
     block = process_frame_block()

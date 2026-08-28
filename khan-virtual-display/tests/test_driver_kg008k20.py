@@ -28,8 +28,13 @@ def test_named_resource_uses_guid():
     assert "StringFromGUID2(" in text
 
     assert (
-        'L"Local\\\\KhanCloud.VDD.Frame."'
+        'L"Global\\\\KhanCloud.VDD.Frame."'
         in text
+    )
+
+    assert (
+        'L"Local\\\\KhanCloud.VDD.Frame."'
+        not in text
     )
 
 
@@ -58,30 +63,55 @@ def test_resource_name_is_saved():
 def test_resource_name_cleared_on_reset():
     text = read(CPP)
 
-    start = text.index(
+    unlocked_start = text.index(
         "void SwapChainProcessor::"
-        "ResetFrameHandoff()"
+        "ResetFrameHandoffUnlocked()"
     )
 
-    end = text.index(
+    locked_start = text.index(
+        "void SwapChainProcessor::"
+        "ResetFrameHandoff()",
+        unlocked_start,
+    )
+
+    ensure_start = text.index(
         "HRESULT SwapChainProcessor::"
         "EnsureFrameHandoffTexture(",
-        start,
+        locked_start,
     )
 
-    block = text[start:end]
+    unlocked_block = text[
+        unlocked_start:locked_start
+    ]
+
+    locked_block = text[
+        locked_start:ensure_start
+    ]
 
     assert (
         "m_FrameHandoffResourceName.clear();"
-        in block
+        in unlocked_block
     )
 
     assert (
-        "CloseHandle("
-        "m_FrameHandoffSharedHandle)"
-        in block
+        "CloseHandle(m_FrameHandoffSharedHandle)"
+        in unlocked_block
     )
 
+    assert (
+        "m_FrameHandoffSharedHandle = nullptr;"
+        in unlocked_block
+    )
+
+    assert (
+        "ResetFrameHandoffUnlocked();"
+        in locked_block
+    )
+
+    assert (
+        "m_FrameHandoffStateMutex"
+        in locked_block
+    )
 
 def test_metadata_does_not_expose_raw_handle():
     text = read(CPP)
@@ -316,4 +346,33 @@ def test_k20_pipe_acl_is_not_world_accessible():
         '(A;;GA;;;SY)'
         '(A;;GA;;;BA)"'
         in text
+    )
+def test_k20_frame_handoff_response_delivery_is_checked():
+    text = read(CPP)
+
+    start = text.index(
+        'L"GETFRAMEHANDOFF"'
+    )
+
+    end = text.index(
+        'L"GETSETTINGS"',
+        start,
+    )
+
+    block = text[start:end]
+
+    assert "BOOL writeResult" in block
+    assert "WriteFile(" in block
+    assert "!writeResult" in block
+    assert "bytesWritten != bytesToWrite" in block
+    assert "FlushFileBuffers(hPipe)" in block
+
+    assert (
+        "GETFRAMEHANDOFF response write failed."
+        in block
+    )
+
+    assert (
+        "GETFRAMEHANDOFF response flush failed."
+        in block
     )

@@ -2352,6 +2352,15 @@ void HandleClient(HANDLE hPipe) {
 		) {
 		        std::wstring resourceName;
 		        UINT64 generation = 0;
+		        UINT64 processorCount = 0;
+		        UINT64 processedFrames = 0;
+		        UINT64 processingFailures = 0;
+		        UINT64 droppedFrames = 0;
+		        UINT64 assignCalls = 0;
+		        UINT64 unassignCalls = 0;
+		        UINT64 activeProcessors = 0;
+		        LONG renderAdapterLuidHigh = 0;
+		        ULONG renderAdapterLuidLow = 0;
 		        D3D11_TEXTURE2D_DESC desc = {};
 
 		        bool available = false;
@@ -2369,10 +2378,23 @@ void HandleClient(HANDLE hPipe) {
 		                        available =
 		                            g_KhanActiveDeviceContext->
 		                            GetFrameHandoffDiscoveryMetadata(
-		                                resourceName,
-		                                generation,
-		                                desc
-		                            );
+                                                resourceName,
+                                                generation,
+                                                desc,
+                                                processorCount,
+                                                processedFrames,
+                                                processingFailures,
+                                                droppedFrames
+                                            );
+
+                                        g_KhanActiveDeviceContext->
+                                            GetSwapChainLifecycleTelemetry(
+                                                assignCalls,
+                                                unassignCalls,
+                                                activeProcessors,
+                                                renderAdapterLuidHigh,
+                                                renderAdapterLuidLow
+                                            );
 		                }
 		        }
 
@@ -2420,6 +2442,46 @@ void HandleClient(HANDLE hPipe) {
 		                    L" CONSUMER_KEY=1";
 		        }
 
+		        response +=
+		            L" PROCESSORS=" +
+		            std::to_wstring(processorCount);
+
+		        response +=
+		            L" PROCESSED=" +
+		            std::to_wstring(processedFrames);
+
+		        response +=
+		            L" FAILURES=" +
+		            std::to_wstring(processingFailures);
+
+		        response +=
+		            L" DROPPED=" +
+		            std::to_wstring(droppedFrames);
+
+		        response +=
+		            L" DIAG_GENERATION=" +
+		            std::to_wstring(generation);
+
+		        response +=
+		            L" ASSIGN_CALLS=" +
+		            std::to_wstring(assignCalls);
+
+		        response +=
+		            L" UNASSIGN_CALLS=" +
+		            std::to_wstring(unassignCalls);
+
+		        response +=
+		            L" ACTIVE_PROCESSORS=" +
+		            std::to_wstring(activeProcessors);
+
+		        response +=
+		            L" RENDER_ADAPTER_LUID_HIGH=" +
+		            std::to_wstring(renderAdapterLuidHigh);
+
+		        response +=
+		            L" RENDER_ADAPTER_LUID_LOW=" +
+		            std::to_wstring(renderAdapterLuidLow);
+
 		        DWORD bytesWritten = 0;
 
 		        DWORD bytesToWrite =
@@ -2428,13 +2490,58 @@ void HandleClient(HANDLE hPipe) {
 		                * sizeof(wchar_t)
 		            );
 
-		        WriteFile(
-		            hPipe,
-		            response.c_str(),
-		            bytesToWrite,
-		            &bytesWritten,
-		            NULL
-		        );
+		        BOOL writeResult =
+		            WriteFile(
+		                hPipe,
+		                response.c_str(),
+		                bytesToWrite,
+		                &bytesWritten,
+		                NULL
+		            );
+
+		        if (
+		            !writeResult ||
+		            bytesWritten != bytesToWrite
+		        )
+		        {
+		            DWORD errorCode =
+		                writeResult
+		                ? ERROR_WRITE_FAULT
+		                : GetLastError();
+
+		            std::string errorMessage =
+		                "GETFRAMEHANDOFF response write failed. "
+		                "error=" +
+		                std::to_string(errorCode) +
+		                " requested=" +
+		                std::to_string(bytesToWrite) +
+		                " written=" +
+		                std::to_string(bytesWritten);
+
+		            vddlog(
+		                "e",
+		                errorMessage.c_str()
+		            );
+		        }
+		        else
+		        {
+		            if (!FlushFileBuffers(hPipe))
+		            {
+		                DWORD errorCode =
+		                    GetLastError();
+
+		                std::string errorMessage =
+		                    "GETFRAMEHANDOFF response flush failed. "
+		                    "error=" +
+		                    std::to_string(errorCode);
+
+		                vddlog(
+		                    "e",
+		                    errorMessage.c_str()
+		                );
+		            }
+		        }
+
 		}
 		else if (wcsncmp(buffer, L"GETSETTINGS", 11) == 0) {
 			//query and return settings
@@ -3497,7 +3604,7 @@ std::wstring SwapChainProcessor::BuildFrameHandoffResourceName() const
         }
 
         std::wstring name =
-            L"Local\\KhanCloud.VDD.Frame.";
+            L"Global\\KhanCloud.VDD.Frame.";
 
         name += guidBuffer;
 
@@ -3507,25 +3614,50 @@ std::wstring SwapChainProcessor::BuildFrameHandoffResourceName() const
 bool SwapChainProcessor::GetFrameHandoffDiscoveryMetadata(
         std::wstring& ResourceName,
         UINT64& Generation,
-        D3D11_TEXTURE2D_DESC& Desc) const
+        D3D11_TEXTURE2D_DESC& Desc,
+        UINT64& ProcessedFrames,
+        UINT64& ProcessingFailures,
+        UINT64& DroppedFrames) const
 {
+        ProcessedFrames =
+            m_ProcessedFrameCount.load(
+                std::memory_order_relaxed
+            );
+
+        ProcessingFailures =
+            m_FrameProcessingFailureCount.load(
+                std::memory_order_relaxed
+            );
+
+        DroppedFrames =
+            m_FrameHandoffDroppedCount.load(
+                std::memory_order_relaxed
+            );
+
+        std::lock_guard<std::mutex> lock(
+            m_FrameHandoffStateMutex
+        );
+
+        Generation = m_FrameHandoffGeneration;
+
         if (
             !m_FrameHandoffTexture ||
             m_FrameHandoffSharedHandle == nullptr ||
             m_FrameHandoffResourceName.empty()
         )
         {
+                ResourceName.clear();
+                Desc = {};
                 return false;
         }
 
         ResourceName = m_FrameHandoffResourceName;
-        Generation = m_FrameHandoffGeneration;
         Desc = m_FrameHandoffDesc;
 
         return true;
 }
 
-void SwapChainProcessor::ResetFrameHandoff()
+void SwapChainProcessor::ResetFrameHandoffUnlocked()
 {
         m_FrameHandoffMutex.Reset();
         m_FrameHandoffTexture.Reset();
@@ -3540,9 +3672,22 @@ void SwapChainProcessor::ResetFrameHandoff()
         m_FrameHandoffDesc = {};
 }
 
+void SwapChainProcessor::ResetFrameHandoff()
+{
+        std::lock_guard<std::mutex> lock(
+            m_FrameHandoffStateMutex
+        );
+
+        ResetFrameHandoffUnlocked();
+}
+
 HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
         const D3D11_TEXTURE2D_DESC& SourceDesc)
 {
+        std::lock_guard<std::mutex> lock(
+            m_FrameHandoffStateMutex
+        );
+
         if (!m_Device || !m_Device->Device)
         {
                 return E_UNEXPECTED;
@@ -3642,12 +3787,47 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
 
         HANDLE newSharedHandle = nullptr;
 
+        //
+        // KhanFrameHandoffSecurityDescriptor
+        //
+        // The VDD runs outside the customer's interactive session.
+        // Export the named NT resource into the Global namespace and
+        // explicitly permit SYSTEM and Administrators to open it.
+        //
+        PSECURITY_DESCRIPTOR frameSecurityDescriptor = nullptr;
+
+        if (
+            !ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:P(A;;GA;;;SY)(A;;GA;;;BA)",
+                SDDL_REVISION_1,
+                &frameSecurityDescriptor,
+                nullptr
+            )
+        )
+        {
+                return HRESULT_FROM_WIN32(
+                    GetLastError()
+                );
+        }
+
+        SECURITY_ATTRIBUTES frameSecurityAttributes = {};
+        frameSecurityAttributes.nLength =
+            sizeof(frameSecurityAttributes);
+        frameSecurityAttributes.lpSecurityDescriptor =
+            frameSecurityDescriptor;
+        frameSecurityAttributes.bInheritHandle =
+            FALSE;
+
         hr = sharedResource->CreateSharedHandle(
-            nullptr,
+            &frameSecurityAttributes,
             DXGI_SHARED_RESOURCE_READ |
                 DXGI_SHARED_RESOURCE_WRITE,
             resourceName.c_str(),
             &newSharedHandle
+        );
+
+        LocalFree(
+            frameSecurityDescriptor
         );
 
         if (FAILED(hr))
@@ -3660,7 +3840,7 @@ HRESULT SwapChainProcessor::EnsureFrameHandoffTexture(
                 return hr;
         }
 
-        ResetFrameHandoff();
+        ResetFrameHandoffUnlocked();
 
         m_FrameHandoffTexture = newTexture;
         m_FrameHandoffMutex = newMutex;
@@ -3747,14 +3927,26 @@ HRESULT SwapChainProcessor::ProcessFrame(
                 return hr;
         }
 
-        if (!m_FrameHandoffMutex)
+        ComPtr<ID3D11Texture2D> handoffTexture;
+        ComPtr<IDXGIKeyedMutex> handoffMutex;
+
+        {
+                std::lock_guard<std::mutex> lock(
+                    m_FrameHandoffStateMutex
+                );
+
+                handoffTexture = m_FrameHandoffTexture;
+                handoffMutex = m_FrameHandoffMutex;
+        }
+
+        if (!handoffMutex || !handoffTexture)
         {
                 ++m_FrameProcessingFailureCount;
                 return E_UNEXPECTED;
         }
 
         HRESULT mutexHr =
-            m_FrameHandoffMutex->AcquireSync(
+            handoffMutex->AcquireSync(
                 0,
                 0
             );
@@ -3788,12 +3980,12 @@ HRESULT SwapChainProcessor::ProcessFrame(
         }
 
         m_Device->DeviceContext->CopyResource(
-            m_FrameHandoffTexture.Get(),
+            handoffTexture.Get(),
             frameTexture.Get()
         );
 
         HRESULT releaseHr =
-            m_FrameHandoffMutex->ReleaseSync(1);
+            handoffMutex->ReleaseSync(1);
 
         if (FAILED(releaseHr))
         {
@@ -4731,6 +4923,18 @@ void IndirectDeviceContext::CreateMonitor(unsigned int index) {
 
 void IndirectDeviceContext::AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent)
 {
+        ++m_AssignSwapChainCallCount;
+
+        m_LastRenderAdapterLuidHigh.store(
+            RenderAdapter.HighPart,
+            std::memory_order_relaxed
+        );
+
+        m_LastRenderAdapterLuidLow.store(
+            RenderAdapter.LowPart,
+            std::memory_order_relaxed
+        );
+
 	// Only cleanup expired devices periodically, not on every assignment
 	static int assignmentCount = 0;
 	if (++assignmentCount % 10 == 0) {
@@ -4822,11 +5026,27 @@ void IndirectDeviceContext::AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHA
 bool IndirectDeviceContext::GetFrameHandoffDiscoveryMetadata(
         std::wstring& ResourceName,
         UINT64& Generation,
-        D3D11_TEXTURE2D_DESC& Desc)
+        D3D11_TEXTURE2D_DESC& Desc,
+        UINT64& ProcessorCount,
+        UINT64& ProcessedFrames,
+        UINT64& ProcessingFailures,
+        UINT64& DroppedFrames)
 {
         std::lock_guard<std::mutex> lock(
             m_ProcessingThreadsMutex
         );
+
+        ProcessorCount =
+            static_cast<UINT64>(
+                m_ProcessingThreads.size()
+            );
+
+        ProcessedFrames = 0;
+        ProcessingFailures = 0;
+        DroppedFrames = 0;
+        Generation = 0;
+        ResourceName.clear();
+        Desc = {};
 
         if (m_ProcessingThreads.size() != 1)
         {
@@ -4844,12 +5064,17 @@ bool IndirectDeviceContext::GetFrameHandoffDiscoveryMetadata(
         return processor->GetFrameHandoffDiscoveryMetadata(
             ResourceName,
             Generation,
-            Desc
+            Desc,
+            ProcessedFrames,
+            ProcessingFailures,
+            DroppedFrames
         );
 }
 
 void IndirectDeviceContext::UnassignSwapChain(IDDCX_MONITOR Monitor)
 {
+        ++m_UnassignSwapChainCallCount;
+
 	std::unique_ptr<SwapChainProcessor> processorToStop;
 
 	{
@@ -4871,6 +5096,44 @@ void IndirectDeviceContext::UnassignSwapChain(IDDCX_MONITOR Monitor)
 		vddlog("w", "UnassignSwapChain called for a monitor without an active processing thread.");
 	}
 }
+
+void IndirectDeviceContext::GetSwapChainLifecycleTelemetry(
+        UINT64& AssignCalls,
+        UINT64& UnassignCalls,
+        UINT64& ActiveProcessors,
+        LONG& RenderAdapterLuidHigh,
+        ULONG& RenderAdapterLuidLow)
+{
+        AssignCalls =
+            m_AssignSwapChainCallCount.load(
+                std::memory_order_relaxed
+            );
+
+        UnassignCalls =
+            m_UnassignSwapChainCallCount.load(
+                std::memory_order_relaxed
+            );
+
+        RenderAdapterLuidHigh =
+            m_LastRenderAdapterLuidHigh.load(
+                std::memory_order_relaxed
+            );
+
+        RenderAdapterLuidLow =
+            m_LastRenderAdapterLuidLow.load(
+                std::memory_order_relaxed
+            );
+
+        std::lock_guard<std::mutex> lock(
+            m_ProcessingThreadsMutex
+        );
+
+        ActiveProcessors =
+            static_cast<UINT64>(
+                m_ProcessingThreads.size()
+            );
+}
+
 
 #pragma endregion
 
