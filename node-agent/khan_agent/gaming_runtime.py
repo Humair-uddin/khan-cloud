@@ -19,6 +19,11 @@ from khan_agent.sunshine_broker import (
     pair_client,
     unpair_client,
 )
+from khan_agent.vdd_activation import (
+    VddActivationError,
+    activate_vdd_policy,
+    live_activation_available,
+)
 from khan_agent.vdd_runtime_policy import (
     VddRuntimePolicyError,
     apply_display_policy,
@@ -202,8 +207,16 @@ def _apply_session_display_policy(
     template_path: Path,
     target_root: Path,
 ) -> dict[str, Any]:
+    """
+    Persist the requested VDD policy and activate it on Windows.
+
+    Ordered idempotent replays are side-effect free: the policy engine
+    proves that the active settings already match the persisted state,
+    so the VDD must not be restarted again.
+    """
+
     try:
-        return apply_display_policy(
+        result = apply_display_policy(
             policy_payload,
             template_path=template_path,
             target_root=target_root,
@@ -212,6 +225,36 @@ def _apply_session_display_policy(
         raise GamingRuntimeError(
             f"VDD display policy rejected: {exc}"
         ) from exc
+
+    if result.get("idempotent"):
+        result["activation"] = {
+            "activation_required": False,
+            "reason": "idempotent-policy-replay",
+            "reboot_required": False,
+        }
+        return result
+
+    if not live_activation_available():
+        result["activation"] = {
+            "activation_required": False,
+            "activation_available": False,
+            "reason": "windows-live-activation-unavailable",
+            "reboot_required": False,
+        }
+        return result
+
+    try:
+        result["activation"] = (
+            activate_vdd_policy()
+        )
+    except VddActivationError as exc:
+        raise GamingRuntimeError(
+            "VDD policy persisted but live activation failed: "
+            f"{exc}"
+        ) from exc
+
+    return result
+
 
 
 def create_session(

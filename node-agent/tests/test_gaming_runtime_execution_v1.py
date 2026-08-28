@@ -309,3 +309,27 @@ def test_kg002_generic_session_remains_backward_compatible(
     assert result.status == "succeeded"
     assert "game" not in result.result
     assert "launch_info" not in result.result
+
+
+def test_vdd_activation_module_is_agent_owned():
+    from khan_agent import vdd_activation
+
+    assert (
+        vdd_activation.VDD_INSTANCE_ID
+        == r"ROOT\DISPLAY\0000"
+    )
+
+
+def test_vdd_activation_contract_has_no_machine_reboot():
+    from pathlib import Path
+    import khan_agent.vdd_activation as module
+
+    text = Path(module.__file__).read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "pnputil" in text
+    assert "/restart-device" in text
+    assert "reboot_required" in text
+    assert "restart-computer" not in text
+    assert "shutdown.exe" not in text

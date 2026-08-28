@@ -1356,3 +1356,312 @@ def test_policy_id_and_revision_must_be_supplied_together():
         vdd_runtime_policy.policy_from_payload(
             only_revision
         )
+
+
+def test_session_policy_new_apply_triggers_live_activation(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import gaming_runtime
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "live_activation_available",
+        lambda: True,
+    )
+
+    calls = {
+        "apply": 0,
+        "activate": 0,
+    }
+
+    def fake_apply(
+        payload,
+        *,
+        template_path,
+        target_root,
+    ):
+        calls["apply"] += 1
+
+        return {
+            "policy_version": "test-v1",
+            "policy_id": "gaming-session:test",
+            "revision": 1,
+            "settings_path": str(
+                target_root
+                / "khan-vdd-settings.xml"
+            ),
+        }
+
+    def fake_activate():
+        calls["activate"] += 1
+
+        return {
+            "activation_required": True,
+            "activation_method":
+                "pnputil-restart-device",
+            "instance_id":
+                r"ROOT\DISPLAY\0000",
+            "healthy": True,
+            "reboot_required": False,
+        }
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "apply_display_policy",
+        fake_apply,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "activate_vdd_policy",
+        fake_activate,
+    )
+
+    result = (
+        gaming_runtime
+        ._apply_session_display_policy(
+            {
+                "policy_version": "test-v1",
+            },
+            template_path=(
+                tmp_path / "template.xml"
+            ),
+            target_root=tmp_path,
+        )
+    )
+
+    assert calls["apply"] == 1
+    assert calls["activate"] == 1
+
+    assert (
+        result["activation"]
+        ["activation_method"]
+        == "pnputil-restart-device"
+    )
+
+    assert (
+        result["activation"]
+        ["reboot_required"]
+        is False
+    )
+
+
+def test_session_policy_idempotent_replay_skips_live_activation(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import gaming_runtime
+
+    def fake_apply(
+        payload,
+        *,
+        template_path,
+        target_root,
+    ):
+        return {
+            "policy_version": "test-v1",
+            "policy_id": "gaming-session:test",
+            "revision": 7,
+            "idempotent": True,
+        }
+
+    def forbidden_activation():
+        raise AssertionError(
+            "idempotent policy replay must "
+            "not restart VDD"
+        )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "apply_display_policy",
+        fake_apply,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "activate_vdd_policy",
+        forbidden_activation,
+    )
+
+    result = (
+        gaming_runtime
+        ._apply_session_display_policy(
+            {
+                "policy_version": "test-v1",
+            },
+            template_path=(
+                tmp_path / "template.xml"
+            ),
+            target_root=tmp_path,
+        )
+    )
+
+    assert result["idempotent"] is True
+
+    assert (
+        result["activation"]
+        ["activation_required"]
+        is False
+    )
+
+    assert (
+        result["activation"]["reason"]
+        == "idempotent-policy-replay"
+    )
+
+
+def test_session_policy_activation_failure_fails_session_create_path(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import (
+        gaming_runtime,
+        vdd_activation,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "live_activation_available",
+        lambda: True,
+    )
+
+    def fake_apply(
+        payload,
+        *,
+        template_path,
+        target_root,
+    ):
+        return {
+            "policy_version": "test-v2",
+            "policy_id": "gaming-session:test",
+            "revision": 2,
+        }
+
+    def fail_activation():
+        raise (
+            vdd_activation
+            .VddActivationError(
+                "simulated VDD activation failure"
+            )
+        )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "apply_display_policy",
+        fake_apply,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "activate_vdd_policy",
+        fail_activation,
+    )
+
+    with pytest.raises(
+        gaming_runtime.GamingRuntimeError,
+        match=(
+            "policy persisted but live "
+            "activation failed"
+        ),
+    ):
+        (
+            gaming_runtime
+            ._apply_session_display_policy(
+                {
+                    "policy_version":
+                        "test-v2",
+                },
+                template_path=(
+                    tmp_path / "template.xml"
+                ),
+                target_root=tmp_path,
+            )
+        )
+
+
+def test_session_policy_non_windows_persists_without_pnp_activation(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import gaming_runtime
+
+    calls = {
+        "apply": 0,
+        "activate": 0,
+    }
+
+    def fake_apply(
+        payload,
+        *,
+        template_path,
+        target_root,
+    ):
+        calls["apply"] += 1
+        return {
+            "policy_version": "test-linux-ci",
+            "policy_id": "gaming-session:test",
+            "revision": 1,
+        }
+
+    def forbidden_activation():
+        calls["activate"] += 1
+        raise AssertionError(
+            "non-Windows host must not execute Windows PnP"
+        )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "apply_display_policy",
+        fake_apply,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "live_activation_available",
+        lambda: False,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "activate_vdd_policy",
+        forbidden_activation,
+    )
+
+    result = (
+        gaming_runtime
+        ._apply_session_display_policy(
+            {
+                "policy_version": "test-linux-ci",
+            },
+            template_path=(
+                tmp_path / "template.xml"
+            ),
+            target_root=tmp_path,
+        )
+    )
+
+    assert calls["apply"] == 1
+    assert calls["activate"] == 0
+
+    activation = result["activation"]
+
+    assert (
+        activation["activation_required"]
+        is False
+    )
+
+    assert (
+        activation["activation_available"]
+        is False
+    )
+
+    assert (
+        activation["reason"]
+        == "windows-live-activation-unavailable"
+    )
+
+    assert (
+        activation["reboot_required"]
+        is False
+    )
