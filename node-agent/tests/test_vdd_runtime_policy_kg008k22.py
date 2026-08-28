@@ -381,3 +381,387 @@ def test_vdd_runtime_policy_has_single_production_owner():
     assert "def apply_policy_atomic" in canonical
     assert "def apply_display_policy" in canonical
     assert "def restore_last_known_good" in canonical
+
+
+def _good_session_environment(monkeypatch):
+    from khan_agent import gaming_runtime
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "locate_sunshine",
+        lambda: Path("/sunshine.exe"),
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "probe_nvidia_gpu",
+        lambda gpu_uuid: {
+            "available": True,
+            "uuid": gpu_uuid,
+            "name": "NVIDIA RTX Test",
+            "memory_total_mib": 12288,
+            "driver_version": "test",
+        },
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "secure_private_file",
+        lambda path: None,
+    )
+
+
+def _session_job(
+    session_id,
+    *,
+    display_policy_marker=True,
+):
+    payload = {
+        "session_id": str(session_id),
+        "gpu_uuid": "GPU-SESSION-POLICY",
+        "minimum_vram_mb": 8192,
+    }
+
+    if display_policy_marker:
+        payload["display_policy"] = _policy()
+
+    return {
+        "job_type": "gaming.session.create",
+        "payload": payload,
+    }
+
+
+def test_session_create_applies_policy_before_game_launch(
+    tmp_path,
+    monkeypatch,
+):
+    from uuid import uuid4
+    from khan_agent import gaming_runtime
+
+    _good_session_environment(monkeypatch)
+
+    template = _template(tmp_path / "template.xml")
+    target = tmp_path / "programdata"
+
+    order = []
+
+    real_apply = gaming_runtime.apply_display_policy
+
+    def tracked_apply(*args, **kwargs):
+        order.append("policy")
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "apply_display_policy",
+        tracked_apply,
+    )
+
+    def prepare(payload):
+        order.append("prepare_game")
+        return None
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        prepare,
+    )
+
+    session_id = uuid4()
+
+    result = execute_node_job(
+        _session_job(session_id),
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert result.status == "succeeded"
+    assert order == [
+        "policy",
+        "prepare_game",
+    ]
+
+    assert (
+        result.result["display_policy"]["mode_count"]
+        == 14
+    )
+
+    state_path = (
+        tmp_path
+        / "gaming"
+        / "sessions"
+        / f"kc-gaming-{session_id}.json"
+    )
+
+    saved = json.loads(
+        state_path.read_text(encoding="utf-8")
+    )
+
+    assert saved["display_policy"]["mode_count"] == 14
+    assert (
+        saved["display_policy_request"]["policy_version"]
+        == "scheduler-policy-1"
+    )
+
+
+def test_invalid_session_policy_blocks_before_game_launch(
+    tmp_path,
+    monkeypatch,
+):
+    from uuid import uuid4
+    from khan_agent import gaming_runtime
+
+    _good_session_environment(monkeypatch)
+
+    template = _template(tmp_path / "template.xml")
+    target = tmp_path / "programdata"
+
+    launch_path_called = []
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: (
+            launch_path_called.append(True)
+            or None
+        ),
+    )
+
+    session_id = uuid4()
+
+    job = _session_job(session_id)
+
+    job["payload"]["display_policy"]["modes"].append(
+        dict(
+            job["payload"]["display_policy"]["modes"][0]
+        )
+    )
+
+    result = execute_node_job(
+        job,
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert result.status == "blocked"
+    assert "duplicate" in result.error_message.lower()
+    assert launch_path_called == []
+
+    state_path = (
+        tmp_path
+        / "gaming"
+        / "sessions"
+        / f"kc-gaming-{session_id}.json"
+    )
+
+    assert not state_path.exists()
+
+
+def test_session_without_display_policy_remains_backward_compatible(
+    tmp_path,
+    monkeypatch,
+):
+    from uuid import uuid4
+    from khan_agent import gaming_runtime
+
+    _good_session_environment(monkeypatch)
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: None,
+    )
+
+    session_id = uuid4()
+
+    result = execute_node_job(
+        _session_job(
+            session_id,
+            display_policy_marker=False,
+        ),
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=(
+            tmp_path / "does-not-need-to-exist.xml"
+        ),
+        gaming_vdd_target_root=tmp_path / "programdata",
+        **COMMON,
+    )
+
+    assert result.status == "succeeded"
+    assert "display_policy" not in result.result
+
+    state_path = (
+        tmp_path
+        / "gaming"
+        / "sessions"
+        / f"kc-gaming-{session_id}.json"
+    )
+
+    saved = json.loads(
+        state_path.read_text(encoding="utf-8")
+    )
+
+    assert "display_policy" not in saved
+    assert "display_policy_request" not in saved
+
+
+def test_idempotent_create_with_same_policy_does_not_reapply(
+    tmp_path,
+    monkeypatch,
+):
+    from uuid import uuid4
+    from khan_agent import gaming_runtime
+
+    _good_session_environment(monkeypatch)
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: None,
+    )
+
+    template = _template(tmp_path / "template.xml")
+    target = tmp_path / "programdata"
+
+    session_id = uuid4()
+    job = _session_job(session_id)
+
+    first = execute_node_job(
+        job,
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert first.status == "succeeded"
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "apply_display_policy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "idempotent create must not reapply policy"
+            )
+        ),
+    )
+
+    second = execute_node_job(
+        job,
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert second.status == "succeeded"
+    assert second.result["idempotent"] is True
+    assert (
+        second.result["display_policy"]["policy_version"]
+        == "scheduler-policy-1"
+    )
+
+
+def test_idempotent_create_rejects_display_policy_reassignment(
+    tmp_path,
+    monkeypatch,
+):
+    from uuid import uuid4
+    from khan_agent import gaming_runtime
+
+    _good_session_environment(monkeypatch)
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: None,
+    )
+
+    template = _template(tmp_path / "template.xml")
+    target = tmp_path / "programdata"
+
+    session_id = uuid4()
+
+    first_job = _session_job(session_id)
+
+    first = execute_node_job(
+        first_job,
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert first.status == "succeeded"
+
+    changed = _session_job(session_id)
+
+    changed["payload"]["display_policy"][
+        "policy_version"
+    ] = "scheduler-policy-2"
+
+    changed_result = execute_node_job(
+        changed,
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert changed_result.status == "blocked"
+    assert (
+        "different display policy"
+        in changed_result.error_message.lower()
+    )
+
+
+def test_policy_bound_session_replay_cannot_silently_drop_policy(
+    tmp_path,
+    monkeypatch,
+):
+    from uuid import uuid4
+    from khan_agent import gaming_runtime
+
+    _good_session_environment(monkeypatch)
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "prepare_game_launch",
+        lambda payload: None,
+    )
+
+    template = _template(tmp_path / "template.xml")
+    target = tmp_path / "programdata"
+
+    session_id = uuid4()
+
+    created = execute_node_job(
+        _session_job(session_id),
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert created.status == "succeeded"
+
+    replay = execute_node_job(
+        _session_job(
+            session_id,
+            display_policy_marker=False,
+        ),
+        gaming_state_root=tmp_path / "gaming",
+        gaming_vdd_template_path=template,
+        gaming_vdd_target_root=target,
+        **COMMON,
+    )
+
+    assert replay.status == "blocked"
+    assert (
+        "must include the same display_policy"
+        in replay.error_message
+    )

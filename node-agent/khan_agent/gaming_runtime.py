@@ -19,6 +19,10 @@ from khan_agent.sunshine_broker import (
     pair_client,
     unpair_client,
 )
+from khan_agent.vdd_runtime_policy import (
+    VddRuntimePolicyError,
+    apply_display_policy,
+)
 from khan_agent.virtualization import JobExecutionResult
 
 
@@ -125,12 +129,104 @@ def _validate_windows_native(
     }
 
 
+def _display_policy_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw = payload.get("display_policy")
+
+    if raw is None:
+        return None
+
+    if not isinstance(raw, dict):
+        raise GamingRuntimeError(
+            "display_policy must be an object."
+        )
+
+    # Copy through JSON so the runtime state owns an immutable,
+    # plain-data representation independent from caller mutation.
+    try:
+        normalized = json.loads(
+            json.dumps(
+                raw,
+                sort_keys=True,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise GamingRuntimeError(
+            "display_policy must contain JSON-compatible values."
+        ) from exc
+
+    if not isinstance(normalized, dict):
+        raise GamingRuntimeError(
+            "display_policy must be an object."
+        )
+
+    return normalized
+
+
+def _validate_existing_display_policy_binding(
+    *,
+    existing: dict[str, Any],
+    requested: dict[str, Any] | None,
+) -> None:
+    existing_request = existing.get(
+        "display_policy_request"
+    )
+
+    if existing_request is None:
+        if requested is not None:
+            raise GamingRuntimeError(
+                "Existing gaming runtime was created without "
+                "a display policy; refusing policy mutation "
+                "through idempotent create."
+            )
+        return
+
+    if requested is None:
+        raise GamingRuntimeError(
+            "Existing gaming runtime is bound to a display "
+            "policy; idempotent create must include the same "
+            "display_policy."
+        )
+
+    if existing_request != requested:
+        raise GamingRuntimeError(
+            "Existing gaming runtime is bound to a different "
+            "display policy; refusing policy reassignment."
+        )
+
+
+def _apply_session_display_policy(
+    policy_payload: dict[str, Any],
+    *,
+    template_path: Path,
+    target_root: Path,
+) -> dict[str, Any]:
+    try:
+        return apply_display_policy(
+            policy_payload,
+            template_path=template_path,
+            target_root=target_root,
+        )
+    except VddRuntimePolicyError as exc:
+        raise GamingRuntimeError(
+            f"VDD display policy rejected: {exc}"
+        ) from exc
+
+
 def create_session(
     payload: dict[str, Any],
     *,
     state_root: Path,
     execution_backend: str,
     streaming_backend: str,
+    vdd_template_path: Path = Path(
+        "C:/ProgramData/KhanCloud/VirtualDisplay/"
+        "RuntimeConfig/khan-vdd-settings.xml"
+    ),
+    vdd_target_root: Path = Path(
+        "C:/ProgramData/KhanCloud/VirtualDisplay"
+    ),
 ) -> JobExecutionResult:
     session_id = str(payload.get("session_id") or "")
     gpu_uuid = str(payload.get("gpu_uuid") or "").strip()
@@ -145,12 +241,24 @@ def create_session(
 
     try:
         paths, runtime_id, state_file = _state_paths(state_root, session_id)
+
+        display_policy_request = _display_policy_payload(
+            payload
+        )
+
         existing = _read_state(state_file)
+
         if existing is not None:
             if str(existing.get("gpu_uuid")) != gpu_uuid:
                 raise GamingRuntimeError(
                     "Existing runtime is bound to a different GPU; refusing reassignment."
                 )
+
+            _validate_existing_display_policy_binding(
+                existing=existing,
+                requested=display_policy_request,
+            )
+
             validation = _validate_windows_native(
                 gpu_uuid=gpu_uuid,
                 minimum_vram_mb=minimum_vram_mb,
@@ -172,6 +280,11 @@ def create_session(
             if existing.get("status") == "running":
                 result["connection_info"] = _connection_info(runtime_id)
 
+            if existing.get("display_policy") is not None:
+                result["display_policy"] = existing[
+                    "display_policy"
+                ]
+
             return JobExecutionResult(
                 "succeeded",
                 result,
@@ -184,6 +297,20 @@ def create_session(
             streaming_backend=streaming_backend,
         )
 
+        display_policy_result: dict[str, Any] | None = None
+
+        if display_policy_request is not None:
+            display_policy_result = (
+                _apply_session_display_policy(
+                    display_policy_request,
+                    template_path=vdd_template_path,
+                    target_root=vdd_target_root,
+                )
+            )
+
+        # Display policy is validated and atomically persisted
+        # before game preparation or launch. Invalid VDD policy
+        # therefore fails closed before customer workload start.
         prepared_launch = prepare_game_launch(payload)
 
         launch_info: dict[str, Any] | None = None
@@ -204,6 +331,14 @@ def create_session(
             "gpu": validation["gpu"],
             "minimum_vram_mb": minimum_vram_mb,
         }
+
+        if display_policy_result is not None:
+            state["display_policy_request"] = (
+                display_policy_request
+            )
+            state["display_policy"] = (
+                display_policy_result
+            )
 
         if (
             prepared_launch is not None
@@ -238,6 +373,11 @@ def create_session(
                 _connection_info(runtime_id),
             "gpu": validation["gpu"],
         }
+
+        if display_policy_result is not None:
+            result["display_policy"] = (
+                display_policy_result
+            )
 
         if (
             prepared_launch is not None

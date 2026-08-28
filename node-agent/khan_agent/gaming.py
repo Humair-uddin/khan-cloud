@@ -200,6 +200,8 @@ def execute_gaming_job(
                 state_root=state_root,
                 execution_backend=execution_backend,
                 streaming_backend=streaming_backend,
+                vdd_template_path=vdd_template_path,
+                vdd_target_root=vdd_target_root,
             )
         action = job_type.rsplit(".", 1)[-1]
         return change_session_state(
