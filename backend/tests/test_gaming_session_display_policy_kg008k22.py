@@ -336,3 +336,30 @@ def test_gaming_service_source_injects_policy_into_existing_job():
     )
 
     assert 'job_type="gaming.session.create"' in source
+
+
+def test_session_create_source_binds_display_policy_stream_identity():
+    from pathlib import Path
+
+    source = Path(
+        "app/services/gaming_service.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'f"gaming-session:{session.id}"'
+        in source
+    )
+
+    assert (
+        'display_policy["revision"] = 1'
+        in source
+    )
+
+    assert (
+        '"display_policy":display_policy'
+        in source
+        or '"display_policy": display_policy'
+        in source
+    )

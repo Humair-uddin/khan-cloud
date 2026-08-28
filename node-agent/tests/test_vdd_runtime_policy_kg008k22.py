@@ -953,3 +953,406 @@ def test_successful_transaction_keeps_normal_policy_behavior(
 
     assert isinstance(saved, dict)
     assert result["mode_count"] == 14
+
+
+def _ordered_policy(
+    *,
+    policy_id="gaming-session:test-session",
+    revision=1,
+):
+    payload = _policy()
+    payload["policy_id"] = policy_id
+    payload["revision"] = revision
+    return payload
+
+
+def test_runtime_policy_persists_ordering_ledger(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+
+    target = tmp_path / "programdata"
+
+    result = (
+        vdd_runtime_policy.apply_display_policy(
+            _ordered_policy(
+                revision=1,
+            ),
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    assert (
+        result["policy_id"]
+        == "gaming-session:test-session"
+    )
+    assert result["revision"] == 1
+    assert len(
+        result["policy_fingerprint"]
+    ) == 64
+
+    state = json.loads(
+        (
+            target
+            / vdd_runtime_policy.STATE_NAME
+        ).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert state["revision"] == 1
+    assert (
+        state["policy_id"]
+        == "gaming-session:test-session"
+    )
+    assert (
+        state["policy_fingerprint"]
+        == result["policy_fingerprint"]
+    )
+
+
+def test_same_revision_same_content_is_idempotent_without_render(
+    tmp_path,
+    monkeypatch,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+
+    payload = _ordered_policy(
+        revision=5,
+    )
+
+    first = (
+        vdd_runtime_policy.apply_display_policy(
+            payload,
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    settings_before = (
+        target
+        / vdd_runtime_policy.TARGET_NAME
+    ).read_bytes()
+
+    def must_not_render(*args, **kwargs):
+        raise AssertionError(
+            "idempotent replay must not render settings"
+        )
+
+    monkeypatch.setattr(
+        vdd_runtime_policy,
+        "render_settings_xml",
+        must_not_render,
+    )
+
+    second = (
+        vdd_runtime_policy.apply_display_policy(
+            payload,
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    assert second["idempotent"] is True
+    assert second["revision"] == 5
+    assert (
+        second["policy_fingerprint"]
+        == first["policy_fingerprint"]
+    )
+
+    assert (
+        target
+        / vdd_runtime_policy.TARGET_NAME
+    ).read_bytes() == settings_before
+
+
+def test_same_revision_different_content_is_rejected(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+
+    first = _ordered_policy(
+        revision=8,
+    )
+
+    vdd_runtime_policy.apply_display_policy(
+        first,
+        template_path=template,
+        target_root=target,
+    )
+
+    conflicting = _ordered_policy(
+        revision=8,
+    )
+
+    conflicting["preferred_mode"] = {
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 60,
+    }
+
+    with pytest.raises(
+        vdd_runtime_policy.VddRuntimePolicyError,
+        match="Conflicting",
+    ):
+        vdd_runtime_policy.apply_display_policy(
+            conflicting,
+            template_path=template,
+            target_root=target,
+        )
+
+
+def test_lower_revision_is_rejected_as_stale(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+
+    vdd_runtime_policy.apply_display_policy(
+        _ordered_policy(
+            revision=12,
+        ),
+        template_path=template,
+        target_root=target,
+    )
+
+    with pytest.raises(
+        vdd_runtime_policy.VddRuntimePolicyError,
+        match="Stale",
+    ):
+        vdd_runtime_policy.apply_display_policy(
+            _ordered_policy(
+                revision=11,
+            ),
+            template_path=template,
+            target_root=target,
+        )
+
+
+def test_higher_revision_transactionally_advances_ledger(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+
+    first = _ordered_policy(
+        revision=20,
+    )
+
+    first_result = (
+        vdd_runtime_policy.apply_display_policy(
+            first,
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    second = _ordered_policy(
+        revision=21,
+    )
+
+    second["policy_version"] = (
+        "scheduler-policy-revision-21"
+    )
+
+    result = (
+        vdd_runtime_policy.apply_display_policy(
+            second,
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    assert result["revision"] == 21
+    assert (
+        result["policy_fingerprint"]
+        != first_result["policy_fingerprint"]
+    )
+
+    state = json.loads(
+        (
+            target
+            / vdd_runtime_policy.STATE_NAME
+        ).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert state["revision"] == 21
+
+
+def test_different_policy_stream_can_start_at_revision_one(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+
+    vdd_runtime_policy.apply_display_policy(
+        _ordered_policy(
+            policy_id="gaming-session:first",
+            revision=9,
+        ),
+        template_path=template,
+        target_root=target,
+    )
+
+    result = (
+        vdd_runtime_policy.apply_display_policy(
+            _ordered_policy(
+                policy_id="gaming-session:second",
+                revision=1,
+            ),
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    assert (
+        result["policy_id"]
+        == "gaming-session:second"
+    )
+    assert result["revision"] == 1
+
+
+def test_corrupt_runtime_policy_state_fails_closed(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+    target.mkdir()
+
+    (
+        target
+        / vdd_runtime_policy.STATE_NAME
+    ).write_text(
+        "{not-json",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        vdd_runtime_policy.VddRuntimePolicyError,
+        match="unreadable",
+    ):
+        vdd_runtime_policy.apply_display_policy(
+            _ordered_policy(),
+            template_path=template,
+            target_root=target,
+        )
+
+
+def test_revision_must_be_positive_integer():
+    from khan_agent import vdd_runtime_policy
+
+    zero = _ordered_policy(
+        revision=0,
+    )
+
+    with pytest.raises(
+        vdd_runtime_policy.VddRuntimePolicyError,
+        match="positive integer",
+    ):
+        vdd_runtime_policy.policy_from_payload(
+            zero
+        )
+
+
+def test_unordered_legacy_policy_can_change_content_without_revision(
+    tmp_path,
+):
+    from khan_agent import vdd_runtime_policy
+
+    template = _template(
+        tmp_path / "template.xml"
+    )
+    target = tmp_path / "programdata"
+
+    first = _policy()
+
+    first.pop("policy_id", None)
+    first.pop("revision", None)
+
+    vdd_runtime_policy.apply_display_policy(
+        first,
+        template_path=template,
+        target_root=target,
+    )
+
+    second = _policy()
+    second.pop("policy_id", None)
+    second.pop("revision", None)
+
+    second["policy_version"] = (
+        "legacy-unordered-second"
+    )
+
+    result = (
+        vdd_runtime_policy.apply_display_policy(
+            second,
+            template_path=template,
+            target_root=target,
+        )
+    )
+
+    assert (
+        result["policy_version"]
+        == "legacy-unordered-second"
+    )
+
+
+def test_policy_id_and_revision_must_be_supplied_together():
+    from khan_agent import vdd_runtime_policy
+
+    only_id = _policy()
+    only_id["policy_id"] = "stream:test"
+    only_id.pop("revision", None)
+
+    with pytest.raises(
+        vdd_runtime_policy.VddRuntimePolicyError,
+        match="supplied together",
+    ):
+        vdd_runtime_policy.policy_from_payload(
+            only_id
+        )
+
+    only_revision = _policy()
+    only_revision["revision"] = 2
+    only_revision.pop("policy_id", None)
+
+    with pytest.raises(
+        vdd_runtime_policy.VddRuntimePolicyError,
+        match="supplied together",
+    ):
+        vdd_runtime_policy.policy_from_payload(
+            only_revision
+        )

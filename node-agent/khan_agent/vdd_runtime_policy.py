@@ -62,12 +62,45 @@ class RuntimeDisplayPolicy:
     hdr_enabled: bool = False
     bit_depth: int = 10
     color_space: str = "RGB"
+    policy_id: str | None = None
+    revision: int | None = None
 
     def validate(self) -> None:
         if not self.policy_version.strip():
             raise VddRuntimePolicyError(
                 "display policy_version is required"
             )
+
+        if (
+            self.policy_id is None
+            and self.revision is not None
+        ):
+            raise VddRuntimePolicyError(
+                "display policy_id is required when revision is supplied"
+            )
+
+        if (
+            self.policy_id is not None
+            and self.revision is None
+        ):
+            raise VddRuntimePolicyError(
+                "display revision is required when policy_id is supplied"
+            )
+
+        if self.policy_id is not None:
+            if not self.policy_id.strip():
+                raise VddRuntimePolicyError(
+                    "display policy_id must not be empty"
+                )
+
+            if (
+                isinstance(self.revision, bool)
+                or not isinstance(self.revision, int)
+                or self.revision < 1
+            ):
+                raise VddRuntimePolicyError(
+                    "display revision must be a positive integer"
+                )
 
         if not self.modes:
             raise VddRuntimePolicyError(
@@ -154,6 +187,38 @@ def policy_from_payload(
         payload.get("policy_version") or ""
     ).strip()
 
+    raw_policy_id = payload.get(
+        "policy_id"
+    )
+    raw_revision = payload.get(
+        "revision"
+    )
+
+    if (
+        raw_policy_id is None
+        and raw_revision is None
+    ):
+        policy_id = None
+        revision = None
+
+    elif (
+        raw_policy_id is None
+        or raw_revision is None
+    ):
+        raise VddRuntimePolicyError(
+            "display policy_id and revision must be supplied together"
+        )
+
+    else:
+        policy_id = str(
+            raw_policy_id
+        ).strip()
+
+        revision = _integer(
+            raw_revision,
+            "revision",
+        )
+
     raw_modes = payload.get("modes")
 
     if not isinstance(raw_modes, list):
@@ -186,6 +251,8 @@ def policy_from_payload(
         modes=modes,
         preferred_mode=preferred,
         hdr_enabled=hdr_enabled,
+        policy_id=policy_id,
+        revision=revision,
         bit_depth=_integer(
             payload.get("bit_depth", 10),
             "bit_depth",
@@ -374,6 +441,183 @@ def _rollback_runtime_transaction(
             + "; ".join(errors)
         )
 
+
+def _canonical_policy_payload(
+    policy: RuntimeDisplayPolicy,
+) -> dict[str, Any]:
+    """
+    Logical policy content used for replay identity.
+
+    Delivery-order metadata (policy_id and revision) is deliberately
+    excluded from the fingerprint.
+    """
+
+    return {
+        "policy_version": policy.policy_version,
+        "modes": [
+            {
+                "width": mode.width,
+                "height": mode.height,
+                "refresh_hz": mode.refresh_hz,
+            }
+            for mode in policy.modes
+        ],
+        "preferred_mode": {
+            "width": policy.preferred_mode.width,
+            "height": policy.preferred_mode.height,
+            "refresh_hz": policy.preferred_mode.refresh_hz,
+        },
+        "hdr_enabled": policy.hdr_enabled,
+        "bit_depth": policy.bit_depth,
+        "color_space": policy.color_space,
+    }
+
+
+def _policy_fingerprint(
+    policy: RuntimeDisplayPolicy,
+) -> str:
+    canonical = json.dumps(
+        _canonical_policy_payload(policy),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    return _sha256(canonical)
+
+
+def _load_policy_state(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    state_path = Path(state_path)
+
+    if not state_path.exists():
+        return None
+
+    try:
+        payload = json.loads(
+            state_path.read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception as exc:
+        raise VddRuntimePolicyError(
+            "Existing VDD runtime-policy state is unreadable"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise VddRuntimePolicyError(
+            "Existing VDD runtime-policy state must be an object"
+        )
+
+    return payload
+
+
+def _revision_guard(
+    *,
+    state_path: Path,
+    target_path: Path,
+    policy: RuntimeDisplayPolicy,
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    """
+    Enforce monotonic ordering within one policy_id stream.
+
+    Different policy_id values represent a new independently bound
+    policy stream. Existing gaming-session idempotency separately
+    prevents an existing session from silently changing its binding.
+    """
+
+    # Legacy compatibility calls that do not carry ordering metadata
+    # retain their historical replace/LKG semantics. Production gaming
+    # policies always carry both policy_id and revision.
+    if (
+        policy.policy_id is None
+        and policy.revision is None
+    ):
+        return None
+
+    previous = _load_policy_state(
+        state_path
+    )
+
+    if previous is None:
+        return None
+
+    previous_id = previous.get(
+        "policy_id"
+    )
+
+    # State produced before the revision contract remains upgradeable.
+    if previous_id is None:
+        return None
+
+    if str(previous_id) != policy.policy_id:
+        return None
+
+    try:
+        previous_revision = int(
+            previous["revision"]
+        )
+    except Exception as exc:
+        raise VddRuntimePolicyError(
+            "Existing VDD runtime-policy revision is invalid"
+        ) from exc
+
+    previous_fingerprint = str(
+        previous.get(
+            "policy_fingerprint"
+        )
+        or ""
+    )
+
+    if policy.revision < previous_revision:
+        raise VddRuntimePolicyError(
+            "Stale VDD runtime policy rejected: "
+            f"received revision {policy.revision}, "
+            f"current revision {previous_revision}"
+        )
+
+    if policy.revision > previous_revision:
+        return None
+
+    if fingerprint != previous_fingerprint:
+        raise VddRuntimePolicyError(
+            "Conflicting VDD runtime policy replay rejected: "
+            "same policy_id and revision contain different content"
+        )
+
+    if not target_path.exists():
+        raise VddRuntimePolicyError(
+            "Idempotent VDD runtime-policy replay cannot be accepted "
+            "because the active settings file is missing"
+        )
+
+    expected_settings_hash = str(
+        previous.get(
+            "settings_sha256"
+        )
+        or ""
+    )
+
+    actual_settings_hash = _sha256(
+        target_path.read_bytes()
+    )
+
+    if (
+        not expected_settings_hash
+        or actual_settings_hash
+        != expected_settings_hash
+    ):
+        raise VddRuntimePolicyError(
+            "Idempotent VDD runtime-policy replay cannot be accepted "
+            "because active settings do not match persisted state"
+        )
+
+    return {
+        **previous,
+        "idempotent": True,
+    }
+
 def _apply_policy_atomic_unprotected(
     *,
     template_path: Path,
@@ -388,6 +632,20 @@ def _apply_policy_atomic_unprotected(
     target = target_root / TARGET_NAME
     state = target_root / STATE_NAME
     lkg = target_root / LKG_NAME
+
+    policy_fingerprint = _policy_fingerprint(
+        policy
+    )
+
+    replay = _revision_guard(
+        state_path=state,
+        target_path=target,
+        policy=policy,
+        fingerprint=policy_fingerprint,
+    )
+
+    if replay is not None:
+        return replay
 
     payload = render_settings_xml(
         Path(template_path),
@@ -426,6 +684,20 @@ def _apply_policy_atomic_unprotected(
         "bit_depth": policy.bit_depth,
         "color_space": policy.color_space,
     }
+
+    if (
+        policy.policy_id is not None
+        and policy.revision is not None
+    ):
+        state_payload["policy_id"] = (
+            policy.policy_id
+        )
+        state_payload["revision"] = (
+            policy.revision
+        )
+        state_payload["policy_fingerprint"] = (
+            policy_fingerprint
+        )
 
     state_tmp = state.with_suffix(".json.new")
     state_tmp.write_text(

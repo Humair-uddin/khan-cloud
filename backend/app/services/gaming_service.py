@@ -262,6 +262,13 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
     capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
     display_policy = _gaming_session_display_policy(payload)
 
+    # A gaming session owns one immutable initial VDD policy stream.
+    # Later runtime-policy updates may advance this stream's revision.
+    display_policy["policy_id"] = (
+        f"gaming-session:{session.id}"
+    )
+    display_policy["revision"] = 1
+
     db.add(NodeJob(node_id=node.id,gaming_session_id=session.id,job_type="gaming.session.create",payload={"session_id":str(session.id),"gpu_uuid":gpu_uuid,"gpu_name":gpu_name,"minimum_vram_mb":effective_vram,"streaming_backend":payload.streaming_backend,"game_slug":(gaming_title.slug if gaming_title else None),"launcher":(gaming_title.launcher if gaming_title else None),"launcher_app_id":(gaming_title.launcher_app_id if gaming_title else None),"display_policy":display_policy}))
     db.commit(); db.refresh(session); return session
 
