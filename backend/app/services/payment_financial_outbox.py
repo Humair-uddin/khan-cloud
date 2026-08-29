@@ -260,3 +260,67 @@ def mark_outbox_failed(
     db.flush()
 
     return row
+
+
+def schedule_outbox_retry(
+    db,
+    *,
+    row,
+    error: Exception | str,
+    delay_seconds: int,
+    max_attempts: int = 8,
+):
+    from datetime import (
+        datetime,
+        timedelta,
+        timezone,
+    )
+
+    if delay_seconds < 0:
+        raise FinancialOutboxError(
+            "Retry delay cannot be negative."
+        )
+
+    if max_attempts <= 0:
+        raise FinancialOutboxError(
+            "max_attempts must be positive."
+        )
+
+    if row.status != "processing":
+        raise FinancialOutboxError(
+            "Only processing messages can be retried."
+        )
+
+    row.last_error = str(error)[:2000]
+    row.locked_at = None
+
+    if row.attempt_count >= max_attempts:
+        row.status = "dead_letter"
+        db.flush()
+        return row
+
+    row.status = "pending"
+    row.available_at = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=delay_seconds)
+    )
+
+    db.flush()
+    return row
+
+
+def release_stale_outbox_claim(
+    db,
+    *,
+    row,
+    error: str = "Stale processing claim released.",
+):
+    if row.status != "processing":
+        return row
+
+    row.status = "failed"
+    row.locked_at = None
+    row.last_error = str(error)[:2000]
+
+    db.flush()
+    return row

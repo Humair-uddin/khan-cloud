@@ -56,3 +56,5 @@ import app.models.payment_reliability  # noqa: E402,F401
 
 # KG-001 gaming catalog model registration
 import app.models.gaming_catalog  # noqa: E402,F401
+
+from app.models.financial_obligation import CustomerObligationPayment

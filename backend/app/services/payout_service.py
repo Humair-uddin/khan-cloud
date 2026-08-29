@@ -373,3 +373,63 @@ def mark_payout_failed(
     db.flush()
 
     return payout
+
+
+def enqueue_payout_execution(
+    db: Session,
+    *,
+    payout: Payout,
+):
+    """
+    Transactionally enqueue provider execution.
+
+    The provider is never called from queue_payout().
+    """
+    from app.services.payment_financial_outbox import (
+        enqueue_outbox_message,
+    )
+
+    return enqueue_outbox_message(
+        db,
+        event_type="payout.execute",
+        aggregate_type="payout",
+        aggregate_id=str(payout.id),
+        idempotency_key=(
+            f"payout-execute:{payout.idempotency_key}"
+        ),
+        payload={
+            "payout_id": str(payout.id),
+            "host_node_id": str(
+                payout.host_node_id
+            ),
+            "payout_method_id": str(
+                payout.payout_method_id
+            ),
+            "amount_minor": payout.amount_minor,
+            "currency": payout.currency,
+        },
+    )
+
+
+def queue_payout_for_execution(
+    db: Session,
+    *,
+    host_node_id: UUID,
+    amount_minor: int,
+    currency: str,
+    idempotency_key: str,
+) -> Payout:
+    payout = queue_payout(
+        db,
+        host_node_id=host_node_id,
+        amount_minor=amount_minor,
+        currency=currency,
+        idempotency_key=idempotency_key,
+    )
+
+    enqueue_payout_execution(
+        db,
+        payout=payout,
+    )
+
+    return payout

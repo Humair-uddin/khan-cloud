@@ -15,6 +15,17 @@ class PaymentAdapter(Protocol):
     def healthcheck(self) -> dict[str, Any]:
         ...
 
+    def execute_payout(
+        self,
+        *,
+        payout_id: str,
+        amount_minor: int,
+        currency: str,
+        payout_method: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        ...
+
 
 AdapterFactory = Callable[..., PaymentAdapter]
 

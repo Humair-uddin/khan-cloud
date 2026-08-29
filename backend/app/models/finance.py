@@ -890,6 +890,18 @@ class ChargebackDispute(BaseModel):
         nullable=False,
     )
 
+    resolution_reference: Mapped[str] = mapped_column(
+        String(180),
+        default="",
+        nullable=False,
+    )
+
+    resolution_reason: Mapped[str] = mapped_column(
+        String(500),
+        default="",
+        nullable=False,
+    )
+
     status: Mapped[str] = mapped_column(
         String(30),
         default="posted",
