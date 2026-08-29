@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,10 @@ from khan_agent.vdd_runtime_policy import (
     apply_display_policy,
 )
 from khan_agent.virtualization import JobExecutionResult
+from khan_agent.windows_interactive import (
+    InteractiveSessionError,
+    active_console_session_id,
+)
 
 
 class GamingRuntimeError(RuntimeError):
@@ -83,6 +88,53 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     secure_private_file(temp)
     os.replace(temp, path)
     secure_private_file(path)
+
+
+def _interactive_session_context() -> dict[str, Any]:
+    """
+    Validate the Windows desktop execution boundary immediately before
+    customer runtime preparation.
+
+    The control plane already rejects nodes whose heartbeat reports no
+    interactive session. This is the authoritative node-local recheck,
+    protecting against logout/session loss between scheduling and job
+    execution.
+
+    Linux unit tests may exercise Windows runtime logic with mocked
+    backends, so non-Windows hosts report a deferred validation rather
+    than pretending a Windows console exists.
+    """
+    if platform.system() != "Windows":
+        return {
+            "required": True,
+            "validated": False,
+            "reason": "non_windows_test_environment",
+        }
+
+    try:
+        session_id = int(
+            active_console_session_id()
+        )
+    except InteractiveSessionError as exc:
+        raise GamingRuntimeError(
+            "Windows interactive session is unavailable: "
+            f"{exc}"
+        ) from exc
+
+    # Session 0 is the Windows services isolation session and must never
+    # be used for customer game/UI execution.
+    if session_id <= 0:
+        raise GamingRuntimeError(
+            "Gaming runtime requires a non-zero interactive "
+            "Windows user session; session 0 is not permitted."
+        )
+
+    return {
+        "required": True,
+        "validated": True,
+        "session_id": session_id,
+        "execution_context": "interactive_user",
+    }
 
 
 def _connection_info(runtime_id: str) -> dict[str, Any]:
@@ -308,6 +360,12 @@ def create_session(
                 execution_backend=execution_backend,
                 streaming_backend=streaming_backend,
             )
+            interactive_session = (
+                _interactive_session_context()
+            )
+            existing["interactive_session"] = (
+                interactive_session
+            )
             # Idempotent create must never resurrect or otherwise
             # mutate an existing session's lifecycle state. A delayed
             # duplicate create can arrive after a legitimate stop.
@@ -317,6 +375,16 @@ def create_session(
             result: dict[str, Any] = {
                 "runtime_id": runtime_id,
                 "status": str(existing.get("status") or "unknown"),
+                "deployment_stage": (
+                    "stream_ready"
+                    if existing.get("status") == "running"
+                    else str(
+                        existing.get("runtime_stage")
+                        or existing.get("status")
+                        or "unknown"
+                    )
+                ),
+                "interactive_session": interactive_session,
                 "idempotent": True,
             }
 
@@ -338,6 +406,14 @@ def create_session(
             minimum_vram_mb=minimum_vram_mb,
             execution_backend=execution_backend,
             streaming_backend=streaming_backend,
+        )
+
+        # KG-009: authoritative last-moment session broker gate.
+        # Scheduling heartbeat evidence can become stale after placement;
+        # therefore the Windows node verifies the actual console session
+        # again before touching VDD state or launching the game.
+        interactive_session = (
+            _interactive_session_context()
         )
 
         display_policy_result: dict[str, Any] | None = None
@@ -373,6 +449,8 @@ def create_session(
             "gpu_uuid": gpu_uuid,
             "gpu": validation["gpu"],
             "minimum_vram_mb": minimum_vram_mb,
+            "runtime_stage": "stream_ready",
+            "interactive_session": interactive_session,
         }
 
         if display_policy_result is not None:
@@ -412,9 +490,11 @@ def create_session(
 
         result: dict[str, Any] = {
             "runtime_id": runtime_id,
+            "deployment_stage": "stream_ready",
             "connection_info":
                 _connection_info(runtime_id),
             "gpu": validation["gpu"],
+            "interactive_session": interactive_session,
         }
 
         if display_policy_result is not None:
@@ -504,6 +584,17 @@ def change_session_state(
         )
 
         desired = "running" if action == "start" else "stopped"
+
+        interactive_session: dict[str, Any] | None = None
+
+        if desired == "running":
+            interactive_session = (
+                _interactive_session_context()
+            )
+            state["interactive_session"] = (
+                interactive_session
+            )
+
         if state.get("status") == desired:
             return JobExecutionResult(
                 "succeeded",
@@ -512,18 +603,44 @@ def change_session_state(
                     "status": desired,
                     "idempotent": True,
                     **(
-                        {"connection_info": _connection_info(runtime_id)}
+                        {
+                            "connection_info":
+                                _connection_info(runtime_id),
+                            "deployment_stage":
+                                "stream_ready",
+                            "interactive_session":
+                                interactive_session,
+                        }
                         if desired == "running"
-                        else {}
+                        else {
+                            "deployment_stage":
+                                "stopped",
+                        }
                     ),
                 },
             )
 
         state["status"] = desired
+        state["runtime_stage"] = (
+            "stream_ready"
+            if desired == "running"
+            else "stopped"
+        )
         _write_state(state_file, state)
-        result: dict[str, Any] = {"runtime_id": runtime_id, "status": desired}
+
+        result: dict[str, Any] = {
+            "runtime_id": runtime_id,
+            "status": desired,
+            "deployment_stage": state["runtime_stage"],
+        }
+
         if desired == "running":
-            result["connection_info"] = _connection_info(runtime_id)
+            result["connection_info"] = (
+                _connection_info(runtime_id)
+            )
+            result["interactive_session"] = (
+                interactive_session
+            )
         return JobExecutionResult("succeeded", result)
     except (
         GamingRuntimeError,

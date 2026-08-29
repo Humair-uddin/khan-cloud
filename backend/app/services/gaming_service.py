@@ -8,6 +8,7 @@ from app.models.compute import GamingReservation, GamingSession, GamingVmBluepri
 from app.models.gaming_catalog import GamingTitle, NodeGameQualification
 from app.services.gaming_catalog_service import qualification_is_fresh
 from app.models.node import Node
+from app.models.deployment_profile import DeploymentProfile
 from app.models.user import User
 from app.schemas.compute import GamingSessionCreate
 from app.services.gaming_display_policy import (
@@ -22,6 +23,88 @@ GIB = 1024 ** 3
 ACTIVE_RESERVATION_STATES = {"reserved", "active"}
 TERMINAL_SESSION_STATES = {"terminated", "failed"}
 GAMING_HEARTBEAT_STALE_AFTER_SECONDS = 300
+
+# KG-009 placement policy.
+#
+# Qualification/readiness/capacity are hard admission gates.
+# Ownership preference is applied only after a node has passed all
+# mandatory gaming requirements.
+GAMING_OWNERSHIP_PRIORITY = {
+    "khan_cloud": 0,
+    "trusted_partner": 1,
+    "organization": 2,
+    "third_party_provider": 3,
+}
+GAMING_UNKNOWN_OWNERSHIP_PRIORITY = 99
+
+
+def _node_ownership_type(
+    db: Session,
+    node: Node,
+) -> str:
+    if node.deployment_profile_id is None:
+        return "unknown"
+
+    profile = db.get(
+        DeploymentProfile,
+        node.deployment_profile_id,
+    )
+
+    if profile is None:
+        return "unknown"
+
+    return str(
+        profile.ownership_type or "unknown"
+    ).strip().lower()
+
+
+def _gaming_placement_rank(
+    *,
+    ownership_type: str,
+    gpu_vram_mb: int,
+    available_memory_bytes: int,
+) -> tuple[int, int, int]:
+    """
+    Produce the deterministic gaming placement rank.
+
+    Lower tuple wins.
+
+    1. Khan Cloud capacity first.
+    2. Then trusted/marketplace fallback capacity.
+    3. Within the same ownership tier retain the existing preference
+       for the strongest free GPU and greatest available memory.
+
+    This function MUST NOT be used as an admission check. Nodes reach
+    this ranking only after readiness, title qualification and host
+    capacity have already passed.
+    """
+    priority = GAMING_OWNERSHIP_PRIORITY.get(
+        ownership_type,
+        GAMING_UNKNOWN_OWNERSHIP_PRIORITY,
+    )
+
+    return (
+        priority,
+        -int(gpu_vram_mb),
+        -int(available_memory_bytes),
+    )
+
+
+def _gaming_placement_metadata(
+    db: Session,
+    node: Node,
+) -> dict[str, object]:
+    ownership_type = _node_ownership_type(
+        db,
+        node,
+    )
+
+    return {
+        "policy_version": "kg009-v1",
+        "ownership_type": ownership_type,
+        "khan_owned": ownership_type == "khan_cloud",
+        "fallback_capacity": ownership_type != "khan_cloud",
+    }
 
 
 def _gaming_inventory(node: Node) -> dict:
@@ -186,12 +269,49 @@ def select_gaming_host(db: Session, *, minimum_vram_mb: int, cpu: int, memory_by
             gpu_uuid, name, vram = _gpu_fields(gpu)
             if not gpu_uuid or gpu_uuid in reserved or vram < minimum_vram_mb:
                 continue
-            candidates.append((vram, capacity.memory_allocatable_bytes - capacity.memory_allocated_bytes, capacity, node, gpu_uuid, name))
+            available_memory = (
+                capacity.memory_allocatable_bytes
+                - capacity.memory_allocated_bytes
+            )
+            ownership_type = _node_ownership_type(
+                db,
+                node,
+            )
+            rank = _gaming_placement_rank(
+                ownership_type=ownership_type,
+                gpu_vram_mb=vram,
+                available_memory_bytes=available_memory,
+            )
+            candidates.append(
+                (
+                    rank,
+                    capacity,
+                    node,
+                    gpu_uuid,
+                    name,
+                    vram,
+                )
+            )
+
     if not candidates:
-        raise ComputeError(f"No gaming host has a free operational GPU with at least {minimum_vram_mb} MiB VRAM and the requested host capacity.")
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    _, _, capacity, node, gpu_uuid, name = candidates[0]
-    vram = next(_gpu_fields(g)[2] for g in _gpu_inventory(node) if _gpu_fields(g)[0] == gpu_uuid)
+        raise ComputeError(
+            "No gaming host has a free operational GPU with at least "
+            f"{minimum_vram_mb} MiB VRAM and the requested host capacity."
+        )
+
+    candidates.sort(
+        key=lambda item: item[0]
+    )
+
+    (
+        _rank,
+        capacity,
+        node,
+        gpu_uuid,
+        name,
+        vram,
+    ) = candidates[0]
+
     return capacity, node, gpu_uuid, name, vram
 
 
@@ -256,7 +376,7 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
         db.commit(); db.refresh(session); return session
 
     capacity, node, gpu_uuid, gpu_name, gpu_vram = select_gaming_host(db, minimum_vram_mb=effective_vram, cpu=payload.cpu, memory_bytes=memory_bytes, storage_bytes=storage_bytes, gaming_title=gaming_title)
-    session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="bare_metal", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
+    session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="bare_metal", deployment_stage="runtime_queued", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
     db.add(session); db.flush()
     db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
     capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
@@ -269,7 +389,40 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
     )
     display_policy["revision"] = 1
 
-    db.add(NodeJob(node_id=node.id,gaming_session_id=session.id,job_type="gaming.session.create",payload={"session_id":str(session.id),"gpu_uuid":gpu_uuid,"gpu_name":gpu_name,"minimum_vram_mb":effective_vram,"streaming_backend":payload.streaming_backend,"game_slug":(gaming_title.slug if gaming_title else None),"launcher":(gaming_title.launcher if gaming_title else None),"launcher_app_id":(gaming_title.launcher_app_id if gaming_title else None),"display_policy":display_policy}))
+    db.add(
+        NodeJob(
+            node_id=node.id,
+            gaming_session_id=session.id,
+            job_type="gaming.session.create",
+            payload={
+                "session_id": str(session.id),
+                "gpu_uuid": gpu_uuid,
+                "gpu_name": gpu_name,
+                "minimum_vram_mb": effective_vram,
+                "streaming_backend": payload.streaming_backend,
+                "game_slug": (
+                    gaming_title.slug
+                    if gaming_title
+                    else None
+                ),
+                "launcher": (
+                    gaming_title.launcher
+                    if gaming_title
+                    else None
+                ),
+                "launcher_app_id": (
+                    gaming_title.launcher_app_id
+                    if gaming_title
+                    else None
+                ),
+                "display_policy": display_policy,
+                "placement": _gaming_placement_metadata(
+                    db,
+                    node,
+                ),
+            },
+        )
+    )
     db.commit(); db.refresh(session); return session
 
 
@@ -497,6 +650,10 @@ def finish_gaming_job(
                 return
 
             session.status = "running"
+            session.deployment_stage = str(
+                result.get("deployment_stage")
+                or "stream_ready"
+            )
             session.runtime_id = runtime_id
             session.connection_info = dict(
                 result.get("connection_info") or {}
@@ -507,6 +664,10 @@ def finish_gaming_job(
 
         elif job.job_type == "gaming.session.start":
             session.status = "running"
+            session.deployment_stage = str(
+                result.get("deployment_stage")
+                or "stream_ready"
+            )
             session.started_at = session.started_at or datetime.now(UTC)
             session.connection_info = dict(
                 result.get("connection_info") or {}
@@ -514,10 +675,12 @@ def finish_gaming_job(
 
         elif job.job_type == "gaming.session.stop":
             session.status = "stopped"
+            session.deployment_stage = "stopped"
             session.connection_info = {}
 
         elif job.job_type == "gaming.session.delete":
             session.status = "terminated"
+            session.deployment_stage = "terminated"
             session.ended_at = datetime.now(UTC)
             session.connection_info = {}
             release_gaming_reservation(db, session)
@@ -529,6 +692,7 @@ def finish_gaming_job(
 
     if job.job_type == "gaming.session.create":
         session.status = "failed"
+        session.deployment_stage = "runtime_failed"
         release_gaming_reservation(db, session)
     else:
         # The real machine may still own the runtime/GPU after a failed
