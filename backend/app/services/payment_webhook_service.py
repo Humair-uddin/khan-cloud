@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import time
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,10 +12,25 @@ from app.models.payment_provider import (
     PaymentProvider,
     PaymentWebhookReceipt,
 )
-from app.schemas.payment_provider import NormalizedPaymentEvent
+from app.schemas.payment_provider import (
+    NormalizedPaymentEvent,
+)
+from app.services.payment_adapter_registry import (
+    PaymentAdapterError as ImplementationAdapterError,
+    create_adapter_for_provider,
+)
+from app.services.payment_provider_policy import (
+    PaymentProviderPolicyError,
+    ProviderOperationPolicy,
+    enforce_provider_operation,
+)
 from app.services.payment_provider_registry import (
-    PaymentAdapterError,
-    get_adapter,
+    PaymentAdapterError as LegacyAdapterError,
+    get_adapter as get_legacy_adapter,
+)
+from app.services.payment_secret_resolver import (
+    PaymentSecretError,
+    resolve_secret,
 )
 
 
@@ -23,34 +38,28 @@ class PaymentWebhookError(ValueError):
     pass
 
 
-def resolve_secret_reference(reference: str) -> str:
-    reference = reference.strip()
+_CAPABILITY_BY_EVENT = {
+    "deposit.succeeded": "deposits",
+    "refund.processing": "refunds",
+    "refund.succeeded": "refunds",
+    "refund.failed": "refunds",
+    "chargeback.created": "chargebacks",
+    "payout.processing": "payouts",
+    "payout.paid": "payouts",
+    "payout.failed": "payouts",
+    "treasury.settled": "treasury_settlement",
+}
 
-    if not reference:
+
+def resolve_secret_reference(
+    reference: str,
+) -> str:
+    try:
+        return resolve_secret(reference)
+    except PaymentSecretError as exc:
         raise PaymentWebhookError(
-            "Webhook secret reference is not configured."
-        )
-
-    if not reference.startswith("env:"):
-        raise PaymentWebhookError(
-            "Unsupported secret reference scheme."
-        )
-
-    env_name = reference[4:].strip()
-
-    if not env_name:
-        raise PaymentWebhookError(
-            "Webhook environment secret name is empty."
-        )
-
-    secret = os.environ.get(env_name, "")
-
-    if not secret:
-        raise PaymentWebhookError(
-            "Webhook secret is unavailable."
-        )
-
-    return secret
+            str(exc)
+        ) from exc
 
 
 def validate_event_timestamp(
@@ -59,12 +68,101 @@ def validate_event_timestamp(
     tolerance_seconds: int,
     now: int | None = None,
 ) -> None:
-    current = int(time.time()) if now is None else int(now)
+    current = (
+        int(time.time())
+        if now is None
+        else int(now)
+    )
 
-    if abs(current - int(event_timestamp)) > tolerance_seconds:
+    if (
+        abs(current - int(event_timestamp))
+        > tolerance_seconds
+    ):
         raise PaymentWebhookError(
-            "Webhook timestamp is outside the accepted replay window."
+            "Webhook timestamp is outside "
+            "the accepted replay window."
         )
+
+
+def _adapter_for_provider(
+    provider: PaymentProvider,
+):
+    #
+    # KF-002D architecture:
+    #   provider.code       = merchant/account instance
+    #   provider.adapter_type = reusable implementation
+    #
+    # During transition, legacy test adapters remain supported only
+    # when adapter_type == provider.code. Real multi-account provider
+    # configurations use the adapter_type registry.
+    #
+    try:
+        return create_adapter_for_provider(
+            provider
+        )
+    except ImplementationAdapterError as primary:
+        if (
+            provider.adapter_type.strip().lower()
+            != provider.code.strip().lower()
+        ):
+            raise PaymentWebhookError(
+                str(primary)
+            ) from primary
+
+        try:
+            return get_legacy_adapter(
+                provider.code
+            )
+        except LegacyAdapterError as legacy:
+            raise PaymentWebhookError(
+                str(primary)
+            ) from legacy
+
+
+def _event_policy(
+    *,
+    provider: PaymentProvider,
+    event: NormalizedPaymentEvent,
+) -> None:
+    capability = _CAPABILITY_BY_EVENT.get(
+        event.event_type
+    )
+
+    if capability is None:
+        raise PaymentWebhookError(
+            "Unsupported normalized event type."
+        )
+
+    transaction_currency = (
+        event.currency
+        or event.presentment_currency
+        or event.settlement_currency
+    )
+
+    try:
+        enforce_provider_operation(
+            provider,
+            ProviderOperationPolicy(
+                capability=capability,
+                currency=transaction_currency,
+                presentment_currency=(
+                    event.presentment_currency
+                ),
+                settlement_currency=(
+                    event.settlement_currency
+                ),
+                #
+                # A webhook cannot silently declare that FX happened.
+                # Explicit FX remains a separate canonical KF-001
+                # financial transaction.
+                #
+                allow_explicit_fx=False,
+            ),
+        )
+    except PaymentProviderPolicyError as exc:
+        raise PaymentWebhookError(
+            str(exc)
+        ) from exc
 
 
 def verify_and_normalize_webhook(
@@ -79,10 +177,9 @@ def verify_and_normalize_webhook(
             "Payment provider is disabled."
         )
 
-    try:
-        adapter = get_adapter(provider.code)
-    except PaymentAdapterError as exc:
-        raise PaymentWebhookError(str(exc)) from exc
+    adapter = _adapter_for_provider(
+        provider
+    )
 
     secret = resolve_secret_reference(
         provider.webhook_secret_reference
@@ -107,15 +204,26 @@ def verify_and_normalize_webhook(
             "Webhook payload could not be normalized."
         ) from exc
 
-    if event.provider.strip().lower() != provider.code:
+    if (
+        event.provider.strip().lower()
+        != provider.code.strip().lower()
+    ):
         raise PaymentWebhookError(
-            "Normalized provider does not match route provider."
+            "Normalized provider does not match "
+            "route provider."
         )
 
     validate_event_timestamp(
         event_timestamp=event.provider_timestamp,
-        tolerance_seconds=provider.webhook_tolerance_seconds,
+        tolerance_seconds=(
+            provider.webhook_tolerance_seconds
+        ),
         now=now,
+    )
+
+    _event_policy(
+        provider=provider,
+        event=event,
     )
 
     return event
@@ -132,7 +240,9 @@ def canonical_event_hash(
 
 
 def raw_body_hash(raw_body: bytes) -> str:
-    return hashlib.sha256(raw_body).hexdigest()
+    return hashlib.sha256(
+        raw_body
+    ).hexdigest()
 
 
 def get_existing_receipt(
@@ -143,8 +253,10 @@ def get_existing_receipt(
 ) -> PaymentWebhookReceipt | None:
     return db.scalar(
         select(PaymentWebhookReceipt).where(
-            PaymentWebhookReceipt.provider_id == provider.id,
-            PaymentWebhookReceipt.event_id == event_id,
+            PaymentWebhookReceipt.provider_id
+            == provider.id,
+            PaymentWebhookReceipt.event_id
+            == event_id,
         )
     )
 
@@ -161,7 +273,8 @@ def assert_receipt_replay_matches(
         raw_hash,
     ):
         raise PaymentWebhookError(
-            "Provider event ID replayed with different raw contents."
+            "Provider event ID replayed "
+            "with different raw contents."
         )
 
     if not hmac.compare_digest(
@@ -169,12 +282,14 @@ def assert_receipt_replay_matches(
         normalized_hash,
     ):
         raise PaymentWebhookError(
-            "Provider event ID replayed with different normalized contents."
+            "Provider event ID replayed with "
+            "different normalized contents."
         )
 
     if receipt.event_type != event_type:
         raise PaymentWebhookError(
-            "Provider event ID replayed with different event type."
+            "Provider event ID replayed "
+            "with different event type."
         )
 
 
@@ -186,7 +301,6 @@ def process_provider_webhook(
     headers: dict[str, str],
     now: int | None = None,
 ):
-    from app.models.payment_provider import PaymentWebhookReceipt
     from app.services.payment_event_processor import (
         process_normalized_event,
     )
@@ -198,8 +312,12 @@ def process_provider_webhook(
         now=now,
     )
 
-    raw_hash = raw_body_hash(raw_body)
-    normalized_hash = canonical_event_hash(event)
+    raw_hash = raw_body_hash(
+        raw_body
+    )
+    normalized_hash = canonical_event_hash(
+        event
+    )
 
     existing = get_existing_receipt(
         db,
@@ -222,44 +340,57 @@ def process_provider_webhook(
         event_id=event.event_id,
         event_type=event.event_type,
         raw_body_sha256=raw_hash,
-        normalized_payload_sha256=normalized_hash,
-        provider_timestamp=event.provider_timestamp,
+        normalized_payload_sha256=(
+            normalized_hash
+        ),
+        provider_timestamp=(
+            event.provider_timestamp
+        ),
         signature_verified=True,
         processing_status="accepted",
         metadata_json={
-            "presentment_currency": event.presentment_currency,
-            "settlement_currency": event.settlement_currency,
+            "presentment_currency": (
+                event.presentment_currency
+            ),
+            "settlement_currency": (
+                event.settlement_currency
+            ),
         },
     )
 
     db.add(receipt)
     db.flush()
 
-    try:
-        resource_type, resource_id = process_normalized_event(
+    resource_type, resource_id = (
+        process_normalized_event(
             db,
             event=event,
         )
-    except Exception:
-        receipt.processing_status = "failed"
-        db.flush()
-        raise
+    )
 
     receipt.processing_status = "processed"
     receipt.result_resource_type = resource_type
     receipt.result_resource_id = resource_id
 
-    from app.models.finance import PaymentReconciliationEvent
+    from app.models.finance import (
+        PaymentReconciliationEvent,
+    )
 
     reconciliation = db.scalar(
-        select(PaymentReconciliationEvent).where(
-            PaymentReconciliationEvent.provider == event.provider,
-            PaymentReconciliationEvent.event_id == event.event_id,
+        select(
+            PaymentReconciliationEvent
+        ).where(
+            PaymentReconciliationEvent.provider
+            == event.provider,
+            PaymentReconciliationEvent.event_id
+            == event.event_id,
         )
     )
 
     if reconciliation is not None:
-        receipt.reconciliation_event_id = reconciliation.id
+        receipt.reconciliation_event_id = (
+            reconciliation.id
+        )
 
     db.flush()
 

@@ -4,6 +4,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.payment_provider import PaymentProvider
+from app.services.payment_adapter_registry import (
+    normalize_adapter_type,
+)
+from app.services.payment_secret_resolver import (
+    PaymentSecretError,
+    validate_secret_reference,
+)
 
 
 class PaymentProviderError(ValueError):
@@ -35,6 +42,37 @@ def create_provider(
         raise PaymentProviderError(
             "Provider environment is invalid."
         )
+
+    try:
+        adapter_type = normalize_adapter_type(
+            adapter_type
+        )
+    except Exception as exc:
+        raise PaymentProviderError(
+            str(exc)
+        ) from exc
+
+    credential_reference = (
+        credential_reference.strip()
+    )
+    webhook_secret_reference = (
+        webhook_secret_reference.strip()
+    )
+
+    try:
+        if credential_reference:
+            validate_secret_reference(
+                credential_reference
+            )
+
+        if webhook_secret_reference:
+            validate_secret_reference(
+                webhook_secret_reference
+            )
+    except PaymentSecretError as exc:
+        raise PaymentProviderError(
+            str(exc)
+        ) from exc
 
     existing = db.scalar(
         select(PaymentProvider).where(
