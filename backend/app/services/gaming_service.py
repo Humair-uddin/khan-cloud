@@ -361,6 +361,37 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
     gaming_title = _resolve_gaming_title(db, payload.game_slug)
     effective_vram = max(payload.minimum_vram_mb, gaming_title.minimum_vram_mb if gaming_title else 0)
 
+    if payload.play_request_id is not None:
+        existing = db.scalar(
+            select(GamingSession).where(
+                GamingSession.play_request_id == payload.play_request_id
+            )
+        )
+        if existing is not None:
+            if (
+                existing.organization_id != organization_id
+                or existing.created_by_user_id != actor.id
+            ):
+                raise ComputeError(
+                    "Play request ID is already bound to another gaming request."
+                )
+            return existing
+
+    commercial_admission = None
+    if gaming_title is not None:
+        from app.services.gaming_billing_service import (
+            GamingBillingError,
+            resolve_gaming_commercial_admission,
+        )
+        try:
+            commercial_admission = resolve_gaming_commercial_admission(
+                db,
+                title=gaming_title,
+                organization_id=organization_id,
+            )
+        except GamingBillingError as exc:
+            raise ComputeError(str(exc)) from exc
+
     if payload.deployment_mode == "proxmox_windows_vm":
         from app.services.gaming_vm_service import resolve_blueprint, select_gaming_hypervisor, queue_windows_vm_create
         blueprint = resolve_blueprint(db, payload.blueprint_slug)
@@ -368,16 +399,54 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
         gpu_uuid = str(gpu.get("uuid") or gpu.get("slot") or "")
         gpu_name = str(gpu.get("name") or "passthrough-gpu")
         gpu_vram = int(gpu.get("memory_total_mib") or 0)
-        session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="proxmox_windows_vm", deployment_blueprint_id=blueprint.id, deployment_stage="reserving", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
+        session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), play_request_id=payload.play_request_id, organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="proxmox_windows_vm", deployment_blueprint_id=blueprint.id, deployment_stage="reserving", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
         db.add(session); db.flush()
+        if commercial_admission is not None:
+            from app.services.gaming_billing_service import (
+                GamingBillingError,
+                bind_gaming_host_economics,
+                reserve_gaming_admission,
+            )
+            try:
+                reserve_gaming_admission(
+                    db, session=session, admission=commercial_admission
+                )
+                bind_gaming_host_economics(
+                    db,
+                    session=session,
+                    node=node,
+                    ownership_type=_node_ownership_type(db, node),
+                )
+            except GamingBillingError as exc:
+                db.rollback()
+                raise ComputeError(str(exc)) from exc
         db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
         capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
         queue_windows_vm_create(db, session=session, capacity=capacity, hypervisor=node, blueprint=blueprint, gpu=gpu)
         db.commit(); db.refresh(session); return session
 
     capacity, node, gpu_uuid, gpu_name, gpu_vram = select_gaming_host(db, minimum_vram_mb=effective_vram, cpu=payload.cpu, memory_bytes=memory_bytes, storage_bytes=storage_bytes, gaming_title=gaming_title)
-    session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="bare_metal", deployment_stage="runtime_queued", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
+    session = GamingSession(gaming_title_id=(gaming_title.id if gaming_title else None), play_request_id=payload.play_request_id, organization_id=organization_id, created_by_user_id=actor.id, node_id=node.id, deployment_mode="bare_metal", deployment_stage="runtime_queued", name=payload.name, status="provisioning", desired_state="running", minimum_vram_mb=effective_vram, requested_cpu=payload.cpu, requested_memory_bytes=memory_bytes, requested_storage_bytes=storage_bytes, gpu_uuid=gpu_uuid, gpu_name=gpu_name, gpu_vram_mb=gpu_vram, streaming_backend=payload.streaming_backend)
     db.add(session); db.flush()
+    if commercial_admission is not None:
+        from app.services.gaming_billing_service import (
+            GamingBillingError,
+            bind_gaming_host_economics,
+            reserve_gaming_admission,
+        )
+        try:
+            reserve_gaming_admission(
+                db, session=session, admission=commercial_admission
+            )
+            bind_gaming_host_economics(
+                db,
+                session=session,
+                node=node,
+                ownership_type=_node_ownership_type(db, node),
+            )
+        except GamingBillingError as exc:
+            db.rollback()
+            raise ComputeError(str(exc)) from exc
     db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
     capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
     display_policy = _gaming_session_display_policy(payload)
@@ -464,6 +533,7 @@ def queue_gaming_action(
     *,
     session: GamingSession,
     action: str,
+    commit: bool = True,
 ) -> GamingSession:
     if action not in {"start", "stop", "terminate"}:
         raise ComputeError("Unsupported gaming session action.")
@@ -493,6 +563,14 @@ def queue_gaming_action(
         )
 
     if action == "start":
+        from app.services.gaming_billing_service import (
+            GamingBillingError,
+            reopen_gaming_billing,
+        )
+        try:
+            reopen_gaming_billing(db, session=session)
+        except GamingBillingError as exc:
+            raise ComputeError(str(exc)) from exc
         session.desired_state = "running"
         session.status = "starting"
 
@@ -508,8 +586,11 @@ def queue_gaming_action(
             )
         )
 
-        db.commit()
-        db.refresh(session)
+        if commit:
+            db.commit()
+            db.refresh(session)
+        else:
+            db.flush()
         return session
 
     # Stop and terminate are security-sensitive. Revoke any active
@@ -562,9 +643,39 @@ def queue_gaming_action(
             else "stopping"
         )
 
-    db.commit()
-    db.refresh(session)
+    if commit:
+        db.commit()
+        db.refresh(session)
+    else:
+        db.flush()
     return session
+
+
+def reconcile_gaming_billing_for_node(
+    db: Session,
+    *,
+    node: Node,
+) -> list[UUID]:
+    from app.services.gaming_billing_service import (
+        reconcile_gaming_billing_for_node as reconcile_finance,
+    )
+
+    stop_ids = reconcile_finance(db, node=node)
+    for session_id in stop_ids:
+        session = db.get(GamingSession, session_id)
+        if session is None or session.status != "running":
+            continue
+        pending = db.scalar(
+            select(NodeJob).where(
+                NodeJob.gaming_session_id == session.id,
+                NodeJob.status.in_({"pending", "running"}),
+            ).limit(1)
+        )
+        if pending is None:
+            queue_gaming_action(
+                db, session=session, action="stop", commit=False
+            )
+    return stop_ids
 
 
 def finish_gaming_job(
@@ -617,7 +728,11 @@ def finish_gaming_job(
             session.status = "error" if job.job_type != "gaming.vm.create" else "failed"
             session.failure_category = "gaming_vm_job_failed"
             session.failure_message = error_message[:500]
-            if job.job_type == "gaming.vm.create": release_gaming_reservation(db, session)
+            if job.job_type == "gaming.vm.create":
+                if session.usage_reservation_id is not None:
+                    from app.services.gaming_billing_service import finalize_gaming_billing
+                    finalize_gaming_billing(db, session=session, reason="gaming_vm_create_failed")
+                release_gaming_reservation(db, session)
             return
         session.failure_category = ""; session.failure_message = ""
         if job.job_type == "gaming.vm.create":
@@ -629,8 +744,14 @@ def finish_gaming_job(
         elif job.job_type == "gaming.vm.start":
             session.status = "bootstrapping"; session.deployment_stage = "waiting_for_guest_agent"
         elif job.job_type == "gaming.vm.stop":
+            if session.usage_reservation_id is not None:
+                from app.services.gaming_billing_service import finalize_gaming_billing
+                finalize_gaming_billing(db, session=session, reason="customer_stop")
             session.status = "stopped"; session.connection_info = {}
         elif job.job_type == "gaming.vm.delete":
+            if session.usage_reservation_id is not None:
+                from app.services.gaming_billing_service import finalize_gaming_billing
+                finalize_gaming_billing(db, session=session, reason="terminated")
             session.status = "terminated"; session.ended_at = datetime.now(UTC); session.connection_info = {}; release_gaming_reservation(db, session)
         return
 
@@ -646,6 +767,9 @@ def finish_gaming_job(
                 session.failure_message = (
                     "Gaming runtime creation succeeded without a runtime_id."
                 )
+                if session.usage_reservation_id is not None:
+                    from app.services.gaming_billing_service import finalize_gaming_billing
+                    finalize_gaming_billing(db, session=session, reason="invalid_runtime_result")
                 release_gaming_reservation(db, session)
                 return
 
@@ -659,6 +783,8 @@ def finish_gaming_job(
                 result.get("connection_info") or {}
             )
             session.started_at = datetime.now(UTC)
+            if session.usage_reservation_id is not None:
+                session.last_metered_at = session.started_at
             if reservation is not None:
                 reservation.status = "active"
 
@@ -669,16 +795,22 @@ def finish_gaming_job(
                 or "stream_ready"
             )
             session.started_at = session.started_at or datetime.now(UTC)
+            if session.usage_reservation_id is not None:
+                session.last_metered_at = session.last_metered_at or datetime.now(UTC)
             session.connection_info = dict(
                 result.get("connection_info") or {}
             )
 
         elif job.job_type == "gaming.session.stop":
+            from app.services.gaming_billing_service import finalize_gaming_billing
+            finalize_gaming_billing(db, session=session, reason="customer_stop")
             session.status = "stopped"
             session.deployment_stage = "stopped"
             session.connection_info = {}
 
         elif job.job_type == "gaming.session.delete":
+            from app.services.gaming_billing_service import finalize_gaming_billing
+            finalize_gaming_billing(db, session=session, reason="terminated")
             session.status = "terminated"
             session.deployment_stage = "terminated"
             session.ended_at = datetime.now(UTC)
@@ -691,6 +823,9 @@ def finish_gaming_job(
     session.failure_message = error_message[:500]
 
     if job.job_type == "gaming.session.create":
+        if session.usage_reservation_id is not None:
+            from app.services.gaming_billing_service import finalize_gaming_billing
+            finalize_gaming_billing(db, session=session, reason="runtime_create_failed")
         session.status = "failed"
         session.deployment_stage = "runtime_failed"
         release_gaming_reservation(db, session)

@@ -218,6 +218,15 @@ def reserve_funds(
         )
     )
 
+    locked_wallet = db.scalar(
+        select(CustomerWallet)
+        .where(CustomerWallet.id == wallet.id)
+        .with_for_update()
+    )
+    if locked_wallet is None:
+        raise WalletError("Customer wallet not found.")
+    wallet = locked_wallet
+
     balances = wallet_balances(db, wallet)
 
     if balances["available_minor"] < amount_minor:
@@ -379,5 +388,66 @@ def release_reservation(
     ):
         reservation.status = "closed"
 
+    db.flush()
+    return tx
+
+
+def extend_reservation(
+    db: Session,
+    *,
+    reservation: UsageReservation,
+    amount_minor: int,
+    idempotency_key: str,
+):
+    """Extend an existing usage reservation through the canonical ledger."""
+    if amount_minor <= 0:
+        raise WalletError("Reservation extension amount must be positive.")
+
+    preexisting_tx = db.scalar(
+        select(LedgerTransaction).where(
+            LedgerTransaction.idempotency_key == idempotency_key
+        )
+    )
+    if preexisting_tx is not None:
+        return preexisting_tx
+
+    wallet = db.scalar(
+        select(CustomerWallet)
+        .where(CustomerWallet.id == reservation.wallet_id)
+        .with_for_update()
+    )
+    if wallet is None:
+        raise WalletError("Reservation wallet not found.")
+    balances = wallet_balances(db, wallet)
+    if balances["available_minor"] < amount_minor:
+        raise WalletError("Insufficient available wallet balance.")
+
+    from app.models.finance import FinancialAccount
+
+    available = db.get(FinancialAccount, wallet.available_account_id)
+    reserved = db.get(FinancialAccount, wallet.reserved_account_id)
+    tx = post_transaction(
+        db,
+        transaction_type="wallet_reservation_extension",
+        currency=wallet.currency,
+        idempotency_key=idempotency_key,
+        lines=[
+            LedgerLine(
+                account=available,
+                side="debit",
+                amount_minor=amount_minor,
+                memo="Extend customer usage reservation",
+            ),
+            LedgerLine(
+                account=reserved,
+                side="credit",
+                amount_minor=amount_minor,
+                memo="Extend reserved customer funds",
+            ),
+        ],
+        external_reference=str(reservation.id),
+    )
+    reservation.reserved_minor += amount_minor
+    reservation.status = "reserved"
     db.flush()
     return tx

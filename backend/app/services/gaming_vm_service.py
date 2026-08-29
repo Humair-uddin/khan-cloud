@@ -117,6 +117,8 @@ def reconcile_guest_readiness(db: Session, *, node: Node) -> None:
             session.status="running"
             session.deployment_stage="ready"
             session.started_at=session.started_at or datetime.now(UTC)
+            if session.usage_reservation_id is not None:
+                session.last_metered_at=session.last_metered_at or session.started_at
             info=dict(session.connection_info or {})
             info.update({"guest_node_id":str(node.id),"guest_ip":node.production_ip or node.management_ip,"protocol":"moonlight"})
             session.connection_info=info

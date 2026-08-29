@@ -353,3 +353,77 @@ def release_earning_available(
     earning.status = "available"
     db.flush()
     return tx
+
+
+def consume_reserved_platform_usage(
+    db: Session,
+    *,
+    reservation: UsageReservation,
+    gross_charge_minor: int,
+    idempotency_key: str,
+):
+    """Consume Khan-owned usage directly to platform revenue.
+
+    Unlike marketplace usage, Khan-owned capacity must not create a synthetic
+    HostEarning payable back to Khan Cloud itself.
+    """
+    if gross_charge_minor <= 0:
+        raise SettlementError("Gross usage charge must be positive.")
+
+    preexisting_tx = db.scalar(
+        select(LedgerTransaction).where(
+            LedgerTransaction.idempotency_key == idempotency_key
+        )
+    )
+    if preexisting_tx is not None:
+        return preexisting_tx
+
+    remaining = (
+        reservation.reserved_minor
+        - reservation.consumed_minor
+        - reservation.released_minor
+    )
+    if gross_charge_minor > remaining:
+        raise SettlementError("Usage charge exceeds reserved funds.")
+
+    wallet = db.get(CustomerWallet, reservation.wallet_id)
+    customer_reserved = db.get(
+        FinancialAccount,
+        wallet.reserved_account_id,
+    )
+    revenue = get_or_create_account(
+        db,
+        account_code=f"khan:{reservation.currency}:platform-revenue",
+        account_type="platform_revenue",
+        normal_side="credit",
+        currency=reservation.currency,
+    )
+    tx = post_transaction(
+        db,
+        transaction_type="usage_charge",
+        currency=reservation.currency,
+        idempotency_key=idempotency_key,
+        lines=[
+            LedgerLine(
+                account=customer_reserved,
+                side="debit",
+                amount_minor=gross_charge_minor,
+                memo="Customer gaming usage consumption",
+            ),
+            LedgerLine(
+                account=revenue,
+                side="credit",
+                amount_minor=gross_charge_minor,
+                memo="Khan Cloud gaming platform revenue",
+            ),
+        ],
+        external_reference=str(reservation.id),
+    )
+    reservation.consumed_minor += gross_charge_minor
+    if (
+        reservation.consumed_minor + reservation.released_minor
+        == reservation.reserved_minor
+    ):
+        reservation.status = "closed"
+    db.flush()
+    return tx

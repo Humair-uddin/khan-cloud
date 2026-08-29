@@ -123,6 +123,7 @@ class NodeJobResult(BaseModel):
 
 class GamingSessionCreate(BaseModel):
     game_slug: str | None = None
+    play_request_id: UUID | None = None
     deployment_mode: Literal["bare_metal", "proxmox_windows_vm"] = "bare_metal"
     blueprint_slug: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
     organization_id: UUID | None = None
@@ -156,6 +157,9 @@ class GamingSessionRead(BaseModel):
     node_id: UUID | None
     guest_node_id: UUID | None
     gaming_title_id: UUID | None
+    product_sku_id: UUID | None
+    usage_reservation_id: UUID | None
+    play_request_id: UUID | None
     deployment_mode: str
     deployment_blueprint_id: UUID | None
     guest_vm_id: int | None
@@ -171,6 +175,14 @@ class GamingSessionRead(BaseModel):
     gpu_name: str
     gpu_vram_mb: int
     streaming_backend: str
+    billing_currency: str
+    per_minute_price_minor: int
+    host_payout_per_minute_minor: int
+    admission_reserved_minor: int
+    pricing_snapshot: dict[str, Any]
+    last_metered_at: datetime | None
+    billing_finalized_at: datetime | None
+    billing_stop_reason: str
     runtime_id: str
     connection_info: dict[str, Any]
     started_at: datetime | None
