@@ -169,7 +169,9 @@ class PaymentMethodToken(BaseModel):
     organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
     user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     provider: Mapped[str] = mapped_column(String(60), index=True, nullable=False)
-    provider_token: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_provider_token: Mapped[str] = mapped_column(String(4096), nullable=False)
+    encryption_key_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    token_fingerprint: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     display_label: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True, nullable=False)
 

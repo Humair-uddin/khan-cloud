@@ -47,7 +47,7 @@ class WalletTopUpCreate(BaseModel):
     currency: Literal["PKR","USD"]
     amount_minor: int = Field(gt=0)
     provider: str = Field(default="manual_bank", max_length=60)
-    provider_reference: str = Field(default="", max_length=160)
+    provider_reference: str = Field(min_length=1, max_length=160)
 
 class WalletRead(BaseModel):
     model_config=ConfigDict(from_attributes=True)

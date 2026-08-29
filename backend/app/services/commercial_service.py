@@ -106,8 +106,56 @@ def get_or_create_wallet(db,*,actor,currency:str):
     return w
 
 def wallet_topup(db,*,actor,currency:str,amount_minor:int,provider:str,provider_reference:str=""):
+    """
+    KF-001 compatibility endpoint.
+
+    BillingWallet.balance_minor is now a compatibility projection only.
+    Canonical monetary authority is the immutable double-entry ledger.
+    """
     from app.models.commercial import WalletLedgerEntry
+    from app.services.billing_service import ledger_authoritative_topup
+
     w=get_or_create_wallet(db,actor=actor,currency=currency)
-    w.balance_minor+=amount_minor
-    e=WalletLedgerEntry(wallet_id=w.id,entry_type="topup",amount_minor=amount_minor,balance_after_minor=w.balance_minor,reference_type="payment_provider",reference_id=provider_reference,description=f"Wallet top-up via {provider}")
-    db.add(e);db.commit();db.refresh(w);return w
+
+    _, deposit, balances=ledger_authoritative_topup(
+        db,
+        organization_id=w.organization_id,
+        user_id=w.user_id,
+        currency=currency,
+        amount_minor=amount_minor,
+        provider=provider,
+        provider_reference=provider_reference,
+    )
+
+    projected_balance=balances["available_minor"]
+
+    w.balance_minor=projected_balance
+
+    existing=db.scalar(
+        select(WalletLedgerEntry).where(
+            WalletLedgerEntry.wallet_id==w.id,
+            WalletLedgerEntry.reference_type=="finance_deposit",
+            WalletLedgerEntry.reference_id==str(deposit.id),
+        )
+    )
+
+    if existing is None:
+        db.add(
+            WalletLedgerEntry(
+                wallet_id=w.id,
+                entry_type="topup_projection",
+                amount_minor=amount_minor,
+                balance_after_minor=projected_balance,
+                reference_type="finance_deposit",
+                reference_id=str(deposit.id),
+                description=f"Ledger-authoritative wallet top-up via {provider}",
+                metadata_json={
+                    "canonical_ledger": True,
+                    "ledger_transaction_id": str(deposit.ledger_transaction_id),
+                },
+            )
+        )
+
+    db.commit()
+    db.refresh(w)
+    return w

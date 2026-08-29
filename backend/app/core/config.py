@@ -35,6 +35,11 @@ class Settings(BaseSettings):
 
     NODE_ENROLLMENT_TOKEN: str
 
+    # KF-001 finance encryption. Production values should be injected
+    # through the deployment secret store/environment, never committed.
+    FINANCE_ENCRYPTION_KEY_VERSION: str = ""
+    FINANCE_ENCRYPTION_KEY_B64: str = ""
+
     MIKROTIK_BASE_URL: str = "https://10.10.20.1"
     MIKROTIK_USERNAME: str = ""
     MIKROTIK_PASSWORD: str = ""
