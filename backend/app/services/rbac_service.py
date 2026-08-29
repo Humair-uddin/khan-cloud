@@ -37,15 +37,54 @@ DEFAULT_PERMISSIONS: dict[str,str] = {
 DEFAULT_ROLES: dict[str,set[str]] = {
 "platform_owner": set(DEFAULT_PERMISSIONS),
 "platform_admin": set(DEFAULT_PERMISSIONS),
+
+"finance_admin":{
+"finance.read",
+"finance.deposits.manage",
+"finance.ledger.manage",
+"finance.settlement.manage",
+"finance.payouts.manage",
+"finance.fx.manage",
+"finance.reconciliation.manage",
+"finance.payment_providers.manage",
+"audit.read",
+"organizations.read",
+"nodes.read",
+},
+
+"finance_operator":{
+"finance.read",
+"finance.deposits.manage",
+"finance.settlement.manage",
+"finance.payouts.manage",
+"finance.reconciliation.manage",
+"audit.read",
+"organizations.read",
+"nodes.read",
+},
+
 "operator":{"users.read","roles.read","nodes.read","nodes.approve","nodes.disable",
 "nodes.maintenance","nodes.inventory.read","audit.read","deployments.read",
-"deployments.manage","node_installers.manage","compute.hosts.read","network.pools.read","network.gateways.read","network.gateways.manage","commerce.manage","finance.read","finance.deposits.manage","finance.reconciliation.manage","vps.read","vps.manage","gaming.read","gaming.manage","organizations.read","support.read","support.manage","settings.read"},
+"deployments.manage","node_installers.manage","compute.hosts.read","network.pools.read",
+"network.gateways.read","network.gateways.manage","commerce.manage","finance.read",
+"vps.read","vps.manage","gaming.read","gaming.manage","organizations.read",
+"support.read","support.manage","settings.read"},
+
 "security_officer":{"users.read","roles.read","nodes.read","nodes.disable",
 "nodes.credentials.rotate","nodes.inventory.read","audit.read","settings.read"},
-"marketplace_manager":{"nodes.read","nodes.approve","nodes.inventory.read","audit.read","deployments.read","node_installers.manage"},
-"support_engineer":{"users.read","nodes.read","nodes.inventory.read","audit.read","deployments.read","organizations.read","support.read","support.manage"},
-"customer":{"nodes.read","deployments.read","deployments.manage","node_installers.manage","vps.read","vps.manage","gaming.read","gaming.manage","organizations.read","support.read","support.manage"},
-"viewer":{"users.read","roles.read","nodes.read","nodes.inventory.read","audit.read","deployments.read","settings.read"},
+
+"marketplace_manager":{"nodes.read","nodes.approve","nodes.inventory.read",
+"audit.read","deployments.read","node_installers.manage"},
+
+"support_engineer":{"users.read","nodes.read","nodes.inventory.read","audit.read",
+"deployments.read","organizations.read","support.read","support.manage"},
+
+"customer":{"nodes.read","deployments.read","deployments.manage",
+"node_installers.manage","vps.read","vps.manage","gaming.read","gaming.manage",
+"organizations.read","support.read","support.manage"},
+
+"viewer":{"users.read","roles.read","nodes.read","nodes.inventory.read",
+"audit.read","deployments.read","settings.read"},
 }
 class RBACConflictError(ValueError): pass
 class RBACNotFoundError(ValueError): pass

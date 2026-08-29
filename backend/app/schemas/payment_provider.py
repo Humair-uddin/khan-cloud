@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 PaymentEventType = Literal[
     "deposit.succeeded",
+    "refund.processing",
     "refund.succeeded",
     "refund.failed",
     "chargeback.created",

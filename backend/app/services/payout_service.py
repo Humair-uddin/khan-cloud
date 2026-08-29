@@ -205,18 +205,53 @@ def mark_payout_processing(
     payout: Payout,
     provider_reference: str,
 ) -> Payout:
+    provider_reference = provider_reference.strip()
+
+    if not provider_reference:
+        raise PayoutError(
+            "Provider payout reference is required."
+        )
+
+    if payout.status == "paid":
+        if (
+            payout.provider_reference
+            != provider_reference
+        ):
+            raise PayoutError(
+                "Paid payout was replayed with "
+                "a different provider reference."
+            )
+
+        return payout
+
+    if payout.status == "processing":
+        if (
+            payout.provider_reference
+            != provider_reference
+        ):
+            raise PayoutError(
+                "Processing payout was replayed "
+                "with a different provider reference."
+            )
+
+        return payout
+
     if payout.status != "queued":
         raise PayoutError(
             "Only queued payouts can enter processing."
         )
 
-    if not provider_reference.strip():
+    if (
+        payout.provider_reference
+        and payout.provider_reference
+        != provider_reference
+    ):
         raise PayoutError(
-            "Provider payout reference is required."
+            "Payout provider reference changed."
         )
 
     payout.status = "processing"
-    payout.provider_reference = provider_reference.strip()
+    payout.provider_reference = provider_reference
 
     db.flush()
     return payout
@@ -228,14 +263,25 @@ def mark_payout_paid(
     payout: Payout,
     idempotency_key: str,
 ) -> Payout:
+    if payout.status == "paid":
+        return payout
+
     if payout.status != "processing":
         raise PayoutError(
             "Only processing payouts can be marked paid."
         )
 
+    if not payout.provider_reference.strip():
+        raise PayoutError(
+            "Provider payout reference is required "
+            "before payout completion."
+        )
+
     payout_clearing = get_or_create_account(
         db,
-        account_code=f"treasury:payout:{payout.currency}:clearing",
+        account_code=(
+            f"treasury:payout:{payout.currency}:clearing"
+        ),
         account_type="payout_clearing",
         normal_side="credit",
         currency=payout.currency,
@@ -243,7 +289,9 @@ def mark_payout_paid(
 
     bank = get_or_create_account(
         db,
-        account_code=f"treasury:bank:{payout.currency}",
+        account_code=(
+            f"treasury:bank:{payout.currency}"
+        ),
         account_type="bank_asset",
         normal_side="debit",
         currency=payout.currency,
@@ -284,7 +332,18 @@ def mark_payout_failed(
     idempotency_key: str,
     reason: str,
 ) -> Payout:
-    if payout.status not in {"queued", "processing"}:
+    if payout.status == "failed":
+        return payout
+
+    if payout.status == "paid":
+        raise PayoutError(
+            "A paid payout cannot be failed."
+        )
+
+    if payout.status not in {
+        "queued",
+        "processing",
+    }:
         raise PayoutError(
             "Only queued or processing payouts can fail."
         )
@@ -294,13 +353,20 @@ def mark_payout_failed(
             "Payout reservation transaction is missing."
         )
 
-    from app.services.ledger_service import reverse_transaction
+    from app.services.ledger_service import (
+        reverse_transaction,
+    )
 
     reverse_transaction(
         db,
-        original_transaction_id=payout.ledger_transaction_id,
+        original_transaction_id=(
+            payout.ledger_transaction_id
+        ),
         idempotency_key=idempotency_key,
-        reason=reason,
+        reason=(
+            reason.strip()
+            or "Provider payout failed."
+        ),
     )
 
     payout.status = "failed"
