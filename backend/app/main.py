@@ -19,6 +19,7 @@ from app.api.v1.network import router as network_router
 from app.api.v1.portal import router as portal_router
 from app.api.v1.commercial import router as commercial_router
 from app.api.v1.finance import router as finance_router
+from app.api.v1.payment_provider import router as payment_provider_router
 from app.core.config import settings
 from app.db.database import check_database
 
@@ -38,6 +39,7 @@ app.include_router(network_router,prefix=settings.API_PREFIX)
 app.include_router(portal_router,prefix=settings.API_PREFIX)
 app.include_router(commercial_router,prefix=settings.API_PREFIX)
 app.include_router(finance_router,prefix=settings.API_PREFIX)
+app.include_router(payment_provider_router,prefix=settings.API_PREFIX)
 
 @app.get("/")
 def root():

@@ -29,6 +29,7 @@ DEFAULT_PERMISSIONS: dict[str,str] = {
 "finance.payouts.manage":"Manage host payout destinations and payouts.",
 "finance.fx.manage":"Manage explicit foreign-exchange settlement operations.",
 "finance.reconciliation.manage":"Manage payment-provider reconciliation events.",
+"finance.payment_providers.manage":"Manage payment-provider adapters and configuration.",
 "vps.read":"View VPS instances.","vps.manage":"Create and manage VPS instances.",
 "gaming.read":"View gaming sessions.","gaming.manage":"Create and manage gaming sessions.",
 "settings.read":"View settings.","settings.manage":"Modify settings.",

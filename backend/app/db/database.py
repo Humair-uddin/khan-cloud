@@ -50,6 +50,7 @@ import app.models.gateway  # noqa: E402,F401
 
 import app.models.commercial  # noqa: E402,F401
 import app.models.finance  # noqa: E402,F401
+import app.models.payment_provider  # noqa: E402,F401
 
 # KG-001 gaming catalog model registration
 import app.models.gaming_catalog  # noqa: E402,F401
