@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from threading import RLock
 from typing import Any, Callable, Protocol
 
@@ -9,10 +10,54 @@ class PaymentAdapterError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class ProviderSettlementItemResult:
+    provider_line_id: str
+    provider_transaction_reference: str
+    event_type: str
+    presentment_currency: str
+    settlement_currency: str
+    gross_amount_minor: int
+    fee_amount_minor: int
+    net_amount_minor: int
+    occurred_at: datetime | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ProviderSettlementBatchResult:
+    provider_settlement_reference: str
+    settlement_currency: str
+    settlement_date: datetime | None
+    items: tuple[ProviderSettlementItemResult, ...]
+    metadata: dict[str, Any] | None = None
+
+
 class PaymentAdapter(Protocol):
     adapter_type: str
 
     def healthcheck(self) -> dict[str, Any]:
+        ...
+
+    def capture_payment(
+        self,
+        *,
+        amount_minor: int,
+        currency: str,
+        idempotency_key: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+    def execute_refund(
+        self,
+        *,
+        refund_id: str,
+        amount_minor: int,
+        currency: str,
+        provider_reference: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
         ...
 
     def execute_payout(
@@ -24,6 +69,23 @@ class PaymentAdapter(Protocol):
         payout_method: dict[str, Any],
         idempotency_key: str,
     ) -> dict[str, Any]:
+        ...
+
+    def fetch_settlement_batches(
+        self,
+        *,
+        cursor: str | None = None,
+    ) -> list[ProviderSettlementBatchResult] | list[dict[str, Any]]:
+        ...
+
+    def lookup_transaction(
+        self,
+        *,
+        provider_reference: str,
+    ) -> dict[str, Any]:
+        ...
+
+    def get_balance(self) -> dict[str, Any]:
         ...
 
 
@@ -110,12 +172,8 @@ def create_adapter_for_provider(
             f"adapter_type={adapter_type!r}."
         )
 
-    #
-    # Crucial architecture rule:
-    #
-    # provider.code identifies a merchant/provider ACCOUNT INSTANCE.
-    # provider.adapter_type identifies reusable implementation code.
-    #
+    # provider.code is an account instance.
+    # provider.adapter_type is reusable implementation code.
     return registration.factory(
         provider=provider,
         **kwargs,

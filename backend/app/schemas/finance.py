@@ -69,3 +69,24 @@ class TreasurySettlementCreate(BaseModel):
     amount_minor: int = Field(gt=0)
     external_reference: str = Field(min_length=1, max_length=180)
     idempotency_key: str = Field(min_length=8, max_length=180)
+
+
+class ProviderSettlementFetchCreate(BaseModel):
+    provider_code: str = Field(min_length=1, max_length=60)
+    cursor: str = Field(default="", max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=180)
+
+
+class ReconciliationResolutionCreate(BaseModel):
+    correction_reference: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ProviderCorridorCheck(BaseModel):
+    provider_code: str = Field(min_length=1, max_length=60)
+    source_country_code: str = Field(min_length=2, max_length=2)
+    destination_country_code: str = Field(min_length=2, max_length=2)
+    transaction_currency: Currency
+    settlement_currency: Currency | None = None
+    explicit_fx_transaction_id: UUID | None = None
+    capability: str | None = Field(default=None, max_length=80)

@@ -388,6 +388,29 @@ def enqueue_payout_execution(
     from app.services.payment_financial_outbox import (
         enqueue_outbox_message,
     )
+    from app.models.payment_provider import (
+        PaymentProvider,
+    )
+
+    method = db.get(
+        PayoutMethod,
+        payout.payout_method_id,
+    )
+
+    provider_credential_reference = ""
+
+    if method is not None:
+        provider = db.scalar(
+            select(PaymentProvider).where(
+                PaymentProvider.code
+                == method.provider.strip().lower()
+            )
+        )
+
+        if provider is not None:
+            provider_credential_reference = (
+                provider.credential_reference
+            )
 
     return enqueue_outbox_message(
         db,
@@ -407,6 +430,9 @@ def enqueue_payout_execution(
             ),
             "amount_minor": payout.amount_minor,
             "currency": payout.currency,
+            "credential_reference": (
+                provider_credential_reference
+            ),
         },
     )
 

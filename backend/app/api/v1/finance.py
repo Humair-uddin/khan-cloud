@@ -14,6 +14,9 @@ from app.schemas.finance import (
     FinancialAdjustmentCreate,
     RefundCreate,
     TreasurySettlementCreate,
+    ProviderSettlementFetchCreate,
+    ReconciliationResolutionCreate,
+    ProviderCorridorCheck,
 )
 from app.services.wallet_service import (
     WalletError,
@@ -323,6 +326,227 @@ def operator_treasury_settlement(
         }
 
     except TreasuryError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# KF-002F — settlement / reconciliation operator controls
+# ---------------------------------------------------------------------------
+
+@router.post("/operator/provider-settlements/fetch")
+def operator_provider_settlement_fetch(
+    payload: "ProviderSettlementFetchCreate",
+    user: User = Depends(
+        require_permission("finance.reconciliation.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.models.payment_provider import PaymentProvider
+    from app.services.audit_service import record_audit_event
+    from app.services.payment_settlement_execution import (
+        PaymentSettlementExecutionError,
+        enqueue_provider_settlement_fetch,
+    )
+    from sqlalchemy import select
+
+    provider = db.scalar(
+        select(PaymentProvider).where(
+            PaymentProvider.code
+            == payload.provider_code.strip().lower()
+        )
+    )
+
+    if provider is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Payment provider not found.",
+        )
+
+    try:
+        row = enqueue_provider_settlement_fetch(
+            db,
+            provider=provider,
+            cursor=payload.cursor,
+            idempotency_key=payload.idempotency_key,
+        )
+
+        record_audit_event(
+            db,
+            actor_user_id=user.id,
+            action="finance.settlement.fetch.queue",
+            resource_type="payment_financial_outbox",
+            resource_id=str(row.id),
+            details={
+                "provider": provider.code,
+                "cursor_present": bool(payload.cursor),
+            },
+        )
+
+        db.commit()
+
+        return {
+            "outbox_id": str(row.id),
+            "status": row.status,
+            "provider": provider.code,
+        }
+
+    except PaymentSettlementExecutionError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/operator/reconciliation/{event_id}/resolve")
+def operator_resolve_reconciliation(
+    event_id: UUID,
+    payload: "ReconciliationResolutionCreate",
+    user: User = Depends(
+        require_permission("finance.reconciliation.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.models.finance import PaymentReconciliationEvent
+    from app.services.audit_service import record_audit_event
+    from app.services.payment_reconciliation_service import (
+        ReconciliationError,
+        resolve_reconciliation_event,
+    )
+
+    event = db.get(
+        PaymentReconciliationEvent,
+        event_id,
+    )
+
+    if event is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Reconciliation event not found.",
+        )
+
+    try:
+        previous_outcome = event.outcome
+
+        resolved = resolve_reconciliation_event(
+            db,
+            event=event,
+            correction_reference=payload.correction_reference,
+            reason=payload.reason,
+        )
+
+        record_audit_event(
+            db,
+            actor_user_id=user.id,
+            action="finance.reconciliation.resolve",
+            resource_type="payment_reconciliation_event",
+            resource_id=str(resolved.id),
+            reason=payload.reason,
+            details={
+                "provider": resolved.provider,
+                "event_id": resolved.event_id,
+                "previous_outcome": previous_outcome,
+                "outcome": resolved.outcome,
+                "correction_reference": payload.correction_reference,
+            },
+        )
+
+        db.commit()
+
+        return {
+            "reconciliation_event_id": str(resolved.id),
+            "outcome": resolved.outcome,
+            "status": resolved.status,
+            "resolution_reason": resolved.resolution_reason,
+        }
+
+    except ReconciliationError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/operator/provider-policy/corridor-check")
+def operator_provider_corridor_check(
+    payload: "ProviderCorridorCheck",
+    user: User = Depends(
+        require_permission("finance.payment_providers.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.models.payment_provider import PaymentProvider
+    from app.services.audit_service import record_audit_event
+    from app.services.payment_provider_policy import (
+        PaymentProviderPolicyError,
+        enforce_provider_corridor_operation,
+    )
+    from sqlalchemy import select
+
+    provider = db.scalar(
+        select(PaymentProvider).where(
+            PaymentProvider.code
+            == payload.provider_code.strip().lower()
+        )
+    )
+
+    if provider is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Payment provider not found.",
+        )
+
+    try:
+        corridor, transaction, presentment, settlement = (
+            enforce_provider_corridor_operation(
+                provider,
+                source_country_code=payload.source_country_code,
+                destination_country_code=payload.destination_country_code,
+                transaction_currency=payload.transaction_currency,
+                settlement_currency=payload.settlement_currency,
+                explicit_fx_transaction_id=(
+                    str(payload.explicit_fx_transaction_id)
+                    if payload.explicit_fx_transaction_id
+                    else None
+                ),
+                capability=payload.capability,
+            )
+        )
+
+        record_audit_event(
+            db,
+            actor_user_id=user.id,
+            action="finance.payment_provider.corridor_check",
+            resource_type="payment_provider",
+            resource_id=str(provider.id),
+            details={
+                "provider": provider.code,
+                "corridor": corridor,
+                "transaction_currency": transaction,
+                "settlement_currency": settlement,
+                "explicit_fx": bool(
+                    payload.explicit_fx_transaction_id
+                ),
+            },
+        )
+
+        db.commit()
+
+        return {
+            "provider": provider.code,
+            "corridor": corridor,
+            "transaction_currency": transaction,
+            "presentment_currency": presentment,
+            "settlement_currency": settlement,
+            "allowed": True,
+        }
+
+    except PaymentProviderPolicyError as exc:
         db.rollback()
         raise HTTPException(
             status_code=400,

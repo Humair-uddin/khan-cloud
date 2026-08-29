@@ -776,6 +776,63 @@ class PaymentReconciliationEvent(BaseModel):
         nullable=False,
     )
 
+    reconciliation_type: Mapped[str] = mapped_column(
+        String(40),
+        default="provider_event",
+        nullable=False,
+    )
+
+    outcome: Mapped[str] = mapped_column(
+        String(30),
+        default="pending_review",
+        index=True,
+        nullable=False,
+    )
+
+    provider_amount_minor: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    internal_amount_minor: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    provider_currency: Mapped[str] = mapped_column(
+        String(3),
+        default="",
+        nullable=False,
+    )
+
+    internal_currency: Mapped[str] = mapped_column(
+        String(3),
+        default="",
+        nullable=False,
+    )
+
+    internal_resource_type: Mapped[str] = mapped_column(
+        String(50),
+        default="",
+        nullable=False,
+    )
+
+    internal_resource_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+
+    resolution_reason: Mapped[str] = mapped_column(
+        String(500),
+        default="",
+        nullable=False,
+    )
+
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         default=dict,
@@ -787,6 +844,13 @@ class PaymentReconciliationEvent(BaseModel):
             "provider",
             "event_id",
             name="uq_payment_reconciliation_provider_event",
+        ),
+        CheckConstraint(
+            "outcome IN "
+            "('matched','amount_mismatch','currency_mismatch',"
+            "'missing_internal','missing_provider',"
+            "'duplicate_provider','pending_review','resolved')",
+            name="ck_payment_reconciliation_outcome",
         ),
     )
 

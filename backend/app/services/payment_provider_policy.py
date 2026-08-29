@@ -248,3 +248,210 @@ def enforce_provider_operation(
         return transaction, presentment, settlement
 
     return None, None, None
+
+# ---------------------------------------------------------------------------
+# KF-002F — provider corridor policy
+# ---------------------------------------------------------------------------
+
+SUPPORTED_PAYMENT_CORRIDORS = frozenset(
+    {
+        "PK_TO_PK",
+        "INTL_TO_INTL",
+        "INTL_TO_PK",
+        "PK_TO_INTL",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ProviderCorridorPolicy:
+    source_country_code: str
+    destination_country_code: str
+    transaction_currency: str
+    settlement_currency: str | None = None
+    explicit_fx_transaction_id: str | None = None
+
+
+def _normalize_country_code(value: str) -> str:
+    normalized = str(value or "").strip().upper()
+
+    if len(normalized) != 2 or not normalized.isalpha():
+        raise PaymentProviderPolicyError(
+            f"Invalid ISO-style country code: {value!r}"
+        )
+
+    return normalized
+
+
+def classify_payment_corridor(
+    *,
+    source_country_code: str,
+    destination_country_code: str,
+) -> str:
+    source = _normalize_country_code(source_country_code)
+    destination = _normalize_country_code(destination_country_code)
+
+    source_pk = source == "PK"
+    destination_pk = destination == "PK"
+
+    if source_pk and destination_pk:
+        return "PK_TO_PK"
+
+    if not source_pk and not destination_pk:
+        return "INTL_TO_INTL"
+
+    if not source_pk and destination_pk:
+        return "INTL_TO_PK"
+
+    return "PK_TO_INTL"
+
+
+def _provider_corridors(provider: Any) -> set[str]:
+    raw = getattr(provider, "capabilities_json", None) or {}
+
+    if not isinstance(raw, dict):
+        raise PaymentProviderPolicyError(
+            "Provider capabilities must be a mapping for corridor policy."
+        )
+
+    configured = raw.get("corridors", [])
+
+    if configured is None:
+        configured = []
+
+    if not isinstance(
+        configured,
+        (list, tuple, set, frozenset),
+    ):
+        raise PaymentProviderPolicyError(
+            "Provider corridors must be a collection."
+        )
+
+    result = {
+        str(value).strip().upper()
+        for value in configured
+        if str(value).strip()
+    }
+
+    # Existing provider configuration is capability-map based.
+    # Boolean corridor:<NAME> flags therefore provide an API-safe
+    # representation without introducing a parallel provider model.
+    for name, enabled in raw.items():
+        normalized_name = str(name).strip()
+
+        if not normalized_name.lower().startswith(
+            "corridor:"
+        ):
+            continue
+
+        corridor = normalized_name.split(
+            ":",
+            1,
+        )[1].strip().upper()
+
+        if enabled:
+            result.add(corridor)
+
+    unknown = result - SUPPORTED_PAYMENT_CORRIDORS
+
+    if unknown:
+        raise PaymentProviderPolicyError(
+            "Provider contains unsupported payment corridor(s): "
+            + ", ".join(sorted(unknown))
+        )
+
+    return result
+
+
+def require_provider_corridor(
+    provider: Any,
+    *,
+    source_country_code: str,
+    destination_country_code: str,
+) -> str:
+    corridor = classify_payment_corridor(
+        source_country_code=source_country_code,
+        destination_country_code=destination_country_code,
+    )
+
+    enabled = _provider_corridors(provider)
+
+    if corridor not in enabled:
+        raise PaymentProviderPolicyError(
+            f"Provider does not enable payment corridor {corridor}."
+        )
+
+    return corridor
+
+
+def enforce_provider_corridor_operation(
+    provider: Any,
+    *,
+    source_country_code: str,
+    destination_country_code: str,
+    transaction_currency: str,
+    settlement_currency: str | None = None,
+    explicit_fx_transaction_id: str | None = None,
+    capability: str | None = None,
+) -> tuple[str, str, str, str]:
+    corridor = require_provider_corridor(
+        provider,
+        source_country_code=source_country_code,
+        destination_country_code=destination_country_code,
+    )
+
+    transaction = _normalized_currency(transaction_currency)
+
+    if transaction is None:
+        raise PaymentProviderPolicyError(
+            "Transaction currency is required."
+        )
+
+    source = _normalize_country_code(source_country_code)
+    destination = _normalize_country_code(destination_country_code)
+
+    if source == "PK" and transaction != "PKR":
+        raise PaymentProviderPolicyError(
+            "Pakistan-origin customer transactions must be accounted in PKR."
+        )
+
+    if source != "PK" and transaction != "USD":
+        raise PaymentProviderPolicyError(
+            "International-origin customer transactions must be accounted in USD."
+        )
+
+    expected_destination_currency = (
+        "PKR" if destination == "PK" else "USD"
+    )
+
+    settlement = (
+        _normalized_currency(settlement_currency)
+        or transaction
+    )
+
+    explicit_fx = bool(
+        str(explicit_fx_transaction_id or "").strip()
+    )
+
+    if settlement != transaction and not explicit_fx:
+        raise PaymentProviderPolicyError(
+            "Cross-currency settlement requires an explicit auditable FX transaction."
+        )
+
+    if settlement != expected_destination_currency:
+        raise PaymentProviderPolicyError(
+            "Settlement currency does not match the destination corridor accounting currency."
+        )
+
+    enforce_provider_operation(
+        provider,
+        ProviderOperationPolicy(
+            capability=capability,
+            currency=transaction,
+            presentment_currency=transaction,
+            settlement_currency=settlement,
+            allow_explicit_fx=explicit_fx,
+        ),
+    )
+
+    return corridor, transaction, transaction, settlement

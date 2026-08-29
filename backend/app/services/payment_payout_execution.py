@@ -20,6 +20,9 @@ from app.services.payment_provider_policy import (
 from app.services.payment_secret_resolver import (
     resolve_secret,
 )
+from app.services.finance_crypto_service import (
+    decrypt_financial_payload,
+)
 from app.services.payout_service import (
     PayoutError,
     mark_payout_failed,
@@ -85,6 +88,7 @@ def execute_payout_with_provider(
     db: Session,
     *,
     payout: Payout,
+    credential_reference: str | None = None,
 ) -> PayoutExecutionResult:
     provider = provider_for_payout(
         db,
@@ -103,9 +107,13 @@ def execute_payout_with_provider(
             provider,
             credential=(
                 resolve_secret(
-                    provider.credential_reference
+                    credential_reference
+                    or provider.credential_reference
                 )
-                if provider.credential_reference
+                if (
+                    credential_reference
+                    or provider.credential_reference
+                )
                 else None
             ),
         )
@@ -134,7 +142,13 @@ def execute_payout_with_provider(
             "provider": method.provider,
             "country_code": method.country_code,
             "currency": method.currency,
-            "encrypted_payload": method.encrypted_payload,
+            "destination": decrypt_financial_payload(
+                method.encrypted_payload,
+                aad=(
+                    f"khan-finance:payout:"
+                    f"{payout.host_node_id}"
+                ),
+            ),
             "encryption_key_version": (
                 method.encryption_key_version
             ),
