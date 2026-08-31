@@ -183,6 +183,10 @@ class GamingSessionRead(BaseModel):
     last_metered_at: datetime | None
     billing_finalized_at: datetime | None
     billing_stop_reason: str
+    runtime_health_failure_count: int
+    runtime_health_last_checked_at: datetime | None
+    runtime_health_last_failure_at: datetime | None
+    runtime_recovery_count: int
     runtime_id: str
     connection_info: dict[str, Any]
     started_at: datetime | None

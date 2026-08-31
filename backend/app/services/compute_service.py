@@ -27,6 +27,7 @@ GIB = 1024 ** 3
 STAFF_ROLES = {"platform_owner", "platform_admin", "operator"}
 TERMINAL_VPS_STATES = {"deleted", "failed"}
 ACTIVE_RESERVATION_STATES = {"reserved", "active"}
+GAMING_JOB_RECLAIM_AFTER_SECONDS = 180
 SUPPORTED_VPS_IMAGES = {
     "ubuntu-24.04": VPSImageRead(
         slug="ubuntu-24.04", name="Ubuntu 24.04 LTS", operating_system="ubuntu",
@@ -372,6 +373,16 @@ def release_reservation(db: Session, vps: VPSInstance) -> None:
 
 
 def claim_next_job(db: Session, node: Node) -> NodeJob | None:
+    """Claim one node job, reclaiming only stale gaming work.
+
+    Gaming runtime operations are deliberately idempotent at the node-agent
+    boundary. If an agent dies after claiming a gaming job, the same durable
+    job may therefore be reclaimed after a lease timeout. VPS jobs retain the
+    historical pending-only behavior because their executors do not yet carry
+    the same recovery contract.
+    """
+
+    now = datetime.now(UTC)
     job = db.scalar(
         select(NodeJob)
         .where(NodeJob.node_id == node.id, NodeJob.status == "pending")
@@ -379,11 +390,37 @@ def claim_next_job(db: Session, node: Node) -> NodeJob | None:
         .with_for_update(skip_locked=True)
         .limit(1)
     )
+
+    if job is None:
+        stale_before = now - timedelta(seconds=GAMING_JOB_RECLAIM_AFTER_SECONDS)
+        job = db.scalar(
+            select(NodeJob)
+            .where(
+                NodeJob.node_id == node.id,
+                NodeJob.status == "running",
+                NodeJob.job_type.like("gaming.%"),
+                NodeJob.claimed_at.is_not(None),
+                NodeJob.claimed_at <= stale_before,
+            )
+            .order_by(NodeJob.claimed_at, NodeJob.created_at)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+
     if job is None:
         return None
+
     job.status = "running"
-    job.claimed_at = datetime.now(UTC)
+    job.claimed_at = now
     job.attempt_count += 1
+
+    if job.gaming_session_id is not None and job.attempt_count > 1:
+        from app.models.compute import GamingSession
+
+        session = db.get(GamingSession, job.gaming_session_id)
+        if session is not None:
+            session.runtime_recovery_count += 1
+
     db.commit()
     db.refresh(job)
     return job

@@ -101,13 +101,28 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
         from app.services.gaming_catalog_service import reconcile_node_gaming_inventory
         if updated.intended_purpose == "gaming_host":
             reconcile_node_gaming_inventory(db, updated)
-            from app.services.gaming_service import reconcile_gaming_billing_for_node
-            stop_ids = reconcile_gaming_billing_for_node(db, node=updated)
-            if stop_ids:
+            from app.services.gaming_service import (
+                reconcile_gaming_billing_for_node,
+                reconcile_gaming_runtime_health_for_node,
+            )
+            runtime_stop_ids = reconcile_gaming_runtime_health_for_node(
+                db,
+                node=updated,
+            )
+            billing_stop_ids = reconcile_gaming_billing_for_node(
+                db,
+                node=updated,
+            )
+            if runtime_stop_ids or billing_stop_ids:
                 inventory = dict(updated.inventory or {})
                 gaming = dict(inventory.get("gaming") or {})
-                gaming["billing_reconciliation"] = {
-                    "stop_requested_session_ids": [str(x) for x in stop_ids],
+                gaming["runtime_reconciliation"] = {
+                    "health_stop_requested_session_ids": [
+                        str(x) for x in runtime_stop_ids
+                    ],
+                    "billing_stop_requested_session_ids": [
+                        str(x) for x in billing_stop_ids
+                    ],
                 }
                 inventory["gaming"] = gaming
                 updated.inventory = inventory

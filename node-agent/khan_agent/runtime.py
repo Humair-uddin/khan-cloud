@@ -16,6 +16,7 @@ from khan_agent.inventory import collect_safe_inventory
 from khan_agent.installer_telemetry import read_latest_installer_snapshot
 from khan_agent.plugins import PluginManager
 from khan_agent.job_dispatch import execute_node_job
+from khan_agent.job_result_spool import JobResultSpool
 from khan_agent.state import AgentState, StateMachine
 from khan_agent.provisioning import ProvisioningStateStore
 from khan_agent.windows_image_builder import WindowsGoldenImageBuilder, WindowsImageBuildPlan
@@ -46,6 +47,9 @@ class AgentRuntime:
         self.provisioning_store = ProvisioningStateStore(settings.agent.state_directory)
         self._last_provisioning_key: tuple[object, ...] | None = None
         self._desired_image_build_plan: dict[str, object] = {}
+        self.job_result_spool = JobResultSpool(
+            settings.agent.state_directory / "node-job-results"
+        )
 
     def _inventory_payload(self) -> dict[str, object]:
         inventory = collect_safe_inventory()
@@ -208,9 +212,45 @@ class AgentRuntime:
         )
         await asyncio.to_thread(builder.build, plan)
 
+    async def _flush_job_result_spool(
+        self,
+        credentials: NodeCredentials,
+    ) -> bool:
+        reporter = getattr(self.client, "report_job_result", None)
+        if reporter is None:
+            return False
+
+        for entry in self.job_result_spool.pending():
+            try:
+                await reporter(entry.job_id, entry.payload, credentials)
+            except Exception as exc:
+                logger.warning(
+                    json.dumps(
+                        {
+                            "event": "node_job_result_retry_deferred",
+                            "job_id": entry.job_id,
+                            "error": str(exc),
+                        }
+                    )
+                )
+                return False
+            self.job_result_spool.remove(entry.job_id)
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "node_job_result_recovered",
+                        "job_id": entry.job_id,
+                    }
+                )
+            )
+        return True
+
     async def _process_one_node_job(self, credentials: NodeCredentials) -> None:
         next_job = getattr(self.client, "next_job", None)
         if next_job is None:
+            return
+
+        if not await self._flush_job_result_spool(credentials):
             return
 
         job = await next_job(credentials)
@@ -272,18 +312,38 @@ class AgentRuntime:
                 {},
                 "Node job execution failed unexpectedly.",
             )
-        await self.client.report_job_result(
-            str(job["id"]),
-            {
-                "status": result.status,
-                "result": result.result,
-                "error_message": result.error_message,
-            },
-            credentials,
-        )
+        result_payload = {
+            "status": result.status,
+            "result": result.result,
+            "error_message": result.error_message,
+        }
+        job_id = str(job["id"])
+        self.job_result_spool.save(job_id, result_payload)
+
+        try:
+            await self.client.report_job_result(
+                job_id,
+                result_payload,
+                credentials,
+            )
+        except Exception as exc:
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "node_job_result_spooled",
+                        "job_id": job_id,
+                        "job_type": job.get("job_type"),
+                        "status": result.status,
+                        "error": str(exc),
+                    }
+                )
+            )
+            return
+
+        self.job_result_spool.remove(job_id)
         logger.info(json.dumps({
             "event": "node_job_completed",
-            "job_id": str(job["id"]),
+            "job_id": job_id,
             "job_type": job.get("job_type"),
             "status": result.status,
         }))

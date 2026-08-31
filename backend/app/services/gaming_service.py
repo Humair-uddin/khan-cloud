@@ -23,6 +23,12 @@ GIB = 1024 ** 3
 ACTIVE_RESERVATION_STATES = {"reserved", "active"}
 TERMINAL_SESSION_STATES = {"terminated", "failed"}
 GAMING_HEARTBEAT_STALE_AFTER_SECONDS = 300
+GAMING_RUNTIME_HEALTH_FAILURE_THRESHOLD = 3
+GAMING_RUNTIME_CRITICAL_REASONS = {
+    "interactive_session_unavailable",
+    "sunshine_unavailable",
+    "gpu_unavailable",
+}
 
 # KG-009 placement policy.
 #
@@ -651,6 +657,77 @@ def queue_gaming_action(
     return session
 
 
+def reconcile_gaming_runtime_health_for_node(
+    db: Session,
+    *,
+    node: Node,
+) -> list[UUID]:
+    """Fail closed after repeated loss of runtime-critical host readiness.
+
+    Heartbeats can contain a transient bad sample, so a single failed probe
+    does not terminate a paying session. Three consecutive heartbeats with a
+    critical runtime prerequisite missing cause the existing secure stop
+    lifecycle to be requested. The same session row carries the hysteresis
+    state, making restart/recovery deterministic without a parallel watchdog
+    database.
+    """
+
+    now = datetime.now(UTC)
+    stopped: list[UUID] = []
+    sessions = list(
+        db.scalars(
+            select(GamingSession).where(
+                GamingSession.node_id == node.id,
+                GamingSession.status == "running",
+                GamingSession.desired_state == "running",
+            )
+        )
+    )
+    reasons = set(gaming_host_readiness_reasons(node, now=now))
+    critical = sorted(reasons.intersection(GAMING_RUNTIME_CRITICAL_REASONS))
+
+    for session in sessions:
+        session.runtime_health_last_checked_at = now
+
+        if not critical:
+            session.runtime_health_failure_count = 0
+            session.runtime_health_last_failure_at = None
+            continue
+
+        session.runtime_health_failure_count += 1
+        session.runtime_health_last_failure_at = now
+
+        if (
+            session.runtime_health_failure_count
+            < GAMING_RUNTIME_HEALTH_FAILURE_THRESHOLD
+        ):
+            continue
+
+        pending = db.scalar(
+            select(NodeJob).where(
+                NodeJob.gaming_session_id == session.id,
+                NodeJob.status.in_({"pending", "running"}),
+            ).limit(1)
+        )
+        if pending is not None:
+            continue
+
+        session.failure_category = "runtime_health_lost"
+        session.failure_message = (
+            "Gaming runtime health failed repeatedly: "
+            + ", ".join(critical)
+        )[:500]
+        queue_gaming_action(
+            db,
+            session=session,
+            action="stop",
+            commit=False,
+        )
+        stopped.append(session.id)
+
+    return stopped
+
+
 def reconcile_gaming_billing_for_node(
     db: Session,
     *,
@@ -774,6 +851,8 @@ def finish_gaming_job(
                 return
 
             session.status = "running"
+            session.runtime_health_failure_count = 0
+            session.runtime_health_last_failure_at = None
             session.deployment_stage = str(
                 result.get("deployment_stage")
                 or "stream_ready"
@@ -790,6 +869,8 @@ def finish_gaming_job(
 
         elif job.job_type == "gaming.session.start":
             session.status = "running"
+            session.runtime_health_failure_count = 0
+            session.runtime_health_last_failure_at = None
             session.deployment_stage = str(
                 result.get("deployment_stage")
                 or "stream_ready"
