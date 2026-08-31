@@ -113,7 +113,13 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
                 db,
                 node=updated,
             )
-            if runtime_stop_ids or billing_stop_ids:
+            from app.services.gaming_connection_service import (
+                reconcile_connection_leases_for_node,
+            )
+            connection_stop_ids = reconcile_connection_leases_for_node(
+                db, node_id=updated.id
+            )
+            if runtime_stop_ids or billing_stop_ids or connection_stop_ids:
                 inventory = dict(updated.inventory or {})
                 gaming = dict(inventory.get("gaming") or {})
                 gaming["runtime_reconciliation"] = {
@@ -122,6 +128,9 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
                     ],
                     "billing_stop_requested_session_ids": [
                         str(x) for x in billing_stop_ids
+                    ],
+                    "connection_stop_requested_session_ids": [
+                        str(x) for x in connection_stop_ids
                     ],
                 }
                 inventory["gaming"] = gaming

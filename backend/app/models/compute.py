@@ -264,6 +264,49 @@ class GamingConnectionLease(BaseModel):
         DateTime(timezone=True),
         nullable=True,
     )
+    connection_token_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="",
+    )
+    connection_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    reconnect_grace_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    reconnect_grace_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=120,
+    )
+    token_generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    revoked_reason: Mapped[str] = mapped_column(
+        String(80),
+        nullable=False,
+        default="",
+    )
     failure_message: Mapped[str] = mapped_column(
         String(500),
         nullable=False,

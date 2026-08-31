@@ -207,6 +207,16 @@ class GamingConnectionLeaseCreate(BaseModel):
         ge=60,
         le=900,
     )
+    connection_ttl_seconds: int = Field(
+        default=14400,
+        ge=300,
+        le=43200,
+    )
+    reconnect_grace_seconds: int = Field(
+        default=120,
+        ge=30,
+        le=600,
+    )
 
 
 class GamingConnectionPairRequest(BaseModel):
@@ -215,6 +225,11 @@ class GamingConnectionPairRequest(BaseModel):
         max_length=4,
         pattern=r"^[0-9]{4}$",
     )
+
+
+class GamingConnectionLeaseEventRequest(BaseModel):
+    event: Literal["connected", "heartbeat", "disconnected", "quit"]
+    connection_token: str = Field(min_length=32, max_length=256)
 
 
 class GamingConnectionLeaseRead(BaseModel):
@@ -231,9 +246,23 @@ class GamingConnectionLeaseRead(BaseModel):
     pairing_expires_at: datetime
     paired_at: datetime | None
     revoked_at: datetime | None
+    connection_token_expires_at: datetime | None
+    connected_at: datetime | None
+    disconnected_at: datetime | None
+    last_seen_at: datetime | None
+    reconnect_grace_expires_at: datetime | None
+    reconnect_grace_seconds: int
+    token_generation: int
+    revoked_reason: str
     failure_message: str
     created_at: datetime
     updated_at: datetime
+
+
+class GamingConnectionLeaseIssue(BaseModel):
+    lease: GamingConnectionLeaseRead
+    connection_token: str
+
 
 
 class GamingVmBlueprintCreate(BaseModel):
