@@ -748,6 +748,46 @@ def gaming_node_inflight_job_count(db: Session, *, node_id: UUID) -> int:
     )
 
 
+def gaming_recovery_readiness_reasons(
+    node: Node,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Runtime cleanup readiness independent of scheduler admission.
+
+    Draining/maintenance hosts must remain able to prove cleanup without
+    becoming placement-eligible. Disabled/retired/rejected hosts remain
+    outside automatic recovery.
+    """
+    from app.services.deployment_operations_service import effective_connectivity
+
+    reasons: list[str] = []
+    current = now or datetime.now(UTC)
+
+    if node.intended_purpose != "gaming_host":
+        reasons.append("node_not_gaming_host")
+    if node.lifecycle_state not in {"approved", "draining", "maintenance"}:
+        reasons.append(f"node_lifecycle_{node.lifecycle_state}")
+    if not node.is_enabled:
+        reasons.append("node_disabled")
+
+    connectivity = effective_connectivity(
+        node,
+        now=current,
+        stale_after_seconds=GAMING_HEARTBEAT_STALE_AFTER_SECONDS,
+    )
+    if connectivity != "online":
+        reasons.append(f"node_{connectivity}")
+    if not _interactive_session_ready(node):
+        reasons.append("interactive_session_unavailable")
+    if not _sunshine_ready(node):
+        reasons.append("sunshine_unavailable")
+    if not node.nvidia_available or node.gpu_count <= 0:
+        reasons.append("gpu_unavailable")
+
+    return reasons
+
+
 def gaming_maintenance_reentry_reasons(
     db: Session,
     *,
@@ -773,6 +813,19 @@ def gaming_maintenance_reentry_reasons(
         reasons.append("active_gaming_reservations")
     if gaming_node_inflight_job_count(db, node_id=node.id):
         reasons.append("inflight_gaming_jobs")
+    if node.gaming_health_state != "healthy":
+        reasons.append("gaming_health_degraded")
+
+    capacity = db.scalar(
+        select(NodeCapacity).where(NodeCapacity.node_id == node.id)
+    )
+    if capacity is None:
+        reasons.append("node_capacity_missing")
+    else:
+        if not capacity.execution_enabled:
+            reasons.append("capacity_execution_disabled")
+        if not capacity.scheduling_enabled:
+            reasons.append("capacity_scheduling_disabled")
 
     connectivity = effective_connectivity(
         node,
@@ -808,7 +861,20 @@ def request_gaming_node_drain(
     if node.lifecycle_state != "approved":
         raise ComputeError("Gaming drain requires an approved node.")
 
-    # transition_node commits the admission barrier first. New placement is
+    # Serialize against select_gaming_host(), which locks the same capacity
+    # row before returning a placement candidate. Once this lock is acquired,
+    # the lifecycle/admission transition commits before a waiting scheduler
+    # can continue.
+    capacity = db.scalar(
+        select(NodeCapacity)
+        .where(NodeCapacity.node_id == node.id)
+        .with_for_update()
+    )
+    if capacity is None:
+        raise ComputeError("Gaming drain requires an authoritative node capacity row.")
+
+    # transition_node commits the admission barrier while holding the shared
+    # scheduler/drain serialization point. New placement is blocked before
     # therefore blocked before any optional evacuation work is queued.
     transition_node(
         db,
@@ -989,10 +1055,10 @@ def reconcile_quarantined_gaming_sessions_for_node(
 ) -> list[UUID]:
     """Automatically retry bounded quarantine remediation on fresh heartbeats."""
 
-    if not gaming_host_is_ready(node):
+    now = datetime.now(UTC)
+    if gaming_recovery_readiness_reasons(node, now=now):
         return []
 
-    now = datetime.now(UTC)
     cutoff = now - timedelta(
         seconds=GAMING_QUARANTINE_AUTO_RECOVERY_COOLDOWN_SECONDS
     )
@@ -1304,11 +1370,21 @@ def finish_gaming_job(
                 if session.node_id is not None
                 else None
             )
-            readiness_reasons = (
-                gaming_host_readiness_reasons(node, now=now)
-                if node is not None
-                else ["node_missing"]
-            )
+            if node is None:
+                readiness_reasons = ["node_missing"]
+            elif node.lifecycle_state == "approved":
+                # Preserve the frozen C6 repool contract for normal
+                # schedulable hosts: sanitization alone is insufficient;
+                # the full fresh gaming-host admission gate must pass.
+                readiness_reasons = gaming_host_readiness_reasons(node, now=now)
+            else:
+                # C9 separates recovery permission from placement permission.
+                # Draining/maintenance hosts may prove cleanup and release the
+                # quarantined reservation without becoming schedulable.
+                readiness_reasons = gaming_recovery_readiness_reasons(
+                    node,
+                    now=now,
+                )
             host_revalidated = not readiness_reasons
 
             recovery_job = bool(

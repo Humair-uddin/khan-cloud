@@ -194,6 +194,21 @@ def transition_node(db: Session,*,node: Node,new_state: str,actor_user_id: UUID,
     if new_state not in ALLOWED_TRANSITIONS.get(current,set()):
         raise NodeLifecycleError(f"Invalid lifecycle transition: {current} -> {new_state}")
 
+    # KG-009C9: an approved gaming host with live ownership must use the
+    # controlled drain path. Direct maintenance remains available only when
+    # there is nothing to evacuate or sanitize.
+    if current == "approved" and new_state == "maintenance" and node.intended_purpose == "gaming_host":
+        from app.services.gaming_service import (
+            gaming_node_active_reservation_count,
+            gaming_node_inflight_job_count,
+        )
+        active_reservations = gaming_node_active_reservation_count(db, node_id=node.id)
+        inflight_jobs = gaming_node_inflight_job_count(db, node_id=node.id)
+        if active_reservations or inflight_jobs:
+            raise NodeLifecycleError(
+                "Gaming host has active ownership; use controlled drain before maintenance."
+            )
+
     # KG-009C7: gaming maintenance re-entry is fail closed. A lifecycle flag
     # alone must never make a gaming host schedulable again.
     if current == "maintenance" and new_state == "approved" and node.intended_purpose == "gaming_host":
