@@ -192,6 +192,14 @@ class GamingSessionRead(BaseModel):
     sanitization_last_checked_at: datetime | None
     sanitized_at: datetime | None
     quarantine_reason: str
+    quarantine_recovery_state: str
+    quarantine_recovery_attempt_count: int
+    quarantine_recovery_requested_at: datetime | None
+    quarantine_recovery_last_attempt_at: datetime | None
+    quarantine_recovery_last_source: str
+    quarantine_recovery_last_message: str
+    quarantine_recovery_last_evidence: dict[str, Any]
+    quarantine_recovered_at: datetime | None
     runtime_id: str
     connection_info: dict[str, Any]
     started_at: datetime | None
@@ -204,6 +212,10 @@ class GamingSessionRead(BaseModel):
 
 class GamingSessionAction(BaseModel):
     action: Literal["start", "stop", "terminate"]
+
+
+class GamingQuarantineRecoveryRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
 
 
 class GamingConnectionLeaseCreate(BaseModel):

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -24,6 +24,8 @@ ACTIVE_RESERVATION_STATES = {"reserved", "active"}
 TERMINAL_SESSION_STATES = {"terminated", "failed"}
 GAMING_HEARTBEAT_STALE_AFTER_SECONDS = 300
 GAMING_RUNTIME_HEALTH_FAILURE_THRESHOLD = 3
+GAMING_QUARANTINE_AUTO_RECOVERY_MAX_ATTEMPTS = 3
+GAMING_QUARANTINE_AUTO_RECOVERY_COOLDOWN_SECONDS = 60
 GAMING_RUNTIME_CRITICAL_REASONS = {
     "interactive_session_unavailable",
     "sunshine_unavailable",
@@ -661,6 +663,168 @@ def queue_gaming_action(
     return session
 
 
+
+def queue_gaming_quarantine_recovery(
+    db: Session,
+    *,
+    session: GamingSession,
+    source: str,
+    actor_user_id: UUID | None = None,
+    reason: str = "",
+    commit: bool = True,
+) -> GamingSession:
+    """Queue idempotent runtime sanitization for a quarantined session.
+
+    Recovery never releases capacity directly. It only asks the existing
+    gaming.session.delete primitive to produce fresh sanitization evidence.
+    The result reconciler remains the sole authority that may repool capacity.
+    """
+
+    if source not in {"operator", "automatic"}:
+        raise ComputeError("Unsupported quarantine recovery source.")
+
+    if session.status != "quarantined" or session.sanitization_state != "quarantined":
+        raise ComputeError("Only quarantined gaming sessions can be recovered.")
+
+    if session.desired_state != "terminated":
+        raise ComputeError("Quarantine recovery requires a terminated desired state.")
+
+    if session.node_id is None:
+        raise ComputeError("Quarantined gaming session has no assigned node.")
+
+    if session.deployment_mode != "bare_metal":
+        raise ComputeError(
+            "KG-009C6 quarantine recovery currently applies to bare-metal gaming runtimes."
+        )
+
+    reservation = db.scalar(
+        select(GamingReservation)
+        .where(GamingReservation.gaming_session_id == session.id)
+        .with_for_update()
+    )
+    if reservation is None or reservation.status not in ACTIVE_RESERVATION_STATES:
+        raise ComputeError(
+            "Quarantine recovery requires the held gaming reservation."
+        )
+
+    pending = db.scalar(
+        select(NodeJob).where(
+            NodeJob.gaming_session_id == session.id,
+            NodeJob.status.in_({"pending", "running"}),
+        ).limit(1)
+    )
+    if pending is not None:
+        raise ComputeError("Quarantine recovery already has in-flight work.")
+
+    now = datetime.now(UTC)
+    session.quarantine_recovery_attempt_count += 1
+    session.quarantine_recovery_requested_at = now
+    session.quarantine_recovery_last_attempt_at = now
+    session.quarantine_recovery_last_source = source
+    session.quarantine_recovery_last_message = (reason or "")[:500]
+    session.quarantine_recovery_last_evidence = {}
+    session.quarantine_recovery_state = "queued"
+    session.deployment_stage = "quarantine_recovery_queued"
+
+    db.add(
+        NodeJob(
+            node_id=session.node_id,
+            gaming_session_id=session.id,
+            job_type="gaming.session.delete",
+            payload={
+                "session_id": str(session.id),
+                "gpu_uuid": session.gpu_uuid,
+                "quarantine_recovery": True,
+                "recovery_source": source,
+                "recovery_attempt": session.quarantine_recovery_attempt_count,
+                "requested_by_user_id": (
+                    str(actor_user_id)
+                    if actor_user_id is not None
+                    else ""
+                ),
+            },
+        )
+    )
+
+    if commit:
+        db.commit()
+        db.refresh(session)
+    else:
+        db.flush()
+
+    return session
+
+
+def reconcile_quarantined_gaming_sessions_for_node(
+    db: Session,
+    *,
+    node: Node,
+) -> list[UUID]:
+    """Automatically retry bounded quarantine remediation on fresh heartbeats."""
+
+    if not gaming_host_is_ready(node):
+        return []
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(
+        seconds=GAMING_QUARANTINE_AUTO_RECOVERY_COOLDOWN_SECONDS
+    )
+    queued: list[UUID] = []
+
+    sessions = list(
+        db.scalars(
+            select(GamingSession).where(
+                GamingSession.node_id == node.id,
+                GamingSession.status == "quarantined",
+                GamingSession.sanitization_state == "quarantined",
+                GamingSession.desired_state == "terminated",
+            )
+        )
+    )
+
+    for session in sessions:
+        if (
+            session.quarantine_recovery_attempt_count
+            >= GAMING_QUARANTINE_AUTO_RECOVERY_MAX_ATTEMPTS
+        ):
+            continue
+
+        if (
+            session.quarantine_recovery_last_attempt_at is not None
+            and session.quarantine_recovery_last_attempt_at > cutoff
+        ):
+            continue
+
+        pending = db.scalar(
+            select(NodeJob).where(
+                NodeJob.gaming_session_id == session.id,
+                NodeJob.status.in_({"pending", "running"}),
+            ).limit(1)
+        )
+        if pending is not None:
+            continue
+
+        reservation = db.scalar(
+            select(GamingReservation).where(
+                GamingReservation.gaming_session_id == session.id,
+                GamingReservation.status.in_(ACTIVE_RESERVATION_STATES),
+            )
+        )
+        if reservation is None:
+            continue
+
+        queue_gaming_quarantine_recovery(
+            db,
+            session=session,
+            source="automatic",
+            reason="fresh_heartbeat_auto_remediation",
+            commit=False,
+        )
+        queued.append(session.id)
+
+    return queued
+
+
 def reconcile_gaming_runtime_health_for_node(
     db: Session,
     *,
@@ -909,21 +1073,64 @@ def finish_gaming_job(
                 and not bool(sanitation.get("recorded_launcher_alive"))
             )
 
+            node = (
+                db.get(Node, session.node_id)
+                if session.node_id is not None
+                else None
+            )
+            readiness_reasons = (
+                gaming_host_readiness_reasons(node, now=now)
+                if node is not None
+                else ["node_missing"]
+            )
+            host_revalidated = not readiness_reasons
+
+            recovery_job = bool(
+                isinstance(job.payload, dict)
+                and job.payload.get("quarantine_recovery")
+            )
+            evidence = {
+                "sanitization": sanitation,
+                "host_revalidated": host_revalidated,
+                "host_readiness_reasons": readiness_reasons,
+                "observed_at": now.isoformat(),
+            }
+            if recovery_job:
+                session.quarantine_recovery_last_evidence = evidence
+
             finalize_gaming_billing(db, session=session, reason="terminated")
             session.connection_info = {}
             session.ended_at = now
 
-            if not proof_ok:
-                # Fail closed: never repool capacity on unproven cleanup.
+            if not proof_ok or not host_revalidated:
                 session.status = "quarantined"
                 session.deployment_stage = "quarantined"
                 session.sanitization_state = "quarantined"
-                session.quarantine_reason = "node_sanitization_proof_missing_or_failed"
-                session.failure_category = "runtime_sanitization_unproven"
-                session.failure_message = (
-                    "Runtime delete completed without authoritative "
-                    "sanitization proof; capacity remains quarantined."
-                )
+                if not proof_ok:
+                    session.quarantine_reason = (
+                        "node_sanitization_proof_missing_or_failed"
+                    )
+                    session.failure_category = "runtime_sanitization_unproven"
+                    session.failure_message = (
+                        "Runtime delete completed without authoritative "
+                        "sanitization proof; capacity remains quarantined."
+                    )
+                else:
+                    session.quarantine_reason = (
+                        "post_sanitization_host_revalidation_failed"
+                    )
+                    session.failure_category = "runtime_host_revalidation_failed"
+                    session.failure_message = (
+                        "Runtime sanitization passed but the gaming host "
+                        "failed fresh readiness revalidation: "
+                        + ", ".join(readiness_reasons)
+                    )[:500]
+
+                if recovery_job:
+                    session.quarantine_recovery_state = "failed"
+                    session.quarantine_recovery_last_message = (
+                        session.failure_message
+                    )[:500]
                 return
 
             session.status = "terminated"
@@ -931,6 +1138,12 @@ def finish_gaming_job(
             session.sanitization_state = "sanitized"
             session.sanitized_at = now
             session.quarantine_reason = ""
+            if recovery_job:
+                session.quarantine_recovery_state = "recovered"
+                session.quarantine_recovered_at = now
+                session.quarantine_recovery_last_message = (
+                    "Sanitization and fresh host readiness revalidation passed."
+                )
             release_gaming_reservation(db, session)
 
         return
@@ -948,4 +1161,24 @@ def finish_gaming_job(
     else:
         # The real machine may still own the runtime/GPU after a failed
         # start/stop/delete operation. Keep the reservation and allow retry.
-        session.status = "error"
+        if job.job_type == "gaming.session.delete":
+            session.status = "quarantined"
+            session.deployment_stage = "quarantined"
+            session.sanitization_state = "quarantined"
+            session.quarantine_reason = "gaming_session_delete_failed"
+            session.failure_category = "runtime_sanitization_failed"
+            recovery_job = bool(
+                isinstance(job.payload, dict)
+                and job.payload.get("quarantine_recovery")
+            )
+            if recovery_job:
+                session.quarantine_recovery_state = "failed"
+                session.quarantine_recovery_last_message = (
+                    error_message or "Quarantine recovery delete job failed."
+                )[:500]
+                session.quarantine_recovery_last_evidence = {
+                    "job_status": status,
+                    "error_message": error_message[:500],
+                }
+        else:
+            session.status = "error"
