@@ -209,10 +209,12 @@ def transition_node(db: Session,*,node: Node,new_state: str,actor_user_id: UUID,
         node.is_enabled=True
         if node.intended_purpose == "gaming_host":
             node.gaming_accepting_work=True
+            node.gaming_admission_auto_blocked=False
     elif new_state=="draining":
         # Keep the agent/heartbeat alive while immediately removing the host
         # from gaming placement. Existing sessions remain authoritative.
         node.gaming_accepting_work=False
+        node.gaming_admission_auto_blocked=False
     elif new_state in {"disabled","rejected","retired"}:
         node.is_enabled=False; node.marketplace_state="not_eligible"
     sync_legacy_status(node)

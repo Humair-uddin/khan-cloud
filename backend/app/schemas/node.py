@@ -71,6 +71,11 @@ class NodeRead(BaseModel):
     marketplace_state: str
     is_enabled: bool
     gaming_accepting_work: bool
+    gaming_health_state: str
+    gaming_health_reasons: dict[str, Any]
+    gaming_health_degraded_at: datetime | None
+    gaming_health_recovered_at: datetime | None
+    gaming_admission_auto_blocked: bool
     deployment_profile_id: UUID | None
     intended_purpose: str
     capabilities: dict[str, Any]

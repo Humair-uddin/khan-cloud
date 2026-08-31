@@ -187,6 +187,60 @@ def gaming_host_readiness_reasons(
     return reasons
 
 
+def gaming_runtime_critical_reasons(
+    node: Node,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = GAMING_HEARTBEAT_STALE_AFTER_SECONDS,
+) -> list[str]:
+    """Runtime-critical signals independent of the admission switch."""
+    reasons = set(gaming_host_readiness_reasons(
+        node, now=now
+    ))
+    return sorted(reasons.intersection(GAMING_RUNTIME_CRITICAL_REASONS))
+
+
+def reconcile_gaming_node_admission_health(
+    db: Session,
+    *,
+    node: Node,
+) -> dict[str, object]:
+    """Block new work on first critical failure; preserve C3 session hysteresis."""
+    now = datetime.now(UTC)
+    critical = gaming_runtime_critical_reasons(node, now=now)
+
+    if critical:
+        if node.gaming_health_state != "degraded":
+            node.gaming_health_degraded_at = now
+        node.gaming_health_state = "degraded"
+        node.gaming_health_reasons = {"critical": critical}
+        node.gaming_health_recovered_at = None
+        if node.lifecycle_state == "approved" and node.gaming_accepting_work:
+            node.gaming_accepting_work = False
+            node.gaming_admission_auto_blocked = True
+    else:
+        was_degraded = node.gaming_health_state == "degraded"
+        node.gaming_health_state = "healthy"
+        node.gaming_health_reasons = {}
+        if was_degraded:
+            node.gaming_health_recovered_at = now
+        if (
+            node.gaming_admission_auto_blocked
+            and node.lifecycle_state == "approved"
+            and node.is_enabled
+        ):
+            node.gaming_accepting_work = True
+            node.gaming_admission_auto_blocked = False
+
+    db.flush()
+    return {
+        "state": node.gaming_health_state,
+        "critical_reasons": critical,
+        "admission_auto_blocked": node.gaming_admission_auto_blocked,
+        "accepting_work": node.gaming_accepting_work,
+    }
+
+
 def gaming_host_is_ready(
     node: Node,
     *,
@@ -1024,8 +1078,7 @@ def reconcile_gaming_runtime_health_for_node(
             )
         )
     )
-    reasons = set(gaming_host_readiness_reasons(node, now=now))
-    critical = sorted(reasons.intersection(GAMING_RUNTIME_CRITICAL_REASONS))
+    critical = gaming_runtime_critical_reasons(node, now=now)
 
     for session in sessions:
         session.runtime_health_last_checked_at = now

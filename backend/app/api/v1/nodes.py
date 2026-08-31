@@ -104,8 +104,13 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
             reconcile_node_gaming_inventory(db, updated)
             from app.services.gaming_service import (
                 reconcile_gaming_billing_for_node,
+                reconcile_gaming_node_admission_health,
                 reconcile_gaming_runtime_health_for_node,
                 reconcile_quarantined_gaming_sessions_for_node,
+            )
+            admission_health = reconcile_gaming_node_admission_health(
+                db,
+                node=updated,
             )
             runtime_stop_ids = reconcile_gaming_runtime_health_for_node(
                 db,
@@ -130,7 +135,9 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
             from app.services.gaming_service import reconcile_gaming_node_drain
             drain_completed = reconcile_gaming_node_drain(db, node=updated)
             if (
-                runtime_stop_ids
+                admission_health["state"] == "degraded"
+                or admission_health["admission_auto_blocked"]
+                or runtime_stop_ids
                 or billing_stop_ids
                 or connection_stop_ids
                 or quarantine_recovery_ids
@@ -139,6 +146,7 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
                 inventory = dict(updated.inventory or {})
                 gaming = dict(inventory.get("gaming") or {})
                 gaming["runtime_reconciliation"] = {
+                    "admission_health": admission_health,
                     "health_stop_requested_session_ids": [
                         str(x) for x in runtime_stop_ids
                     ],
@@ -245,6 +253,7 @@ def set_gaming_availability(
         )
 
     node.gaming_accepting_work = payload.accepting_work
+    node.gaming_admission_auto_blocked = False
     db.commit()
     db.refresh(node)
     return node
