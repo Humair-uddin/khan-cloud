@@ -610,6 +610,10 @@ def queue_gaming_action(
         if action == "terminate"
         else "stopped"
     )
+    if action == "terminate":
+        # KG-009C5: capacity remains reserved until node cleanup is proven.
+        session.sanitization_state = "pending"
+        session.quarantine_reason = ""
 
     ready = prepare_connection_shutdown(
         db,
@@ -891,11 +895,42 @@ def finish_gaming_job(
 
         elif job.job_type == "gaming.session.delete":
             from app.services.gaming_billing_service import finalize_gaming_billing
+
+            now = datetime.now(UTC)
+            session.sanitization_attempt_count += 1
+            session.sanitization_last_checked_at = now
+            sanitation = result.get("sanitization")
+            sanitation = sanitation if isinstance(sanitation, dict) else {}
+
+            proof_ok = (
+                bool(sanitation.get("sanitized"))
+                and bool(sanitation.get("runtime_state_deleted"))
+                and int(sanitation.get("paired_clients_remaining") or 0) == 0
+                and not bool(sanitation.get("recorded_launcher_alive"))
+            )
+
             finalize_gaming_billing(db, session=session, reason="terminated")
+            session.connection_info = {}
+            session.ended_at = now
+
+            if not proof_ok:
+                # Fail closed: never repool capacity on unproven cleanup.
+                session.status = "quarantined"
+                session.deployment_stage = "quarantined"
+                session.sanitization_state = "quarantined"
+                session.quarantine_reason = "node_sanitization_proof_missing_or_failed"
+                session.failure_category = "runtime_sanitization_unproven"
+                session.failure_message = (
+                    "Runtime delete completed without authoritative "
+                    "sanitization proof; capacity remains quarantined."
+                )
+                return
+
             session.status = "terminated"
             session.deployment_stage = "terminated"
-            session.ended_at = datetime.now(UTC)
-            session.connection_info = {}
+            session.sanitization_state = "sanitized"
+            session.sanitized_at = now
+            session.quarantine_reason = ""
             release_gaming_reservation(db, session)
 
         return

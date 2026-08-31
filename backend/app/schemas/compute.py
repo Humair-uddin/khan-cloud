@@ -187,6 +187,11 @@ class GamingSessionRead(BaseModel):
     runtime_health_last_checked_at: datetime | None
     runtime_health_last_failure_at: datetime | None
     runtime_recovery_count: int
+    sanitization_state: str
+    sanitization_attempt_count: int
+    sanitization_last_checked_at: datetime | None
+    sanitized_at: datetime | None
+    quarantine_reason: str
     runtime_id: str
     connection_info: dict[str, Any]
     started_at: datetime | None

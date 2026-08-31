@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import platform
+import signal
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,61 @@ from khan_agent.windows_interactive import (
 
 class GamingRuntimeError(RuntimeError):
     pass
+
+
+def _recorded_launcher_pid(state: dict[str, Any]) -> int | None:
+    launch_info = state.get("launch_info")
+    if not isinstance(launch_info, dict):
+        return None
+    try:
+        pid = int(launch_info.get("launcher_pid"))
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _process_alive(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _terminate_recorded_launcher(pid: int | None) -> bool:
+    """Target only the launcher PID recorded for this gaming session.
+
+    C5 deliberately does not enumerate or kill unrelated processes by name.
+    """
+    if pid is None or not _process_alive(pid):
+        return True
+
+    if platform.system() == "Windows":
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+        if completed.returncode not in {0, 128} and _process_alive(pid):
+            return False
+    else:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+
+    return not _process_alive(pid)
 
 
 @dataclass(frozen=True)
@@ -537,9 +594,23 @@ def change_session_state(
             if action == "delete":
                 return JobExecutionResult(
                     "succeeded",
-                    {"runtime_id": runtime_id, "deleted": True, "idempotent": True},
+                    {
+                        "runtime_id": runtime_id,
+                        "deleted": True,
+                        "idempotent": True,
+                        "sanitization": {
+                            "sanitized": True,
+                            "runtime_state_deleted": True,
+                            "paired_clients_remaining": 0,
+                            "recorded_launcher_pid": None,
+                            "recorded_launcher_alive": False,
+                            "recorded_launcher_terminated": True,
+                        },
+                    },
                 )
             raise GamingRuntimeError("Gaming runtime does not exist on this node.")
+
+        sanitation: dict[str, Any] | None = None
 
         if action in {"stop", "delete"}:
             paired_clients = [
@@ -549,10 +620,7 @@ def change_session_state(
             ]
 
             for client in paired_clients:
-                client_uuid = str(
-                    client.get("sunshine_client_uuid") or ""
-                )
-
+                client_uuid = str(client.get("sunshine_client_uuid") or "")
                 if client_uuid:
                     unpair_client(
                         client_uuid=client_uuid,
@@ -563,15 +631,49 @@ def change_session_state(
                     )
 
             state["paired_clients"] = []
+            launcher_pid = _recorded_launcher_pid(state)
+            launcher_stopped = _terminate_recorded_launcher(launcher_pid)
+            launcher_alive = _process_alive(launcher_pid) if launcher_pid is not None else False
+            sanitation = {
+                "paired_clients_remaining": 0,
+                "recorded_launcher_pid": launcher_pid,
+                "recorded_launcher_alive": launcher_alive,
+                "recorded_launcher_terminated": launcher_stopped,
+            }
+            if not launcher_stopped or launcher_alive:
+                raise GamingRuntimeError(
+                    "Recorded customer launcher process could not be sanitized; "
+                    "refusing runtime repool."
+                )
 
         if action == "delete":
             try:
                 state_file.unlink()
             except FileNotFoundError:
                 pass
+
+            state_deleted = not state_file.exists()
+            assert sanitation is not None
+            sanitation.update(
+                {
+                    "runtime_state_deleted": state_deleted,
+                    "sanitized": (
+                        state_deleted
+                        and int(sanitation.get("paired_clients_remaining", 0)) == 0
+                        and not bool(sanitation.get("recorded_launcher_alive"))
+                    ),
+                }
+            )
+            if not bool(sanitation["sanitized"]):
+                raise GamingRuntimeError("Gaming runtime sanitization proof failed.")
+
             return JobExecutionResult(
                 "succeeded",
-                {"runtime_id": runtime_id, "deleted": True},
+                {
+                    "runtime_id": runtime_id,
+                    "deleted": True,
+                    "sanitization": sanitation,
+                },
             )
 
         gpu_uuid = str(state.get("gpu_uuid") or "")
