@@ -48,6 +48,11 @@ class NodeActionRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class NodeDrainRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    terminate_active_sessions: bool = False
+
+
 class NodeGamingAvailabilityRequest(BaseModel):
     accepting_work: bool
     reason: str = Field(default="", max_length=500)

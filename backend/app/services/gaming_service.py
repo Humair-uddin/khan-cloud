@@ -664,6 +664,179 @@ def queue_gaming_action(
 
 
 
+
+def gaming_node_active_reservation_count(db: Session, *, node_id: UUID) -> int:
+    """Count capacity still owned by gaming sessions on this node."""
+    from sqlalchemy import func
+    return int(
+        db.scalar(
+            select(func.count(GamingReservation.id)).where(
+                GamingReservation.node_id == node_id,
+                GamingReservation.status.in_(ACTIVE_RESERVATION_STATES),
+            )
+        )
+        or 0
+    )
+
+
+def gaming_node_inflight_job_count(db: Session, *, node_id: UUID) -> int:
+    """Count unfinished gaming jobs that must settle before maintenance."""
+    from sqlalchemy import func
+    return int(
+        db.scalar(
+            select(func.count(NodeJob.id)).where(
+                NodeJob.node_id == node_id,
+                NodeJob.gaming_session_id.is_not(None),
+                NodeJob.status.in_({"pending", "running"}),
+            )
+        )
+        or 0
+    )
+
+
+def gaming_maintenance_reentry_reasons(
+    db: Session,
+    *,
+    node: Node,
+    now: datetime | None = None,
+) -> list[str]:
+    """Safety gates for maintenance -> approved on a gaming host.
+
+    This intentionally evaluates the physical/runtime readiness signals while
+    ignoring the maintenance lifecycle and drain admission flag themselves.
+    They are restored only after every safety gate passes.
+    """
+    from app.services.deployment_operations_service import effective_connectivity
+
+    reasons: list[str] = []
+    current = now or datetime.now(UTC)
+
+    if node.lifecycle_state != "maintenance":
+        reasons.append("node_not_in_maintenance")
+    if node.intended_purpose != "gaming_host":
+        reasons.append("node_not_gaming_host")
+    if gaming_node_active_reservation_count(db, node_id=node.id):
+        reasons.append("active_gaming_reservations")
+    if gaming_node_inflight_job_count(db, node_id=node.id):
+        reasons.append("inflight_gaming_jobs")
+
+    connectivity = effective_connectivity(
+        node,
+        now=current,
+        stale_after_seconds=GAMING_HEARTBEAT_STALE_AFTER_SECONDS,
+    )
+    if connectivity != "online":
+        reasons.append(f"node_{connectivity}")
+    if not _interactive_session_ready(node):
+        reasons.append("interactive_session_unavailable")
+    if not _sunshine_ready(node):
+        reasons.append("sunshine_unavailable")
+    if not node.nvidia_available or node.gpu_count <= 0:
+        reasons.append("gpu_unavailable")
+
+    return reasons
+
+
+def request_gaming_node_drain(
+    db: Session,
+    *,
+    node: Node,
+    actor_user_id: UUID,
+    reason: str = "",
+    terminate_active_sessions: bool = False,
+) -> Node:
+    """Enter drain without inventing a second scheduling or teardown system."""
+    from app.services.audit_service import record_audit_event
+    from app.services.node_service import transition_node
+
+    if node.intended_purpose != "gaming_host":
+        raise ComputeError("Gaming drain applies only to gaming_host nodes.")
+    if node.lifecycle_state != "approved":
+        raise ComputeError("Gaming drain requires an approved node.")
+
+    # transition_node commits the admission barrier first. New placement is
+    # therefore blocked before any optional evacuation work is queued.
+    transition_node(
+        db,
+        node=node,
+        new_state="draining",
+        actor_user_id=actor_user_id,
+        reason=reason,
+    )
+
+    queued: list[str] = []
+    blocked: list[str] = []
+    if terminate_active_sessions:
+        sessions = list(
+            db.scalars(
+                select(GamingSession).where(
+                    GamingSession.node_id == node.id,
+                    GamingSession.desired_state != "terminated",
+                    GamingSession.status.notin_(TERMINAL_SESSION_STATES),
+                )
+            )
+        )
+        for session in sessions:
+            try:
+                queue_gaming_action(
+                    db,
+                    session=session,
+                    action="terminate",
+                    commit=False,
+                )
+                queued.append(str(session.id))
+            except ComputeError:
+                # Existing in-flight work remains authoritative. The heartbeat
+                # drain reconciler waits rather than bypassing that operation.
+                blocked.append(str(session.id))
+        db.commit()
+        db.refresh(node)
+
+    record_audit_event(
+        db,
+        actor_user_id=actor_user_id,
+        action="node.gaming_drain_requested",
+        resource_type="node",
+        resource_id=str(node.id),
+        reason=reason,
+        details={
+            "terminate_active_sessions": terminate_active_sessions,
+            "termination_queued_session_ids": queued,
+            "inflight_blocked_session_ids": blocked,
+        },
+    )
+    db.commit()
+    db.refresh(node)
+    return node
+
+
+def reconcile_gaming_node_drain(db: Session, *, node: Node) -> bool:
+    """Advance draining -> maintenance only after all gaming ownership clears."""
+    if node.lifecycle_state != "draining":
+        return False
+    if gaming_node_active_reservation_count(db, node_id=node.id):
+        return False
+    if gaming_node_inflight_job_count(db, node_id=node.id):
+        return False
+
+    # No reservation and no unfinished gaming job means C5/C6 teardown has
+    # already proven/released every session that owned capacity.
+    from app.services.audit_service import record_audit_event
+    node.lifecycle_state = "maintenance"
+    node.gaming_accepting_work = False
+    record_audit_event(
+        db,
+        actor_user_id=None,
+        action="node.gaming_drain_completed",
+        resource_type="node",
+        resource_id=str(node.id),
+        reason="All gaming reservations and in-flight jobs cleared.",
+        details={"old_state": "draining", "new_state": "maintenance"},
+    )
+    db.flush()
+    return True
+
+
 def queue_gaming_quarantine_recovery(
     db: Session,
     *,

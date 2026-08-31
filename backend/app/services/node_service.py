@@ -9,11 +9,12 @@ from app.models.physical_host import PhysicalHost
 from app.schemas.node import NodeHeartbeatRequest, NodeRegistrationRequest
 from app.services.audit_service import record_audit_event
 
-LIFECYCLE_STATES = {"pending_approval","approved","rejected","maintenance","disabled","retired"}
+LIFECYCLE_STATES = {"pending_approval","approved","draining","rejected","maintenance","disabled","retired"}
 ALLOWED_TRANSITIONS = {
     "pending_approval": {"approved","rejected","disabled"},
-    "approved": {"maintenance","disabled","retired"},
+    "approved": {"draining","maintenance","disabled","retired"},
     "rejected": {"pending_approval","retired"},
+    "draining": {"maintenance","disabled","retired"},
     "maintenance": {"approved","disabled","retired"},
     "disabled": {"approved","retired"},
     "retired": set(),
@@ -192,8 +193,26 @@ def transition_node(db: Session,*,node: Node,new_state: str,actor_user_id: UUID,
     if new_state not in LIFECYCLE_STATES: raise NodeLifecycleError(f"Unknown lifecycle state: {new_state}")
     if new_state not in ALLOWED_TRANSITIONS.get(current,set()):
         raise NodeLifecycleError(f"Invalid lifecycle transition: {current} -> {new_state}")
+
+    # KG-009C7: gaming maintenance re-entry is fail closed. A lifecycle flag
+    # alone must never make a gaming host schedulable again.
+    if current == "maintenance" and new_state == "approved" and node.intended_purpose == "gaming_host":
+        from app.services.gaming_service import gaming_maintenance_reentry_reasons
+        reasons = gaming_maintenance_reentry_reasons(db, node=node)
+        if reasons:
+            raise NodeLifecycleError(
+                "Gaming host cannot leave maintenance: " + ", ".join(reasons)
+            )
+
     node.lifecycle_state=new_state
-    if new_state=="approved": node.is_enabled=True
+    if new_state=="approved":
+        node.is_enabled=True
+        if node.intended_purpose == "gaming_host":
+            node.gaming_accepting_work=True
+    elif new_state=="draining":
+        # Keep the agent/heartbeat alive while immediately removing the host
+        # from gaming placement. Existing sessions remain authoritative.
+        node.gaming_accepting_work=False
     elif new_state in {"disabled","rejected","retired"}:
         node.is_enabled=False; node.marketplace_state="not_eligible"
     sync_legacy_status(node)

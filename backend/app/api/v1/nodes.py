@@ -10,6 +10,7 @@ from app.models.node import Node
 from app.models.user import User
 from app.schemas.node import (
     NodeActionRequest,
+    NodeDrainRequest,
     NodeGamingAvailabilityRequest,
     NodeHeartbeatRequest,
     NodeRead,
@@ -126,11 +127,14 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
                     node=updated,
                 )
             )
+            from app.services.gaming_service import reconcile_gaming_node_drain
+            drain_completed = reconcile_gaming_node_drain(db, node=updated)
             if (
                 runtime_stop_ids
                 or billing_stop_ids
                 or connection_stop_ids
                 or quarantine_recovery_ids
+                or drain_completed
             ):
                 inventory = dict(updated.inventory or {})
                 gaming = dict(inventory.get("gaming") or {})
@@ -147,6 +151,7 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
                     "quarantine_recovery_requested_session_ids": [
                         str(x) for x in quarantine_recovery_ids
                     ],
+                    "drain_completed": drain_completed,
                 }
                 inventory["gaming"] = gaming
                 updated.inventory = inventory
@@ -186,6 +191,29 @@ def disable_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends(req
 @router.post("/{node_id}/enable",response_model=NodeRead)
 def enable_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends(require_permission("nodes.disable")),db: Session=Depends(get_db)):
     return _transition(node_id,payload,"approved",user,db)
+
+@router.post("/{node_id}/drain", response_model=NodeRead)
+def drain_node(
+    node_id: UUID,
+    payload: NodeDrainRequest,
+    user: User = Depends(require_permission("nodes.maintenance")),
+    db: Session = Depends(get_db),
+):
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+    from app.services.gaming_service import request_gaming_node_drain, ComputeError
+    try:
+        return request_gaming_node_drain(
+            db,
+            node=node,
+            actor_user_id=user.id,
+            reason=payload.reason,
+            terminate_active_sessions=payload.terminate_active_sessions,
+        )
+    except (ComputeError, NodeLifecycleError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
 
 @router.post("/{node_id}/maintenance",response_model=NodeRead)
 def maintenance_node(node_id: UUID,payload: NodeActionRequest,user: User=Depends(require_permission("nodes.maintenance")),db: Session=Depends(get_db)):
