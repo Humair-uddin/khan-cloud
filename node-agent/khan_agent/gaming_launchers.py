@@ -19,6 +19,7 @@ class PreparedGameLaunch:
     launcher_game_id: str
     game: dict[str, Any]
     launcher_executable: str
+    runtime_id: str = ""
 
 
 class LauncherAdapter(Protocol):
@@ -96,6 +97,16 @@ class SteamLauncherAdapter:
         prepared: PreparedGameLaunch,
     ) -> dict[str, Any]:
         try:
+            if prepared.runtime_id:
+                return launch_steam_app(
+                    Path(prepared.launcher_executable),
+                    prepared.launcher_game_id,
+                    runtime_id=prepared.runtime_id,
+                )
+
+            # Preserve the frozen KG-002 adapter signature for
+            # legacy callers and tests. D1-owned production
+            # sessions always carry runtime_id.
             return launch_steam_app(
                 Path(prepared.launcher_executable),
                 prepared.launcher_game_id,

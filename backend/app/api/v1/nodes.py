@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.db.database import get_db
 from app.models.node import Node
 from app.models.user import User
+from app.schemas.provisioning import DesiredStateRead
 from app.schemas.node import (
     NodeActionRequest,
     NodeDrainRequest,
@@ -172,6 +173,22 @@ def heartbeat(payload: NodeHeartbeatRequest,node: Node=Depends(get_authenticated
 def list_nodes(db: Session=Depends(get_db)):
     return list(db.scalars(select(Node).order_by(Node.name)).unique())
 
+@router.get("/desired-state", response_model=DesiredStateRead)
+def desired_state(
+    node: Node = Depends(get_authenticated_node),
+):
+    policy = dict(node.capabilities or {}).get("provisioning_policy", {})
+    desired_image_version = str(policy.get("desired_image_version") or "")
+    capacity_mode = str(policy.get("capacity_mode") or "shared")
+    current = dict(node.inventory or {}).get("provisioning", {})
+    current_image = str(current.get("desired_image_version") or "")
+    return DesiredStateRead(
+        desired_image_version=desired_image_version,
+        provisioning_required=bool(desired_image_version and current_image != desired_image_version),
+        capacity_mode=capacity_mode,
+        image_build_plan=dict(policy.get("image_build_plan") or {}),
+    )
+
 @router.get("/{node_id}",response_model=NodeRead,dependencies=[Depends(require_permission("nodes.read"))])
 def get_node(node_id: UUID,db: Session=Depends(get_db)):
     node=db.get(Node,node_id)
@@ -290,7 +307,7 @@ def installation_events(node_id: UUID, limit: int = 100, db: Session = Depends(g
 
 # KG-008A durable host provisioning telemetry. Reuses the existing Node installation
 # summary columns so the operations/dashboard model stays single-owner.
-from app.schemas.provisioning import ProvisioningEventCreate, ProvisioningEventRead, DesiredStateRead
+from app.schemas.provisioning import ProvisioningEventCreate, ProvisioningEventRead
 
 
 @router.post("/provisioning-events", response_model=ProvisioningEventRead)
@@ -314,20 +331,3 @@ def provisioning_event(
     db.commit()
     db.refresh(node)
     return ProvisioningEventRead(node_id=str(node.id), **payload.model_dump())
-
-
-@router.get("/desired-state", response_model=DesiredStateRead)
-def desired_state(
-    node: Node = Depends(get_authenticated_node),
-):
-    policy = dict(node.capabilities or {}).get("provisioning_policy", {})
-    desired_image_version = str(policy.get("desired_image_version") or "")
-    capacity_mode = str(policy.get("capacity_mode") or "shared")
-    current = dict(node.inventory or {}).get("provisioning", {})
-    current_image = str(current.get("desired_image_version") or "")
-    return DesiredStateRead(
-        desired_image_version=desired_image_version,
-        provisioning_required=bool(desired_image_version and current_image != desired_image_version),
-        capacity_mode=capacity_mode,
-        image_build_plan=dict(policy.get("image_build_plan") or {}),
-    )

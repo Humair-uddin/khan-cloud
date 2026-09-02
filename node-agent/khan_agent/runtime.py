@@ -17,6 +17,9 @@ from khan_agent.installer_telemetry import read_latest_installer_snapshot
 from khan_agent.plugins import PluginManager
 from khan_agent.job_dispatch import execute_node_job
 from khan_agent.job_result_spool import JobResultSpool
+from khan_agent.gaming_runtime import (
+    reconcile_runtime_ownership,
+)
 from khan_agent.state import AgentState, StateMachine
 from khan_agent.provisioning import ProvisioningStateStore
 from khan_agent.windows_image_builder import WindowsGoldenImageBuilder, WindowsImageBuildPlan
@@ -50,6 +53,7 @@ class AgentRuntime:
         self.job_result_spool = JobResultSpool(
             settings.agent.state_directory / "node-job-results"
         )
+        self._gaming_runtime_reconciled = False
 
     def _inventory_payload(self) -> dict[str, object]:
         inventory = collect_safe_inventory()
@@ -245,7 +249,34 @@ class AgentRuntime:
             )
         return True
 
+    def _reconcile_gaming_runtime_once(self) -> None:
+        if self._gaming_runtime_reconciled:
+            return
+
+        if not self.settings.gaming.enabled:
+            self._gaming_runtime_reconciled = True
+            return
+
+        outcomes = reconcile_runtime_ownership(
+            self.settings.agent.state_directory
+            / "gaming"
+        )
+
+        logger.info(
+            json.dumps(
+                {
+                    "event":
+                        "gaming_runtime_reconciliation",
+                    "outcomes": outcomes,
+                }
+            )
+        )
+
+        self._gaming_runtime_reconciled = True
+
     async def _process_one_node_job(self, credentials: NodeCredentials) -> None:
+        self._reconcile_gaming_runtime_once()
+
         next_job = getattr(self.client, "next_job", None)
         if next_job is None:
             return

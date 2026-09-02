@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import platform
 import subprocess
+import sys
+from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
+
+from khan_agent.runtime_ownership import (
+    JOB_OBJECT_ASSIGN_PROCESS,
+    RuntimeOwnershipError,
+    open_windows_job,
+)
 
 
 class InteractiveSessionError(RuntimeError):
@@ -16,6 +25,7 @@ class InteractiveLaunchResult:
     pid: int
     session_id: int
     execution_context: str = "interactive_user"
+    runtime_ownership: dict[str, Any] | None = None
 
 
 def _require_windows() -> None:
@@ -48,6 +58,8 @@ def active_console_session_id() -> int:
 
 def launch_in_active_session(
     command: Sequence[str],
+    *,
+    ownership_name: str | None = None,
 ) -> InteractiveLaunchResult:
     """
     Launch a process in the active interactive Windows user's session.
@@ -141,6 +153,11 @@ def launch_in_active_session(
                     (
                         win32con.CREATE_UNICODE_ENVIRONMENT
                         | win32con.CREATE_NEW_PROCESS_GROUP
+                        | (
+                            win32con.CREATE_SUSPENDED
+                            if ownership_name
+                            else 0
+                        )
                     ),
                     environment,
                     os.path.dirname(executable) or None,
@@ -153,13 +170,131 @@ def launch_in_active_session(
                 f"{session_id}: {type(exc).__name__}: {exc!r}"
             ) from exc
 
-        process_handle.Close()
-        thread_handle.Close()
+        runtime_ownership = None
+        supervisor = None
+        job_handle = None
 
-        return InteractiveLaunchResult(
-            pid=int(pid),
-            session_id=session_id,
-        )
+        try:
+            if ownership_name:
+                supervisor = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "khan_agent.windows_job_supervisor",
+                        ownership_name,
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    shell=False,
+                )
+
+                ready = (
+                    supervisor.stdout.readline().strip()
+                    if supervisor.stdout is not None
+                    else ""
+                )
+
+                if ready != "READY":
+                    detail = ""
+
+                    if supervisor.stderr is not None:
+                        detail = supervisor.stderr.read().strip()
+
+                    raise InteractiveSessionError(
+                        "Windows runtime ownership supervisor "
+                        f"failed to initialize: {ready or detail or 'no response'}"
+                    )
+
+                try:
+                    job_handle = open_windows_job(
+                        ownership_name,
+                        access=JOB_OBJECT_ASSIGN_PROCESS,
+                    )
+                except RuntimeOwnershipError as exc:
+                    raise InteractiveSessionError(
+                        f"Unable to open runtime Job Object: {exc}"
+                    ) from exc
+
+                kernel32 = ctypes.WinDLL(
+                    "kernel32",
+                    use_last_error=True,
+                )
+
+                kernel32.AssignProcessToJobObject.argtypes = [
+                    wintypes.HANDLE,
+                    wintypes.HANDLE,
+                ]
+                kernel32.AssignProcessToJobObject.restype = (
+                    wintypes.BOOL
+                )
+
+                if not kernel32.AssignProcessToJobObject(
+                    job_handle,
+                    int(process_handle),
+                ):
+                    error = ctypes.get_last_error()
+                    raise InteractiveSessionError(
+                        "AssignProcessToJobObject failed "
+                        f"for Windows session {session_id}: "
+                        f"WinError {error}"
+                    )
+
+                win32process.ResumeThread(thread_handle)
+
+                runtime_ownership = {
+                    "schema_version": 2,
+                    "ownership_type": "windows_job_object",
+                    "job_name": ownership_name,
+                    "root_pid": int(pid),
+                    "interactive_session_id": session_id,
+                    "boundary_established": True,
+                    "supervisor_pid": int(supervisor.pid),
+                }
+
+            process_handle.Close()
+            thread_handle.Close()
+
+            return InteractiveLaunchResult(
+                pid=int(pid),
+                session_id=session_id,
+                runtime_ownership=runtime_ownership,
+            )
+
+        except Exception:
+            try:
+                process_handle.TerminateProcess(1)
+            except Exception:
+                pass
+
+            try:
+                process_handle.Close()
+            except Exception:
+                pass
+
+            try:
+                thread_handle.Close()
+            except Exception:
+                pass
+
+            if supervisor is not None:
+                try:
+                    supervisor.terminate()
+                except Exception:
+                    pass
+
+            raise
+
+        finally:
+            if job_handle:
+                try:
+                    ctypes.WinDLL(
+                        "kernel32",
+                        use_last_error=True,
+                    ).CloseHandle(job_handle)
+                except Exception:
+                    pass
 
     except InteractiveSessionError:
         raise

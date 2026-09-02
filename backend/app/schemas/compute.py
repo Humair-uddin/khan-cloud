@@ -218,6 +218,17 @@ class GamingQuarantineRecoveryRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class GamingLegacyRetirementRequest(BaseModel):
+    """Explicit operator authorization for pre-D1 runtime retirement."""
+
+    reason: str = Field(min_length=8, max_length=500)
+    expected_state_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[A-Fa-f0-9]{64}$",
+    )
+
+
 class GamingConnectionLeaseCreate(BaseModel):
     pairing_ttl_seconds: int = Field(
         default=300,

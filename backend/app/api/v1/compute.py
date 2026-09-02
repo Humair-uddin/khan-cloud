@@ -10,6 +10,7 @@ from app.schemas.compute import (
     GamingConnectionLeaseCreate, GamingConnectionLeaseRead, GamingConnectionLeaseIssue,
     GamingConnectionLeaseEventRequest, GamingConnectionPairRequest, GamingVmBlueprintCreate, GamingVmBlueprintRead,
     GamingQuarantineRecoveryRequest,
+    GamingLegacyRetirementRequest,
 )
 from app.schemas.compute import (ComputeHostRead, GamingSessionAction, GamingSessionCreate, GamingSessionRead, VPSAction, VPSCreate, VPSImageRead, VPSRead)
 from app.services.compute_service import (
@@ -130,6 +131,34 @@ def gaming_session_action(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+
+
+@router.post(
+    "/gaming/sessions/{session_id}/legacy-retirement",
+    response_model=GamingSessionRead,
+)
+def retire_legacy_gaming_session(
+    session_id: UUID,
+    payload: GamingLegacyRetirementRequest,
+    user: User = Depends(require_permission("nodes.maintenance")),
+    db: Session = Depends(get_db),
+):
+    from app.services.gaming_service import (
+        get_visible_gaming_session,
+        queue_gaming_legacy_retirement,
+    )
+
+    try:
+        session = get_visible_gaming_session(db, user, session_id)
+        return queue_gaming_legacy_retirement(
+            db,
+            session=session,
+            actor_user_id=user.id,
+            reason=payload.reason,
+            expected_state_sha256=payload.expected_state_sha256,
+        )
+    except ComputeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(

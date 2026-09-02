@@ -957,6 +957,150 @@ def reconcile_gaming_node_drain(db: Session, *, node: Node) -> bool:
     return True
 
 
+def queue_gaming_legacy_retirement(
+    db: Session,
+    *,
+    session: GamingSession,
+    actor_user_id: UUID,
+    reason: str,
+    expected_state_sha256: str,
+    commit: bool = True,
+) -> GamingSession:
+    """Queue an audited retirement of a pre-D1 bare-metal runtime.
+
+    This is not a force-release path. Capacity remains held until the
+    existing gaming.session.delete result reconciler accepts fresh node
+    evidence and calls release_gaming_reservation().
+    """
+
+    reason = (reason or "").strip()
+    state_sha256 = (expected_state_sha256 or "").strip().upper()
+
+    if len(reason) < 8:
+        raise ComputeError(
+            "Legacy retirement requires an explicit operator reason."
+        )
+
+    if (
+        len(state_sha256) != 64
+        or any(c not in "0123456789ABCDEF" for c in state_sha256)
+    ):
+        raise ComputeError(
+            "Legacy retirement requires an exact SHA-256 state hash."
+        )
+
+    if session.node_id is None:
+        raise ComputeError(
+            "Legacy gaming session has no assigned node."
+        )
+
+    if session.deployment_mode != "bare_metal":
+        raise ComputeError(
+            "Legacy retirement applies only to bare-metal gaming runtimes."
+        )
+
+    if session.status in TERMINAL_SESSION_STATES:
+        raise ComputeError(
+            "Terminal gaming sessions cannot enter legacy retirement."
+        )
+
+    if session.status not in {
+        "error",
+        "stopped",
+        "quarantined",
+    }:
+        raise ComputeError(
+            "Legacy retirement requires an error, stopped, or quarantined "
+            "gaming session."
+        )
+
+    reservation = db.scalar(
+        select(GamingReservation)
+        .where(
+            GamingReservation.gaming_session_id == session.id
+        )
+        .with_for_update()
+    )
+    if (
+        reservation is None
+        or reservation.status not in ACTIVE_RESERVATION_STATES
+    ):
+        raise ComputeError(
+            "Legacy retirement requires the held gaming reservation."
+        )
+
+    pending = db.scalar(
+        select(NodeJob).where(
+            NodeJob.gaming_session_id == session.id,
+            NodeJob.status.in_({"pending", "running"}),
+        ).limit(1)
+    )
+    if pending is not None:
+        raise ComputeError(
+            "Legacy retirement already has in-flight work."
+        )
+
+    now = datetime.now(UTC)
+
+    session.desired_state = "terminated"
+    session.status = "terminating"
+    session.sanitization_state = "pending"
+    session.deployment_stage = "legacy_retirement_queued"
+
+    session.quarantine_recovery_requested_at = now
+    session.quarantine_recovery_last_attempt_at = now
+    session.quarantine_recovery_last_source = "operator_legacy_retirement"
+    session.quarantine_recovery_last_message = reason[:500]
+    session.quarantine_recovery_last_evidence = {}
+    session.quarantine_recovery_state = "queued"
+
+    job = NodeJob(
+        node_id=session.node_id,
+        gaming_session_id=session.id,
+        job_type="gaming.session.delete",
+        payload={
+            "session_id": str(session.id),
+            "gpu_uuid": session.gpu_uuid,
+            "legacy_retirement": True,
+            "legacy_retirement_expected_state_sha256": state_sha256,
+            "legacy_runtime_id": session.runtime_id,
+            "legacy_runtime_started_at": (
+                session.started_at.isoformat()
+                if session.started_at is not None
+                else ""
+            ),
+            "requested_by_user_id": str(actor_user_id),
+            "legacy_retirement_reason": reason[:500],
+        },
+    )
+    db.add(job)
+
+    from app.services.audit_service import record_audit_event
+
+    record_audit_event(
+        db,
+        actor_user_id=actor_user_id,
+        action="gaming.legacy_retirement_queued",
+        resource_type="gaming_session",
+        resource_id=str(session.id),
+        reason=reason[:500],
+        details={
+            "node_id": str(session.node_id),
+            "runtime_id": session.runtime_id,
+            "expected_state_sha256": state_sha256,
+            "reservation_id": str(reservation.id),
+        },
+    )
+
+    if commit:
+        db.commit()
+        db.refresh(session)
+    else:
+        db.flush()
+
+    return session
+
+
 def queue_gaming_quarantine_recovery(
     db: Session,
     *,
@@ -1009,6 +1153,139 @@ def queue_gaming_quarantine_recovery(
     if pending is not None:
         raise ComputeError("Quarantine recovery already has in-flight work.")
 
+    # A schema-v1 runtime may only be retired through explicit operator
+    # authorization. If the quarantine was caused by a failed authorized
+    # legacy-retirement job, an operator recovery may carry that immutable
+    # authorization forward. Automatic recovery must never acquire or infer
+    # legacy-retirement authority.
+    legacy_authorization: dict[str, str | bool] = {}
+
+    legacy_jobs = list(
+        db.scalars(
+            select(NodeJob).where(
+                NodeJob.gaming_session_id == session.id,
+                NodeJob.job_type == "gaming.session.delete",
+                NodeJob.status == "failed",
+            )
+        )
+    )
+    legacy_jobs = [
+        candidate
+        for candidate in legacy_jobs
+        if isinstance(candidate.payload, dict)
+        and candidate.payload.get("legacy_retirement") is True
+    ]
+
+    # Recovery jobs inherit the immutable legacy-retirement authorization
+    # from the original operator-authorized delete job.  They are descendants
+    # of that authority, not independent authorization roots.
+    legacy_authorization_roots = [
+        candidate
+        for candidate in legacy_jobs
+        if not str(
+            (candidate.payload or {}).get(
+                "legacy_retirement_origin_job_id"
+            )
+            or ""
+        )
+    ]
+
+    if legacy_jobs:
+        if source != "operator":
+            raise ComputeError(
+                "Legacy runtime quarantine recovery requires explicit "
+                "operator authorization."
+            )
+
+        if actor_user_id is None:
+            raise ComputeError(
+                "Legacy runtime quarantine recovery requires an "
+                "authenticated operator."
+            )
+
+        if len(legacy_authorization_roots) != 1:
+            raise ComputeError(
+                "Legacy runtime quarantine recovery authorization is "
+                "ambiguous."
+            )
+
+        origin = legacy_authorization_roots[0]
+        origin_payload = origin.payload or {}
+
+        expected_sha = str(
+            origin_payload.get(
+                "legacy_retirement_expected_state_sha256"
+            )
+            or ""
+        ).upper()
+        expected_runtime = str(
+            origin_payload.get("legacy_runtime_id")
+            or ""
+        )
+        expected_started_at = str(
+            origin_payload.get("legacy_runtime_started_at")
+            or ""
+        )
+        original_operator = str(
+            origin_payload.get("requested_by_user_id")
+            or ""
+        )
+        original_reason = str(
+            origin_payload.get("legacy_retirement_reason")
+            or ""
+        )
+
+        if (
+            len(expected_sha) != 64
+            or any(
+                character not in "0123456789ABCDEF"
+                for character in expected_sha
+            )
+        ):
+            raise ComputeError(
+                "Legacy runtime recovery authorization contains an "
+                "invalid state hash."
+            )
+
+        if expected_runtime != str(session.runtime_id or ""):
+            raise ComputeError(
+                "Legacy runtime recovery authorization does not match "
+                "the quarantined runtime."
+            )
+
+        session_started_at = (
+            session.started_at.isoformat()
+            if session.started_at is not None
+            else ""
+        )
+        if (
+            not expected_started_at
+            or expected_started_at != session_started_at
+        ):
+            raise ComputeError(
+                "Legacy runtime recovery authorization does not match "
+                "the quarantined runtime start identity."
+            )
+
+        if not original_operator:
+            raise ComputeError(
+                "Legacy runtime recovery authorization has no "
+                "originating operator."
+            )
+
+        legacy_authorization = {
+            "legacy_retirement": True,
+            "legacy_retirement_expected_state_sha256": expected_sha,
+            "legacy_runtime_id": expected_runtime,
+            "legacy_runtime_started_at": expected_started_at,
+            "requested_by_user_id": original_operator,
+            "legacy_retirement_reason": original_reason[:500],
+            "legacy_retirement_origin_job_id": str(origin.id),
+            "legacy_retirement_recovery_requested_by_user_id": str(
+                actor_user_id
+            ),
+        }
+
     now = datetime.now(UTC)
     session.quarantine_recovery_attempt_count += 1
     session.quarantine_recovery_requested_at = now
@@ -1019,23 +1296,26 @@ def queue_gaming_quarantine_recovery(
     session.quarantine_recovery_state = "queued"
     session.deployment_stage = "quarantine_recovery_queued"
 
+    recovery_payload = {
+        "session_id": str(session.id),
+        "gpu_uuid": session.gpu_uuid,
+        "quarantine_recovery": True,
+        "recovery_source": source,
+        "recovery_attempt": session.quarantine_recovery_attempt_count,
+        "requested_by_user_id": (
+            str(actor_user_id)
+            if actor_user_id is not None
+            else ""
+        ),
+    }
+    recovery_payload.update(legacy_authorization)
+
     db.add(
         NodeJob(
             node_id=session.node_id,
             gaming_session_id=session.id,
             job_type="gaming.session.delete",
-            payload={
-                "session_id": str(session.id),
-                "gpu_uuid": session.gpu_uuid,
-                "quarantine_recovery": True,
-                "recovery_source": source,
-                "recovery_attempt": session.quarantine_recovery_attempt_count,
-                "requested_by_user_id": (
-                    str(actor_user_id)
-                    if actor_user_id is not None
-                    else ""
-                ),
-            },
+            payload=recovery_payload,
         )
     )
 
@@ -1358,11 +1638,156 @@ def finish_gaming_job(
             sanitation = result.get("sanitization")
             sanitation = sanitation if isinstance(sanitation, dict) else {}
 
+            ownership_schema_version = int(
+                sanitation.get(
+                    "ownership_schema_version"
+                )
+                or 0
+            )
+
+            ownership_proof = (
+                sanitation.get(
+                    "runtime_ownership"
+                )
+            )
+            ownership_proof = (
+                ownership_proof
+                if isinstance(
+                    ownership_proof,
+                    dict,
+                )
+                else {}
+            )
+
+            # D1 structural runtimes must prove their complete ownership
+            # boundary. Pre-D1 V1 evidence is accepted only through the
+            # explicit operator-authorized legacy-retirement contract.
+            structural_ownership_ok = (
+                ownership_schema_version >= 2
+                and (
+                    bool(
+                        ownership_proof.get(
+                            "ownership_boundary_verified"
+                        )
+                    )
+                    and bool(
+                        ownership_proof.get(
+                            "termination_verified"
+                        )
+                    )
+                    and int(
+                        ownership_proof.get(
+                            "owned_process_count_remaining"
+                        )
+                        or 0
+                    )
+                    == 0
+                )
+            )
+
+            legacy_job = bool(
+                isinstance(job.payload, dict)
+                and job.payload.get("legacy_retirement")
+            )
+            legacy_proof = sanitation.get("legacy_retirement")
+            legacy_proof = (
+                legacy_proof
+                if isinstance(legacy_proof, dict)
+                else {}
+            )
+
+            expected_legacy_sha = str(
+                (job.payload or {}).get(
+                    "legacy_retirement_expected_state_sha256"
+                )
+                or ""
+            ).upper()
+            expected_legacy_runtime = str(
+                (job.payload or {}).get("legacy_runtime_id")
+                or ""
+            )
+
+            recorded_launcher_alive = bool(
+                sanitation.get("recorded_launcher_alive")
+            )
+            recorded_pid_safe = (
+                not recorded_launcher_alive
+                or bool(
+                    legacy_proof.get(
+                        "recorded_pid_identity_reused"
+                    )
+                )
+            )
+
+            legacy_retirement_ok = (
+                legacy_job
+                and ownership_schema_version == 1
+                and bool(
+                    legacy_proof.get(
+                        "operator_authorized_job"
+                    )
+                )
+                and str(
+                    legacy_proof.get("mode")
+                    or ""
+                )
+                == "legacy_schema_v1_retirement"
+                and str(
+                    legacy_proof.get("state_sha256")
+                    or ""
+                ).upper()
+                == expected_legacy_sha
+                and bool(expected_legacy_sha)
+                and str(
+                    legacy_proof.get("runtime_id")
+                    or ""
+                )
+                == expected_legacy_runtime
+                and int(
+                    legacy_proof.get(
+                        "game_process_count"
+                    )
+                    or 0
+                )
+                == 0
+                and int(
+                    legacy_proof.get(
+                        "supervisor_process_count"
+                    )
+                    or 0
+                )
+                == 0
+                and recorded_pid_safe
+                and not bool(
+                    legacy_proof.get(
+                        "destructive_pid_termination_performed"
+                    )
+                )
+                and bool(
+                    legacy_proof.get(
+                        "state_archived"
+                    )
+                )
+            )
+
+            ownership_ok = (
+                structural_ownership_ok
+                or legacy_retirement_ok
+            )
+
             proof_ok = (
                 bool(sanitation.get("sanitized"))
                 and bool(sanitation.get("runtime_state_deleted"))
                 and int(sanitation.get("paired_clients_remaining") or 0) == 0
-                and not bool(sanitation.get("recorded_launcher_alive"))
+                and (
+                    not bool(
+                        sanitation.get(
+                            "recorded_launcher_alive"
+                        )
+                    )
+                    or legacy_retirement_ok
+                )
+                and ownership_ok
             )
 
             node = (

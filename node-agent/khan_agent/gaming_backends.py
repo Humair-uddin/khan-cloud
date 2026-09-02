@@ -261,6 +261,8 @@ def locate_steam() -> Path | None:
 def launch_steam_app(
     steam_executable: Path,
     app_id: str,
+    *,
+    runtime_id: str = "",
 ) -> dict[str, Any]:
     """
     Ask the existing Steam client to launch one installed AppID.
@@ -289,7 +291,21 @@ def launch_steam_app(
         )
 
         try:
-            launched = launch_in_active_session(command)
+            from khan_agent.runtime_ownership import (
+                windows_job_name,
+            )
+
+            if runtime_id:
+                launched = launch_in_active_session(
+                    command,
+                    ownership_name=windows_job_name(
+                        runtime_id
+                    ),
+                )
+            else:
+                # Preserve the frozen KG-009 interactive-launch
+                # boundary for non-D1/legacy callers.
+                launched = launch_in_active_session(command)
         except InteractiveSessionError as exc:
             raise RuntimeError(
                 f"Unable to start Steam AppID {normalized} "
@@ -303,6 +319,14 @@ def launch_steam_app(
             "launcher_pid": launched.pid,
             "session_id": launched.session_id,
             "execution_context": launched.execution_context,
+            **(
+                {
+                    "runtime_ownership":
+                        launched.runtime_ownership
+                }
+                if launched.runtime_ownership is not None
+                else {}
+            ),
         }
 
     try:
@@ -325,4 +349,21 @@ def launch_steam_app(
         "command_mode": "steam_applaunch",
         "launcher_pid": process.pid,
         "execution_context": "local_process",
+        **(
+            {
+                "runtime_ownership": {
+                    "schema_version": 2,
+                    "ownership_type":
+                        "posix_process_group",
+                    "process_group_id":
+                        int(os.getpgid(process.pid)),
+                    "session_id":
+                        int(os.getsid(process.pid)),
+                    "root_pid": int(process.pid),
+                    "boundary_established": True,
+                }
+            }
+            if runtime_id
+            else {}
+        ),
     }
