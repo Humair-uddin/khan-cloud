@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from khan_agent.gaming_backends import locate_sunshine
+from khan_agent.windows_session_broker import (
+    WindowsSessionBrokerError,
+    discover_interactive_session,
+)
 
 
 def _acf_value(text: str, key: str) -> str:
@@ -65,80 +69,52 @@ def collect_steam_inventory() -> dict[str, Any]:
 
 
 def collect_interactive_session() -> dict[str, Any]:
+    """
+    Report the same authoritative Windows session boundary used
+    immediately before customer-process launch.
+
+    This intentionally replaces the older explorer.exe heuristic so
+    heartbeat admission and launch validation cannot disagree about
+    which console session is authoritative.
+    """
     if platform.system() != "Windows":
         return {
             "available": False,
             "session_id": None,
             "username": "",
-        }
-
-    command = [
-        "powershell.exe",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        (
-            "$p = Get-CimInstance Win32_Process | "
-            "Where-Object { $_.Name -eq 'explorer.exe' } | "
-            "Select-Object -First 1; "
-            "if ($null -eq $p) { exit 3 }; "
-            "$o = $p | Invoke-CimMethod -MethodName GetOwner; "
-            "Write-Output ($p.SessionId.ToString() + '|' + "
-            "$o.Domain + [char]92 + $o.User)"
-        ),
-    ]
-
-    try:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return {
-            "available": False,
-            "session_id": None,
-            "username": "",
-        }
-
-    if result.returncode != 0:
-        return {
-            "available": False,
-            "session_id": None,
-            "username": "",
-        }
-
-    raw = result.stdout.strip().splitlines()
-    if not raw:
-        return {
-            "available": False,
-            "session_id": None,
-            "username": "",
-        }
-
-    parts = raw[-1].split("|", 1)
-    if len(parts) != 2:
-        return {
-            "available": False,
-            "session_id": None,
-            "username": "",
+            "managed": False,
+            "source": "unsupported_platform",
+            "broker_mode": "existing",
         }
 
     try:
-        session_id = int(parts[0])
-    except ValueError:
+        session = discover_interactive_session()
+    except WindowsSessionBrokerError as exc:
         return {
             "available": False,
             "session_id": None,
             "username": "",
+            "managed": False,
+            "source": "broker_error",
+            "broker_mode": "existing",
+            "error": type(exc).__name__,
         }
+
+    value = session.as_dict()
 
     return {
-        "available": session_id > 0,
-        "session_id": session_id,
-        "username": parts[1].strip(),
+        "available": bool(value["available"]),
+        "session_id": (
+            int(value["session_id"])
+            if int(value["session_id"]) > 0
+            else None
+        ),
+        "username": str(value.get("username") or ""),
+        "managed": bool(value.get("managed", False)),
+        "source": str(value.get("source") or ""),
+        "broker_mode": str(
+            value.get("broker_mode") or "existing"
+        ),
     }
 
 

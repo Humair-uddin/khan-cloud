@@ -11,6 +11,10 @@ $Runtime = Join-Path $AgentRoot "runtime"
 $Config = Join-Path $AgentRoot "config.yaml"
 $Credentials = Join-Path $AgentRoot "credentials.json"
 $Identity = Join-Path $AgentRoot "identity.json"
+$BrokerState = Join-Path $AgentRoot "session-broker.json"
+$BrokerConfigurator = Join-Path `
+    $Runtime `
+    "deploy\configure-windows-gaming-session.ps1"
 $Python = Join-Path $Runtime ".venv\Scripts\python.exe"
 
 $checks = [ordered]@{}
@@ -20,6 +24,12 @@ $checks.python_present = Test-Path $Python -PathType Leaf
 $checks.config_present = Test-Path $Config -PathType Leaf
 $checks.credentials_absent = -not (Test-Path $Credentials)
 $checks.identity_absent = -not (Test-Path $Identity)
+$checks.session_broker_capability_present = (
+    Test-Path $BrokerConfigurator -PathType Leaf
+)
+$checks.session_broker_state_absent = (
+    -not (Test-Path $BrokerState)
+)
 
 $agent = Get-Service -Name "KhanCloudAgent" -ErrorAction SilentlyContinue
 $checks.agent_service_present = [bool]$agent

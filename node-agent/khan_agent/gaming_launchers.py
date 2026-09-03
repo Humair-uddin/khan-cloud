@@ -20,6 +20,7 @@ class PreparedGameLaunch:
     game: dict[str, Any]
     launcher_executable: str
     runtime_id: str = ""
+    expected_session_id: int | None = None
 
 
 class LauncherAdapter(Protocol):
@@ -102,6 +103,7 @@ class SteamLauncherAdapter:
                     Path(prepared.launcher_executable),
                     prepared.launcher_game_id,
                     runtime_id=prepared.runtime_id,
+                    expected_session_id=prepared.expected_session_id,
                 )
 
             # Preserve the frozen KG-002 adapter signature for

@@ -12,6 +12,9 @@ def test_non_windows_interactive_session_is_unavailable(monkeypatch):
         "available": False,
         "session_id": None,
         "username": "",
+        "managed": False,
+        "source": "unsupported_platform",
+        "broker_mode": "existing",
     }
 
 
@@ -47,20 +50,10 @@ def test_gaming_inventory_contains_interactive_session(monkeypatch):
     assert inventory["interactive_session"]["session_id"] == 1
 
 
-def test_windows_interactive_session_detects_console_explorer(
+def test_windows_interactive_session_detects_console_session(
     monkeypatch,
 ):
-    captured = {}
-
-    class Result:
-        returncode = 0
-        stdout = "1|DESKTOP-4ROCVUH\\KC-01\n"
-        stderr = ""
-
-    def fake_run(command, **kwargs):
-        captured["command"] = command
-        captured["kwargs"] = kwargs
-        return Result()
+    from khan_agent.windows_session_broker import InteractiveSession
 
     monkeypatch.setattr(
         gaming_inventory.platform,
@@ -69,38 +62,25 @@ def test_windows_interactive_session_detects_console_explorer(
     )
 
     monkeypatch.setattr(
-        gaming_inventory.subprocess,
-        "run",
-        fake_run,
+        gaming_inventory,
+        "discover_interactive_session",
+        lambda: InteractiveSession(
+            session_id=1,
+            available=True,
+            source="active_console",
+            managed=False,
+            username="DESKTOP-4ROCVUH\\KC-01",
+            broker_mode="existing",
+        ),
     )
 
-    result = (
-        gaming_inventory.collect_interactive_session()
-    )
+    result = gaming_inventory.collect_interactive_session()
 
     assert result == {
         "available": True,
         "session_id": 1,
         "username": "DESKTOP-4ROCVUH\\KC-01",
+        "managed": False,
+        "source": "active_console",
+        "broker_mode": "existing",
     }
-
-    command = captured["command"]
-
-    assert command[:4] == [
-        "powershell.exe",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-    ]
-
-    script = command[4]
-
-    assert (
-        "Where-Object { $_.Name -eq 'explorer.exe' }"
-        in script
-    )
-
-    assert "[char]92" in script
-    assert captured["kwargs"]["shell"] is False if (
-        "shell" in captured["kwargs"]
-    ) else True

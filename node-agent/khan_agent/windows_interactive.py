@@ -14,6 +14,10 @@ from khan_agent.runtime_ownership import (
     RuntimeOwnershipError,
     open_windows_job,
 )
+from khan_agent.windows_session_broker import (
+    WindowsSessionBrokerError,
+    require_interactive_session,
+)
 
 
 class InteractiveSessionError(RuntimeError):
@@ -60,6 +64,7 @@ def launch_in_active_session(
     command: Sequence[str],
     *,
     ownership_name: str | None = None,
+    expected_session_id: int | None = None,
 ) -> InteractiveLaunchResult:
     """
     Launch a process in the active interactive Windows user's session.
@@ -94,7 +99,14 @@ def launch_in_active_session(
             "Required pywin32 interactive-session support is unavailable."
         ) from exc
 
-    session_id = active_console_session_id()
+    try:
+        broker_session = require_interactive_session(
+            expected_session_id=expected_session_id,
+        )
+    except WindowsSessionBrokerError as exc:
+        raise InteractiveSessionError(str(exc)) from exc
+
+    session_id = int(broker_session.session_id)
 
     try:
         user_token = win32ts.WTSQueryUserToken(session_id)

@@ -13,8 +13,12 @@ def test_windows_runtime_accepts_real_interactive_session(
     )
     monkeypatch.setattr(
         gaming_runtime,
-        "active_console_session_id",
-        lambda: 2,
+        "require_interactive_session",
+        lambda: type(
+            "Session",
+            (),
+            {"session_id": 2},
+        )(),
     )
 
     value = (
@@ -39,8 +43,12 @@ def test_windows_runtime_rejects_session_zero(
     )
     monkeypatch.setattr(
         gaming_runtime,
-        "active_console_session_id",
-        lambda: 0,
+        "require_interactive_session",
+        lambda: type(
+            "Session",
+            (),
+            {"session_id": 0},
+        )(),
     )
 
     with pytest.raises(
@@ -60,13 +68,13 @@ def test_windows_runtime_fails_closed_when_session_missing(
     )
 
     def missing():
-        raise gaming_runtime.InteractiveSessionError(
+        raise gaming_runtime.WindowsSessionBrokerError(
             "No active console session."
         )
 
     monkeypatch.setattr(
         gaming_runtime,
-        "active_console_session_id",
+        "require_interactive_session",
         missing,
     )
 
@@ -139,4 +147,5 @@ def test_existing_interactive_launcher_boundary_is_preserved():
         gaming_backends.__file__
     ).read_text()
 
-    assert "launch_in_active_session(command)" in source
+    assert "launch_in_active_session(" in source
+    assert "expected_session_id=expected_session_id" in source

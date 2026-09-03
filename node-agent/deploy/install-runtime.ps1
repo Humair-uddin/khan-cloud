@@ -150,7 +150,29 @@ if (Test-Path $PyProject) {
 
 Write-Host "===== INSTALL CONFIGURATION ====="
 
-Copy-Item $ConfigFile $InstalledConfig -Force
+$ConfigSourceFullPath = (
+    [System.IO.Path]::GetFullPath($ConfigFile)
+).TrimEnd("\")
+
+$InstalledConfigFullPath = (
+    [System.IO.Path]::GetFullPath($InstalledConfig)
+).TrimEnd("\")
+
+$ConfigAlreadyInstalled = [string]::Equals(
+    $ConfigSourceFullPath,
+    $InstalledConfigFullPath,
+    [System.StringComparison]::OrdinalIgnoreCase
+)
+
+if ($ConfigAlreadyInstalled) {
+    Write-Host (
+        "Configuration source already matches installed target - " +
+        "preserving config.yaml in place."
+    )
+}
+else {
+    Copy-Item $ConfigFile $InstalledConfig -Force
+}
 
 # The Windows gaming-host profile uses:
 # node_role: gaming_host
@@ -208,7 +230,7 @@ Write-Host "===== TEST ====="
 Push-Location $Runtime
 
 try {
-    & $Python -m pytest -q
+    & $Python -m pytest -q -m "not source_tree_only"
 
     if ($LASTEXITCODE -ne 0) {
         throw "Khan Cloud node-agent tests failed."
@@ -275,6 +297,124 @@ path.write_text(yaml.safe_dump(data, sort_keys=False))
 }
 finally {
     Pop-Location
+}
+
+# ------------------------------------------------------------
+# WINDOWS INTERACTIVE SESSION BROKER
+# ------------------------------------------------------------
+
+Write-Host "===== CONFIGURE WINDOWS GAMING SESSION BROKER ====="
+
+$BrokerPolicyScript = Join-Path `
+    $Runtime `
+    "deploy\configure-windows-gaming-session.ps1"
+
+if (-not (Test-Path $BrokerPolicyScript -PathType Leaf)) {
+    throw (
+        "Windows gaming session broker configurator is missing: " +
+        $BrokerPolicyScript
+    )
+}
+
+$BrokerPolicy = @'
+import sys
+from pathlib import Path
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text()) or {}
+gaming = data.get("gaming") or {}
+
+enabled = bool(gaming.get("enabled", False))
+mode = str(
+    gaming.get("session_broker_mode", "existing")
+).strip().lower()
+
+username = str(
+    gaming.get("session_broker_username", "KhanGaming")
+).strip()
+
+print(
+    ("1" if enabled else "0")
+    + "|"
+    + mode
+    + "|"
+    + username
+)
+'@
+
+$BrokerPolicyValue = (
+    $BrokerPolicy |
+    & $Python - $InstalledConfig
+)
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to read Windows gaming session broker policy."
+}
+
+$BrokerParts = (
+    [string]$BrokerPolicyValue
+).Trim().Split("|", 3)
+
+if ($BrokerParts.Count -ne 3) {
+    throw "Windows gaming session broker policy is invalid."
+}
+
+$GamingEnabled = ($BrokerParts[0] -eq "1")
+$SessionBrokerMode = $BrokerParts[1].Trim().ToLowerInvariant()
+$SessionBrokerUser = $BrokerParts[2].Trim()
+
+$AllowedBrokerModes = @(
+    "existing",
+    "managed_autologon"
+)
+
+if ($SessionBrokerMode -notin $AllowedBrokerModes) {
+    throw (
+        "Unsupported Windows gaming session_broker_mode: " +
+        $SessionBrokerMode
+    )
+}
+
+if (
+    $GamingEnabled -and
+    $SessionBrokerMode -eq "managed_autologon"
+) {
+    if ([string]::IsNullOrWhiteSpace($SessionBrokerUser)) {
+        throw (
+            "Managed Windows gaming session requires " +
+            "session_broker_username."
+        )
+    }
+
+    & $BrokerPolicyScript `
+        -Action Configure `
+        -UserName $SessionBrokerUser
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows gaming session broker configuration failed."
+    }
+
+    Write-Host (
+        "SESSION_BROKER=managed_autologon:" +
+        $SessionBrokerUser
+    )
+}
+else {
+    & $BrokerPolicyScript `
+        -Action Deconfigure `
+        -UserName $SessionBrokerUser
+
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "Windows gaming session broker deconfiguration failed."
+        )
+    }
+
+    Write-Host (
+        "SESSION_BROKER=" +
+        $SessionBrokerMode
+    )
 }
 
 # ------------------------------------------------------------

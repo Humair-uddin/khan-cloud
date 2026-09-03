@@ -20,7 +20,7 @@ function Require-Path {
 }
 
 Write-Host "============================================================"
-Write-Host " KHAN CLOUD — WINDOWS GAMING GOLDEN TEMPLATE PREP"
+Write-Host " KHAN CLOUD - WINDOWS GAMING GOLDEN TEMPLATE PREP"
 Write-Host "============================================================"
 
 Assert-Administrator
@@ -30,6 +30,10 @@ $Runtime = Join-Path $AgentRoot "runtime"
 $Config = Join-Path $AgentRoot "config.yaml"
 $Credentials = Join-Path $AgentRoot "credentials.json"
 $Identity = Join-Path $AgentRoot "identity.json"
+$BrokerState = Join-Path $AgentRoot "session-broker.json"
+$BrokerConfigurator = Join-Path `
+    $Runtime `
+    "deploy\configure-windows-gaming-session.ps1"
 $Python = Join-Path $Runtime ".venv\Scripts\python.exe"
 $SunshineCandidates = @(
     "C:\Program Files\Sunshine\sunshine.exe",
@@ -40,6 +44,9 @@ Write-Host "`n===== REQUIRED COMPONENTS ====="
 Require-Path $Runtime "KhanCloud runtime"
 Require-Path $Config "KhanCloud config"
 Require-Path $Python "KhanCloud Python"
+Require-Path `
+    $BrokerConfigurator `
+    "KhanCloud Windows session broker configurator"
 
 $Sunshine = $SunshineCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
 if (-not $Sunshine) { throw "Sunshine executable is not installed in the golden image." }
@@ -61,7 +68,11 @@ Write-Host "`n===== SCRUB CLONE-SPECIFIC IDENTITY ====="
 Stop-Service KhanCloudAgent -Force -ErrorAction SilentlyContinue
 Set-Service KhanCloudAgent -StartupType Manual
 
-foreach ($Path in @($Credentials, $Identity)) {
+foreach ($Path in @(
+    $Credentials,
+    $Identity,
+    $BrokerState
+)) {
     if (Test-Path $Path -PathType Leaf) {
         Remove-Item $Path -Force
         Write-Host "REMOVED: $Path"
@@ -94,6 +105,8 @@ $manifest = [ordered]@{
     qemu_guest_agent = $qga.Name
     khan_agent_runtime = $Runtime
     khan_agent_service = "KhanCloudAgent"
+    session_broker_capability = $true
+    session_broker_state_absent = (-not (Test-Path $BrokerState))
     sunshine_executable = $Sunshine
     clone_identity_scrubbed = (-not (Test-Path $Credentials)) -and (-not (Test-Path $Identity))
     enrollment_placeholder_blank = $true
@@ -116,5 +129,5 @@ if ($Generalize) {
     exit 0
 }
 
-Write-Host "`nPASS — template prepared. Validate, then seal it on Proxmox."
+Write-Host "`nPASS - template prepared. Validate, then seal it on Proxmox."
 Write-Host "Use -Generalize only when ready for the final Sysprep shutdown."

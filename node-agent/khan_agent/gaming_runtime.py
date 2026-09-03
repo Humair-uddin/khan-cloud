@@ -46,9 +46,9 @@ from khan_agent.vdd_runtime_policy import (
     apply_display_policy,
 )
 from khan_agent.virtualization import JobExecutionResult
-from khan_agent.windows_interactive import (
-    InteractiveSessionError,
-    active_console_session_id,
+from khan_agent.windows_session_broker import (
+    WindowsSessionBrokerError,
+    require_interactive_session,
 )
 
 
@@ -434,10 +434,9 @@ def _interactive_session_context() -> dict[str, Any]:
         }
 
     try:
-        session_id = int(
-            active_console_session_id()
-        )
-    except InteractiveSessionError as exc:
+        broker_session = require_interactive_session()
+        session_id = int(broker_session.session_id)
+    except WindowsSessionBrokerError as exc:
         raise GamingRuntimeError(
             "Windows interactive session is unavailable: "
             f"{exc}"
@@ -760,6 +759,11 @@ def create_session(
             prepared_launch = replace(
                 prepared_launch,
                 runtime_id=runtime_id,
+                expected_session_id=(
+                    interactive_session.get("session_id")
+                    if interactive_session.get("validated")
+                    else None
+                ),
             )
 
             # Persist a deterministic ownership intent before process
@@ -1637,6 +1641,11 @@ def change_session_state(
             prepared_launch = replace(
                 prepared_launch,
                 runtime_id=runtime_id,
+                expected_session_id=(
+                    interactive_session.get("session_id")
+                    if interactive_session.get("validated")
+                    else None
+                ),
             )
 
             # Crash recovery authority must exist before process creation.

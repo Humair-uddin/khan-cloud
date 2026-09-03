@@ -319,6 +319,7 @@ def test_unsupported_display_policy_action_fails_closed(tmp_path):
     assert "unsupported" in result.error_message.lower()
 
 
+@pytest.mark.source_tree_only
 def test_vdd_runtime_policy_has_single_production_owner():
     repo_root = Path(__file__).resolve().parents[2]
 
@@ -385,6 +386,18 @@ def test_vdd_runtime_policy_has_single_production_owner():
 
 
 def _good_session_environment(monkeypatch):
+    from khan_agent import gaming_runtime
+
+    # These are runtime-policy/session unit tests.  A real Windows
+    # host may have a healthy Khan VDD, so availability probing would
+    # otherwise execute pnputil /restart-device during pytest.
+    # Live VDD activation is validated separately.
+    monkeypatch.setattr(
+        gaming_runtime,
+        "live_activation_available",
+        lambda: False,
+    )
+
     from khan_agent import gaming_runtime
 
     monkeypatch.setattr(

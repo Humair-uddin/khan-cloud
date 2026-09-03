@@ -24,3 +24,16 @@ telemetry:
   enabled: true
   endpoint: /api/v1/nodes/installation-events
   installer_database_path: /opt/khan-cloud/state/installer/installer.db
+
+gaming:
+  enabled: false
+  execution_backend: none
+  streaming_backend: none
+  session_broker_mode: existing
+  session_broker_username: KhanGaming
+  sunshine_api_url: https://127.0.0.1:47990
+  sunshine_api_username: ""
+  sunshine_api_password: ""
+  sunshine_verify_tls: false
+  vdd_template_path: C:\ProgramData\KhanCloud\VirtualDisplay\RuntimeConfig\khan-vdd-settings.xml
+  vdd_target_root: C:\ProgramData\KhanCloud\VirtualDisplay

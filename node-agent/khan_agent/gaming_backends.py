@@ -263,6 +263,7 @@ def launch_steam_app(
     app_id: str,
     *,
     runtime_id: str = "",
+    expected_session_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Ask the existing Steam client to launch one installed AppID.
@@ -301,11 +302,15 @@ def launch_steam_app(
                     ownership_name=windows_job_name(
                         runtime_id
                     ),
+                    expected_session_id=expected_session_id,
                 )
             else:
                 # Preserve the frozen KG-009 interactive-launch
                 # boundary for non-D1/legacy callers.
-                launched = launch_in_active_session(command)
+                launched = launch_in_active_session(
+                    command,
+                    expected_session_id=expected_session_id,
+                )
         except InteractiveSessionError as exc:
             raise RuntimeError(
                 f"Unable to start Steam AppID {normalized} "
