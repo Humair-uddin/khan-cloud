@@ -47,7 +47,7 @@ def load_broker_state(
 
     try:
         value = json.loads(
-            state_path.read_text(encoding="utf-8")
+            state_path.read_text(encoding="utf-8-sig")
         )
     except (OSError, ValueError, TypeError):
         return {}

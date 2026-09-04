@@ -80,7 +80,9 @@ class GamingConfig(BaseModel):
     session_broker_username: str = "KhanGaming"
     sunshine_api_url: str = "https://127.0.0.1:47990"
     sunshine_api_username: str = ""
-    sunshine_api_password: str = ""
+    sunshine_api_password: str = Field(default="", exclude=True)
+    sunshine_credential_source: str = "config"
+    sunshine_secret_name: str = "KhanCloudSunshineApiPassword"
     sunshine_verify_tls: bool = False
     vdd_template_path: Path = Path(
         r"C:\ProgramData\KhanCloud\VirtualDisplay\RuntimeConfig\khan-vdd-settings.xml"
@@ -113,7 +115,55 @@ class AgentSettings(BaseModel):
     def load(cls, path: Path) -> "AgentSettings":
         if path.exists():
             raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
-            return cls.model_validate(raw)
+            settings = cls.model_validate(raw)
+
+            credential_source = (
+                settings.gaming.sunshine_credential_source
+                .strip()
+                .lower()
+            )
+
+            if credential_source == "windows_lsa":
+                if settings.gaming.sunshine_api_password:
+                    raise ValueError(
+                        "sunshine_api_password must not contain "
+                        "plaintext when sunshine_credential_source "
+                        "is windows_lsa."
+                    )
+
+                if not settings.gaming.sunshine_api_username.strip():
+                    raise ValueError(
+                        "sunshine_api_username is required when "
+                        "Sunshine uses Windows protected credentials."
+                    )
+
+                from khan_agent.windows_protected_secret import (
+                    ProtectedSecretError,
+                    read_windows_protected_secret,
+                )
+
+                try:
+                    secret = read_windows_protected_secret(
+                        settings.gaming.sunshine_secret_name,
+                        required=True,
+                    )
+                except ProtectedSecretError as exc:
+                    raise ValueError(
+                        "Unable to load the protected Sunshine "
+                        "API credential."
+                    ) from exc
+
+                settings.gaming.sunshine_api_password = (
+                    secret or ""
+                )
+
+            elif credential_source != "config":
+                raise ValueError(
+                    "Unsupported sunshine_credential_source: "
+                    f"{credential_source or '<empty>'}."
+                )
+
+            return settings
 
         return cls.model_validate(
             {

@@ -229,6 +229,33 @@ def test_d1_stop_then_start_relaunches_structural_runtime(
         fake_launch,
     )
 
+    # KG-009D3 adds an authoritative stream-readiness gate after
+    # structural relaunch. This D1 test is concerned with rebuilding
+    # the runtime ownership boundary, so provide deterministic D3
+    # readiness evidence rather than contacting local Sunshine.
+    monkeypatch.setattr(
+        gaming_runtime,
+        "_verify_stream_readiness",
+        lambda **kwargs: {
+            "runtime_id": runtime_id,
+            "verified": True,
+            "display": {
+                "required": False,
+                "healthy": True,
+            },
+            "sunshine": {
+                "ready": True,
+                "authenticated_api": True,
+            },
+            "ownership": {
+                "ownership_boundary_verified": True,
+                "owned_process_count": 1,
+            },
+            "launcher_pid": 4242,
+            "workload_process_required": True,
+        },
+    )
+
     result = gaming_runtime.change_session_state(
         {"session_id": session_id},
         state_root=tmp_path,
@@ -755,7 +782,10 @@ def test_d1_structural_stop_then_delete_uses_persisted_terminated_proof(
         == 0
     )
 
-    assert len(termination_inputs) == 2
+    # STOP performs the one destructive ownership operation.
+    # DELETE consumes the durable verified terminal proof and must
+    # never attempt to terminate that already-destroyed boundary.
+    assert len(termination_inputs) == 1
 
     assert (
         termination_inputs[0][
@@ -764,9 +794,195 @@ def test_d1_structural_stop_then_delete_uses_persisted_terminated_proof(
         == "windows_job"
     )
 
+
+def test_d1_delete_accepts_verified_persisted_terminated_proof_without_retermination(
+    tmp_path,
+    monkeypatch,
+):
+    """Regression for KG-009D3 live KC-01 stop -> delete defect.
+
+    STOP persists ownership_type=terminated after proving the
+    structural boundary empty. DELETE must validate that terminal
+    evidence instead of passing it back to the active ownership
+    terminator, which deliberately does not accept terminated as an
+    ownership mechanism.
+    """
+    state_root = tmp_path / "gaming"
+    sessions = state_root / "sessions"
+    sessions.mkdir(parents=True)
+
+    session_id = (
+        "22345678-1234-4234-8234-123456789abc"
+    )
+    runtime_id = f"kc-gaming-{session_id}"
+    state_file = sessions / f"{runtime_id}.json"
+
+    state_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "session_id": session_id,
+                "runtime_id": runtime_id,
+                "status": "stopped",
+                "runtime_stage": "stopped",
+                "execution_backend":
+                    "windows_native",
+                "streaming_backend":
+                    "sunshine",
+                "gpu_uuid": "GPU-test",
+                "minimum_vram_mb": 8192,
+                "paired_clients": [],
+                "runtime_ownership": {
+                    "schema_version": 2,
+                    "ownership_type":
+                        "terminated",
+                    "runtime_id":
+                        runtime_id,
+                    "ownership_boundary_verified":
+                        True,
+                    "termination_verified":
+                        True,
+                    "owned_process_count": 0,
+                    "owned_process_count_remaining":
+                        0,
+                    "clean": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def must_not_reterminate(ownership):
+        raise AssertionError(
+            "DELETE attempted to re-terminate "
+            "persisted terminal ownership evidence"
+        )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "terminate_runtime_ownership",
+        must_not_reterminate,
+    )
+
+    delete = gaming_runtime.change_session_state(
+        {
+            "session_id": session_id,
+        },
+        state_root=state_root,
+        execution_backend="windows_native",
+        streaming_backend="sunshine",
+        action="delete",
+    )
+
+    assert delete.status == "succeeded"
+    assert delete.result["deleted"] is True
+    assert not state_file.exists()
+
+    sanitation = delete.result[
+        "sanitization"
+    ]
+
+    assert sanitation["sanitized"] is True
     assert (
-        termination_inputs[1][
-            "ownership_type"
+        sanitation[
+            "runtime_state_deleted"
         ]
+        is True
+    )
+
+    proof = sanitation[
+        "runtime_ownership"
+    ]
+
+    assert (
+        proof["ownership_type"]
         == "terminated"
+    )
+    assert (
+        proof[
+            "ownership_boundary_verified"
+        ]
+        is True
+    )
+    assert (
+        proof["termination_verified"]
+        is True
+    )
+    assert (
+        proof[
+            "owned_process_count_remaining"
+        ]
+        == 0
+    )
+    assert proof["clean"] is True
+    assert (
+        proof["already_terminated"]
+        is True
+    )
+
+
+def test_d1_delete_rejects_unverified_terminated_proof(
+    tmp_path,
+):
+    """Terminal evidence remains fail closed when incomplete."""
+    state_root = tmp_path / "gaming"
+    sessions = state_root / "sessions"
+    sessions.mkdir(parents=True)
+
+    session_id = (
+        "32345678-1234-4234-8234-123456789abc"
+    )
+    runtime_id = f"kc-gaming-{session_id}"
+    state_file = sessions / f"{runtime_id}.json"
+
+    state_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "session_id": session_id,
+                "runtime_id": runtime_id,
+                "status": "stopped",
+                "runtime_stage": "stopped",
+                "execution_backend":
+                    "windows_native",
+                "streaming_backend":
+                    "sunshine",
+                "gpu_uuid": "GPU-test",
+                "minimum_vram_mb": 8192,
+                "paired_clients": [],
+                "runtime_ownership": {
+                    "schema_version": 2,
+                    "ownership_type":
+                        "terminated",
+                    "runtime_id":
+                        runtime_id,
+                    "ownership_boundary_verified":
+                        True,
+                    "termination_verified":
+                        False,
+                    "owned_process_count": 1,
+                    "owned_process_count_remaining":
+                        1,
+                    "clean": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    delete = gaming_runtime.change_session_state(
+        {
+            "session_id": session_id,
+        },
+        state_root=state_root,
+        execution_backend="windows_native",
+        streaming_backend="sunshine",
+        action="delete",
+    )
+
+    assert delete.status == "blocked"
+    assert state_file.exists()
+    assert (
+        "Unsupported runtime ownership type: terminated"
+        in delete.error_message
     )

@@ -176,3 +176,62 @@ def unpair_client(
         "sunshine_client_uuid": client_uuid,
         "revoked": True,
     }
+
+
+
+def probe_sunshine_readiness(
+    *,
+    api_url: str,
+    username: str,
+    password: str,
+    verify_tls: bool,
+) -> dict[str, object]:
+    """Verify that Sunshine's authenticated local API is responsive."""
+
+    if not api_url:
+        raise SunshineBrokerError(
+            "Sunshine API URL is not configured."
+        )
+
+    try:
+        with httpx.Client(
+            base_url=api_url,
+            auth=(username, password),
+            verify=verify_tls,
+            timeout=5.0,
+        ) as client:
+            response = client.get("/api/clients/list")
+    except httpx.HTTPError as exc:
+        raise SunshineBrokerError(
+            "Sunshine authenticated API is not reachable."
+        ) from exc
+
+    if response.is_error:
+        raise SunshineBrokerError(
+            "Sunshine authenticated API readiness check failed "
+            f"with HTTP {response.status_code}."
+        )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise SunshineBrokerError(
+            "Sunshine readiness response was not valid JSON."
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise SunshineBrokerError(
+            "Sunshine readiness response has an invalid payload."
+        )
+
+    clients = payload.get("clients")
+    if clients is not None and not isinstance(clients, list):
+        raise SunshineBrokerError(
+            "Sunshine readiness response has an invalid clients list."
+        )
+
+    return {
+        "ready": True,
+        "authenticated_api": True,
+        "endpoint": "/api/clients/list",
+    }

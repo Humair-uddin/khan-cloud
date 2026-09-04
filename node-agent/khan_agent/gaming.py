@@ -200,6 +200,10 @@ def execute_gaming_job(
                 state_root=state_root,
                 execution_backend=execution_backend,
                 streaming_backend=streaming_backend,
+                sunshine_api_url=sunshine_api_url,
+                sunshine_api_username=sunshine_api_username,
+                sunshine_api_password=sunshine_api_password,
+                sunshine_verify_tls=sunshine_verify_tls,
                 vdd_template_path=vdd_template_path,
                 vdd_target_root=vdd_target_root,
             )

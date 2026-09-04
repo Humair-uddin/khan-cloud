@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import os
+from pathlib import Path
 import platform
 import subprocess
+import shutil
 import sys
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -90,6 +92,7 @@ def launch_in_active_session(
 
     try:
         import win32con
+        import win32event
         import win32process
         import win32profile
         import win32security
@@ -102,6 +105,7 @@ def launch_in_active_session(
     try:
         broker_session = require_interactive_session(
             expected_session_id=expected_session_id,
+            require_managed=True,
         )
     except WindowsSessionBrokerError as exc:
         raise InteractiveSessionError(str(exc)) from exc
@@ -143,11 +147,31 @@ def launch_in_active_session(
                 f"{session_id}: {type(exc).__name__}: {exc!r}"
             ) from exc
 
-        executable = argv[0]
+        requested_executable = argv[0]
+
+        # CreateProcessAsUser receives lpApplicationName explicitly.  A bare
+        # executable name must therefore be resolved before crossing into the
+        # managed user's token rather than relying on target-session PATH
+        # search semantics.  Preserve explicit paths exactly as supplied.
+        if os.path.dirname(requested_executable):
+            executable = requested_executable
+        else:
+            executable = shutil.which(requested_executable)
+
+            if not executable:
+                raise InteractiveSessionError(
+                    "Unable to resolve interactive executable: "
+                    f"{requested_executable}"
+                )
+
+        resolved_argv = [
+            executable,
+            *argv[1:],
+        ]
 
         # list2cmdline applies Windows CreateProcess quoting rules.
         # Launcher metadata is passed without command-shell interpretation.
-        command_line = subprocess.list2cmdline(argv)
+        command_line = subprocess.list2cmdline(resolved_argv)
 
         startup = win32process.STARTUPINFO()
         startup.dwFlags |= win32process.STARTF_USESHOWWINDOW
@@ -188,6 +212,14 @@ def launch_in_active_session(
 
         try:
             if ownership_name:
+                # The Windows service may run with a working directory
+                # such as System32.  The agent is deployed as source under
+                # runtime_root rather than installed into site-packages, so
+                # make the supervisor import context deterministic.
+                runtime_root = str(
+                    Path(__file__).resolve().parents[1]
+                )
+
                 supervisor = subprocess.Popen(
                     [
                         sys.executable,
@@ -200,6 +232,7 @@ def launch_in_active_session(
                     stderr=subprocess.PIPE,
                     text=True,
                     shell=False,
+                    cwd=runtime_root,
                 )
 
                 ready = (
@@ -275,8 +308,20 @@ def launch_in_active_session(
             )
 
         except Exception:
+            # Ownership establishment is fail-closed.  A process
+            # created suspended must not escape merely because Job Object
+            # initialization failed.  Terminate it and wait for Windows to
+            # signal process exit before releasing the process handle.
             try:
                 process_handle.TerminateProcess(1)
+
+                try:
+                    win32event.WaitForSingleObject(
+                        process_handle,
+                        5000,
+                    )
+                except Exception:
+                    pass
             except Exception:
                 pass
 

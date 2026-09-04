@@ -97,9 +97,15 @@ def test_windows_configurator_uses_lsa_not_plaintext_registry():
         / "configure-windows-gaming-session.ps1"
     ).read_text(encoding="utf-8")
 
-    assert 'InitString("DefaultPassword"' in script
-    assert "LsaStorePrivateData" in script
-    assert "POLICY_CREATE_SECRET" in script
+    helper = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "windows-lsa-secret.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'Store("DefaultPassword", password)' in helper
+    assert "LsaStorePrivateData" in helper
+    assert "POLICY_CREATE_SECRET" in helper
     assert "Remove-ItemProperty" in script
     assert '-Name "DefaultPassword"' in script
 
@@ -143,9 +149,15 @@ def test_windows_configurator_has_explicit_deconfigure_path():
 
     assert '[ValidateSet("Configure", "Deconfigure")]' in script
     assert '$Action -eq "Deconfigure"' in script
+    helper = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "windows-lsa-secret.ps1"
+    ).read_text(encoding="utf-8")
+
     assert "ClearDefaultPassword" in script
-    assert "LsaStorePrivateDataNull" in script
-    assert "IntPtr.Zero" in script
+    assert "LsaStorePrivateDataNull" in helper
+    assert "IntPtr.Zero" in helper
     assert "AUTOADMINLOGON=DISABLED" in script
     assert "LSA_DEFAULTPASSWORD=REMOVED" in script
     assert "BROKER_STATE=REMOVED" in script
@@ -268,3 +280,115 @@ def test_managed_account_marker_contains_no_password_material():
 
     assert "password" not in marker
     assert "secret" not in marker
+
+
+def test_broker_state_loader_accepts_utf8_bom(tmp_path):
+    import json
+
+    from khan_agent.windows_session_broker import load_broker_state
+
+    state = tmp_path / "session-broker.json"
+
+    payload = {
+        "contract_version": "kg009d2-v1",
+        "mode": "managed_autologon",
+        "managed": True,
+        "username": "KhanGaming",
+    }
+
+    state.write_bytes(
+        b"\xef\xbb\xbf"
+        + json.dumps(payload).encode("utf-8")
+    )
+
+    loaded = load_broker_state(state)
+
+    assert loaded == payload
+
+
+def test_broker_state_loader_accepts_bom_free_utf8(tmp_path):
+    import json
+
+    from khan_agent.windows_session_broker import load_broker_state
+
+    state = tmp_path / "session-broker.json"
+
+    payload = {
+        "contract_version": "kg009d2-v1",
+        "mode": "managed_autologon",
+        "managed": True,
+        "username": "KhanGaming",
+    }
+
+    state.write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    assert load_broker_state(state) == payload
+
+
+def test_broker_state_loader_fails_closed_for_malformed_json(
+    tmp_path,
+):
+    from khan_agent.windows_session_broker import load_broker_state
+
+    state = tmp_path / "session-broker.json"
+
+    state.write_text(
+        "{not-json",
+        encoding="utf-8",
+    )
+
+    assert load_broker_state(state) == {}
+
+
+def test_broker_state_loader_fails_closed_when_missing(tmp_path):
+    from khan_agent.windows_session_broker import load_broker_state
+
+    state = tmp_path / "missing-session-broker.json"
+
+    assert load_broker_state(state) == {}
+
+
+def test_managed_session_configurator_is_idempotent_for_owned_account():
+    from pathlib import Path
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "configure-windows-gaming-session.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'Write-Host "ACCOUNT_PRESERVED=$UserName"' in script
+    assert 'Write-Host "ACCOUNT_ROTATED=$UserName"' not in script
+
+    assert "$credentialsChanged = $false" in script
+    assert "if ($credentialsChanged)" in script
+
+    assert (
+        'Write-Host "REBOOT_REQUIRED_FOR_NEW_CONSOLE_SESSION=NO"'
+        in script
+    )
+
+
+def test_managed_session_configurator_writes_bom_free_utf8_state():
+    from pathlib import Path
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "configure-windows-gaming-session.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "System.Text.UTF8Encoding($false)" in script
+    assert "[System.IO.File]::WriteAllText(" in script
+
+    broker_write_section = script[
+        script.index("$stateJson = ("):
+        script.index(
+            'Write-Host "BROKER_STATE=$StatePath"'
+        )
+    ]
+
+    assert "-Encoding UTF8" not in broker_write_section

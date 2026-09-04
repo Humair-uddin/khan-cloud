@@ -96,6 +96,338 @@ if (
 }
 
 # ------------------------------------------------------------
+# WINDOWS RUNTIME UPGRADE TRANSACTION
+# ------------------------------------------------------------
+
+$RuntimeBackup = Join-Path $AgentRoot "runtime.rollback"
+$ExistingServicePresent = $false
+$ExistingServiceWasRunning = $false
+$RuntimeBackupCreated = $false
+$RuntimeTransactionActive = $false
+$DependencyTimeoutSeconds = 600
+
+function Stop-KhanCloudAgentForRuntimeMutation {
+    $ExistingService = Get-Service `
+        -Name $ServiceName `
+        -ErrorAction SilentlyContinue
+
+    if (-not $ExistingService) {
+        Write-Host "Existing Khan Cloud service is absent."
+        return
+    }
+
+    $script:ExistingServicePresent = $true
+
+    if ($ExistingService.Status -eq "Running") {
+        $script:ExistingServiceWasRunning = $true
+    }
+
+    if ($ExistingService.Status -ne "Stopped") {
+        Write-Host (
+            "Stopping Khan Cloud service before runtime mutation."
+        )
+
+        Stop-Service `
+            -Name $ServiceName `
+            -Force `
+            -ErrorAction Stop
+
+        (Get-Service -Name $ServiceName).WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(30)
+        )
+    }
+
+    $Stopped = Get-Service `
+        -Name $ServiceName `
+        -ErrorAction Stop
+
+    if ($Stopped.Status -ne "Stopped") {
+        throw (
+            "Khan Cloud service did not quiesce before runtime mutation."
+        )
+    }
+}
+
+function Invoke-BoundedPythonCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonPath,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description,
+
+        [int]$TimeoutSeconds = 600
+    )
+
+    $OutputPath = Join-Path `
+        $env:TEMP `
+        ("khan-cloud-" + [guid]::NewGuid().ToString("N") + ".out")
+
+    $ErrorPath = Join-Path `
+        $env:TEMP `
+        ("khan-cloud-" + [guid]::NewGuid().ToString("N") + ".err")
+
+    $Process = $null
+    $StandardOutput = $null
+    $StandardError = $null
+
+    try {
+        $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+
+        $StartInfo.FileName = $PythonPath
+        $StartInfo.UseShellExecute = $false
+        $StartInfo.CreateNoWindow = $true
+        $StartInfo.RedirectStandardOutput = $true
+        $StartInfo.RedirectStandardError = $true
+
+        # Windows PowerShell 5.1 does not expose
+        # ProcessStartInfo.ArgumentList. Quote every argument explicitly
+        # for the Windows CreateProcess command-line contract.
+        $QuotedArguments = @(
+            foreach ($Argument in $Arguments) {
+                $Value = [string]$Argument
+
+                if (
+                    $Value.Length -eq 0 -or
+                    $Value -match '[\s"]'
+                ) {
+                    $Escaped = $Value -replace '(\\*)"', '$1$1\"'
+                    $Escaped = $Escaped -replace '(\\+)$', '$1$1'
+
+                    '"' + $Escaped + '"'
+                }
+                else {
+                    $Value
+                }
+            }
+        )
+
+        $StartInfo.Arguments = $QuotedArguments -join " "
+
+        $Process = New-Object System.Diagnostics.Process
+        $Process.StartInfo = $StartInfo
+
+        if (-not $Process.Start()) {
+            throw "$Description failed to start."
+        }
+
+        $StandardOutput = $Process.StandardOutput.ReadToEndAsync()
+        $StandardError = $Process.StandardError.ReadToEndAsync()
+
+        $Completed = $Process.WaitForExit(
+            $TimeoutSeconds * 1000
+        )
+
+        if (-not $Completed) {
+            Write-Host (
+                "$Description timed out after " +
+                "$TimeoutSeconds seconds."
+            )
+
+            & taskkill.exe `
+                /PID $Process.Id `
+                /T `
+                /F |
+                Out-Null
+
+            try {
+                $Process.WaitForExit()
+            }
+            catch {
+            }
+
+            throw "$Description timed out."
+        }
+
+        $Process.WaitForExit()
+
+        $ProcessExitCode = [int]$Process.ExitCode
+
+        $OutputText = $StandardOutput.GetAwaiter().GetResult()
+        $ErrorText = $StandardError.GetAwaiter().GetResult()
+
+        if (-not [string]::IsNullOrEmpty($OutputText)) {
+            [System.IO.File]::WriteAllText(
+                $OutputPath,
+                $OutputText
+            )
+
+            Get-Content -LiteralPath $OutputPath |
+                Write-Host
+        }
+
+        if (-not [string]::IsNullOrEmpty($ErrorText)) {
+            [System.IO.File]::WriteAllText(
+                $ErrorPath,
+                $ErrorText
+            )
+
+            Get-Content -LiteralPath $ErrorPath |
+                Write-Host
+        }
+
+        if ($ProcessExitCode -ne 0) {
+            throw (
+                "$Description failed with exit code " +
+                $ProcessExitCode +
+                "."
+            )
+        }
+    }
+    finally {
+        if ($Process) {
+            $Process.Dispose()
+        }
+
+        Remove-Item `
+            -LiteralPath $OutputPath,$ErrorPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+function Restore-KhanCloudRuntime {
+    Write-Host "===== ROLLBACK WINDOWS RUNTIME ====="
+
+    $CurrentService = Get-Service `
+        -Name $ServiceName `
+        -ErrorAction SilentlyContinue
+
+    if (
+        $CurrentService -and
+        $CurrentService.Status -ne "Stopped"
+    ) {
+        Stop-Service `
+            -Name $ServiceName `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+        try {
+            (Get-Service -Name $ServiceName).WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                [TimeSpan]::FromSeconds(30)
+            )
+        }
+        catch {
+            Write-Warning (
+                "Service stop during rollback could not be verified."
+            )
+        }
+    }
+
+    if (Test-Path $Runtime -PathType Container) {
+        Remove-Item `
+            $Runtime `
+            -Recurse `
+            -Force `
+            -ErrorAction Stop
+    }
+
+    if ($script:RuntimeBackupCreated) {
+        if (-not (Test-Path $RuntimeBackup -PathType Container)) {
+            throw "Runtime rollback backup is missing."
+        }
+
+        Move-Item `
+            $RuntimeBackup `
+            $Runtime `
+            -Force `
+            -ErrorAction Stop
+    }
+
+    if (
+        -not $script:ExistingServicePresent
+    ) {
+        $CreatedService = Get-Service `
+            -Name $ServiceName `
+            -ErrorAction SilentlyContinue
+
+        if ($CreatedService) {
+            & sc.exe delete $ServiceName |
+                Out-Null
+        }
+    }
+    elseif ($script:ExistingServiceWasRunning) {
+        Start-Service `
+            -Name $ServiceName `
+            -ErrorAction Stop
+
+        (Get-Service -Name $ServiceName).WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(30)
+        )
+    }
+}
+
+try {
+    Write-Host "===== QUIESCE EXISTING WINDOWS SERVICE ====="
+
+    Stop-KhanCloudAgentForRuntimeMutation
+
+    Write-Host "===== BACKUP EXISTING RUNTIME ====="
+
+    if (Test-Path $RuntimeBackup) {
+        Remove-Item `
+            $RuntimeBackup `
+            -Recurse `
+            -Force `
+            -ErrorAction Stop
+    }
+
+    if (Test-Path $Runtime -PathType Container) {
+        Move-Item `
+            $Runtime `
+            $RuntimeBackup `
+            -Force `
+            -ErrorAction Stop
+
+        $RuntimeBackupCreated = $true
+    }
+
+    $RuntimeTransactionActive = $true
+}
+catch {
+    $PreparationFailure = $_
+
+    if ($ExistingServiceWasRunning) {
+        $ServiceAfterPreparationFailure = Get-Service `
+            -Name $ServiceName `
+            -ErrorAction SilentlyContinue
+
+        if (
+            $ServiceAfterPreparationFailure -and
+            $ServiceAfterPreparationFailure.Status -ne "Running"
+        ) {
+            try {
+                Start-Service `
+                    -Name $ServiceName `
+                    -ErrorAction Stop
+
+                (Get-Service -Name $ServiceName).WaitForStatus(
+                    [System.ServiceProcess.ServiceControllerStatus]::Running,
+                    [TimeSpan]::FromSeconds(30)
+                )
+            }
+            catch {
+                Write-Error (
+                    "Failed to restore Khan Cloud service after " +
+                    "transaction preparation failure: " +
+                    $_.Exception.Message
+                )
+            }
+        }
+    }
+
+    throw $PreparationFailure
+}
+
+try {
+
+# ------------------------------------------------------------
 # CREATE WINDOWS AGENT LAYOUT
 # ------------------------------------------------------------
 
@@ -201,17 +533,33 @@ if (-not (Test-Path $Python -PathType Leaf)) {
 
 Write-Host "===== INSTALL DEPENDENCIES ====="
 
-& $Python -m pip install --upgrade pip
+Invoke-BoundedPythonCommand `
+    -PythonPath $Python `
+    -Arguments @(
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--upgrade",
+        "pip"
+    ) `
+    -Description "Python pip upgrade" `
+    -TimeoutSeconds $DependencyTimeoutSeconds
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to upgrade pip."
-}
-
-& $Python -m pip install -r (Join-Path $Runtime "requirements.txt")
-
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to install Khan Cloud agent dependencies."
-}
+Invoke-BoundedPythonCommand `
+    -PythonPath $Python `
+    -Arguments @(
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        "-r",
+        (Join-Path $Runtime "requirements.txt")
+    ) `
+    -Description "Khan Cloud dependency installation" `
+    -TimeoutSeconds $DependencyTimeoutSeconds
 
 # ------------------------------------------------------------
 # VALIDATION
@@ -238,6 +586,216 @@ try {
 }
 finally {
     Pop-Location
+}
+
+# ------------------------------------------------------------
+# WINDOWS SUNSHINE PROTECTED CREDENTIAL
+# ------------------------------------------------------------
+
+Write-Host "===== CONFIGURE SUNSHINE PROTECTED CREDENTIAL ====="
+
+$SunshinePolicyScript = Join-Path `
+    $Runtime `
+    "deploy\configure-windows-sunshine.ps1"
+
+if (-not (Test-Path $SunshinePolicyScript -PathType Leaf)) {
+    throw (
+        "Sunshine credential configurator is missing: " +
+        $SunshinePolicyScript
+    )
+}
+
+$SunshinePolicyReader = @'
+import sys
+from pathlib import Path
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text()) or {}
+gaming = data.get("gaming") or {}
+
+enabled = bool(
+    gaming.get("enabled", False)
+)
+
+backend = str(
+    gaming.get("streaming_backend", "none")
+).strip().lower()
+
+source = str(
+    gaming.get(
+        "sunshine_credential_source",
+        "config",
+    )
+).strip().lower()
+
+username = str(
+    gaming.get(
+        "sunshine_api_username",
+        "",
+    )
+).strip()
+
+secret_name = str(
+    gaming.get(
+        "sunshine_secret_name",
+        "KhanCloudSunshineApiPassword",
+    )
+).strip()
+
+api_url = str(
+    gaming.get(
+        "sunshine_api_url",
+        "https://127.0.0.1:47990",
+    )
+).strip()
+
+verify_tls = bool(
+    gaming.get(
+        "sunshine_verify_tls",
+        False,
+    )
+)
+
+plaintext_password = str(
+    gaming.get(
+        "sunshine_api_password",
+        "",
+    )
+)
+
+print(
+    "|".join(
+        [
+            "1" if enabled else "0",
+            backend,
+            source,
+            username,
+            secret_name,
+            api_url,
+            "1" if verify_tls else "0",
+            "1" if plaintext_password else "0",
+        ]
+    )
+)
+'@
+
+$SunshinePolicyValue = (
+    $SunshinePolicyReader |
+    & $Python - $InstalledConfig
+)
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to read Sunshine credential policy."
+}
+
+$SunshineParts = (
+    [string]$SunshinePolicyValue
+).Trim().Split("|", 8)
+
+if ($SunshineParts.Count -ne 8) {
+    throw "Sunshine credential policy is invalid."
+}
+
+$SunshineGamingEnabled =
+    ($SunshineParts[0] -eq "1")
+
+$SunshineBackend =
+    $SunshineParts[1].Trim().ToLowerInvariant()
+
+$SunshineCredentialSource =
+    $SunshineParts[2].Trim().ToLowerInvariant()
+
+$SunshineUser =
+    $SunshineParts[3].Trim()
+
+$SunshineSecretName =
+    $SunshineParts[4].Trim()
+
+$SunshineApiUrl =
+    $SunshineParts[5].Trim()
+
+$SunshineVerifyTls =
+    ($SunshineParts[6] -eq "1")
+
+$SunshineHasPlaintextPassword =
+    ($SunshineParts[7] -eq "1")
+
+if (
+    $SunshineGamingEnabled -and
+    $SunshineBackend -eq "sunshine"
+) {
+    if (
+        $SunshineCredentialSource -eq "windows_lsa"
+    ) {
+        if ($SunshineHasPlaintextPassword) {
+            throw (
+                "Sunshine Windows LSA credential policy " +
+                "must not contain sunshine_api_password."
+            )
+        }
+
+        if ([string]::IsNullOrWhiteSpace($SunshineUser)) {
+            throw (
+                "Sunshine Windows LSA credential policy " +
+                "requires sunshine_api_username."
+            )
+        }
+
+        if ([string]::IsNullOrWhiteSpace($SunshineSecretName)) {
+            throw (
+                "Sunshine Windows LSA credential policy " +
+                "requires sunshine_secret_name."
+            )
+        }
+
+        if ([string]::IsNullOrWhiteSpace($SunshineApiUrl)) {
+            throw (
+                "Sunshine Windows LSA credential policy " +
+                "requires sunshine_api_url."
+            )
+        }
+
+        $SunshineArguments = @(
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $SunshinePolicyScript,
+            "-Action",
+            "Configure",
+            "-UserName",
+            $SunshineUser,
+            "-SecretName",
+            $SunshineSecretName,
+            "-ApiUrl",
+            $SunshineApiUrl,
+            "-PythonPath",
+            $Python
+        )
+
+        if ($SunshineVerifyTls) {
+            $SunshineArguments += "-VerifyTls"
+        }
+
+        & powershell.exe @SunshineArguments
+
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "Sunshine protected credential " +
+                "configuration failed."
+            )
+        }
+    }
+    elseif (
+        $SunshineCredentialSource -ne "config"
+    ) {
+        throw (
+            "Unsupported sunshine_credential_source: " +
+            $SunshineCredentialSource
+        )
+    }
 }
 
 # ------------------------------------------------------------
@@ -439,24 +997,14 @@ $ExistingService = Get-Service `
     -Name $ServiceName `
     -ErrorAction SilentlyContinue
 
-if ($ExistingService) {
-    if ($ExistingService.Status -ne "Stopped") {
-        Stop-Service -Name $ServiceName -Force
-
-        (Get-Service -Name $ServiceName).WaitForStatus(
-            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-            [TimeSpan]::FromSeconds(30)
-        )
-    }
-
-    sc.exe delete $ServiceName | Out-Null
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to remove existing Khan Cloud Windows service."
-    }
-
-    # Allow SCM to finish releasing the deleted service object.
-    Start-Sleep -Seconds 2
+if (
+    $ExistingService -and
+    $ExistingService.Status -ne "Stopped"
+) {
+    throw (
+        "Existing Khan Cloud service unexpectedly resumed " +
+        "during runtime installation."
+    )
 }
 
 $ServiceCommand = (
@@ -464,15 +1012,28 @@ $ServiceCommand = (
     '"' + $ServiceModule + '" --service'
 )
 
-sc.exe create `
-    $ServiceName `
-    binPath= $ServiceCommand `
-    start= auto `
-    DisplayName= "Khan Cloud Agent" |
-    Out-Null
+if (-not $ExistingService) {
+    sc.exe create `
+        $ServiceName `
+        binPath= $ServiceCommand `
+        start= auto `
+        DisplayName= "Khan Cloud Agent" |
+        Out-Null
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to create Khan Cloud Windows service."
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to create Khan Cloud Windows service."
+    }
+}
+else {
+    sc.exe config `
+        $ServiceName `
+        binPath= $ServiceCommand `
+        start= auto |
+        Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to update Khan Cloud Windows service."
+    }
 }
 
 sc.exe description `
@@ -519,6 +1080,17 @@ finally {
     Pop-Location
 }
 
+Write-Host "===== COMMIT RUNTIME TRANSACTION ====="
+
+if (Test-Path $RuntimeBackup) {
+    Remove-Item `
+        $RuntimeBackup `
+        -Recurse `
+        -Force
+}
+
+$RuntimeTransactionActive = $false
+
 Write-Host ""
 Write-Host "SUCCESS: KHAN CLOUD WINDOWS AGENT INSTALLED"
 Write-Host "Runtime:     $Runtime"
@@ -527,3 +1099,22 @@ Write-Host "Config:      $InstalledConfig"
 Write-Host "Credentials: $Credentials"
 Write-Host "Identity:    $Identity"
 Write-Host "Service:     $ServiceName"
+
+}
+catch {
+    $InstallFailure = $_
+
+    if ($RuntimeTransactionActive) {
+        try {
+            Restore-KhanCloudRuntime
+        }
+        catch {
+            Write-Error (
+                "Runtime rollback failed: " +
+                $_.Exception.Message
+            )
+        }
+    }
+
+    throw $InstallFailure
+}

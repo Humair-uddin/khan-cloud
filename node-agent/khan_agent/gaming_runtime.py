@@ -26,6 +26,7 @@ from khan_agent.gaming_launchers import (
 from khan_agent.sunshine_broker import (
     SunshineBrokerError,
     pair_client,
+    probe_sunshine_readiness,
     unpair_client,
 )
 from khan_agent.runtime_ownership import (
@@ -65,6 +66,64 @@ def _recorded_launcher_pid(state: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
     return pid if pid > 0 else None
+
+
+def _cleanup_failed_launch(
+    runtime_ownership: dict[str, Any],
+) -> dict[str, Any]:
+    """Terminate a newly launched runtime and prove it is clean."""
+    try:
+        proof = terminate_runtime_ownership(
+            runtime_ownership
+        )
+    except Exception as exc:
+        return {
+            "verified": False,
+            "runtime_ownership": dict(
+                runtime_ownership
+            ),
+            "termination_proof": None,
+            "error": str(exc),
+        }
+
+    remaining = int(
+        proof.get(
+            "owned_process_count_remaining",
+            proof.get(
+                "owned_process_count",
+                0,
+            ),
+        )
+        or 0
+    )
+
+    verified = (
+        bool(
+            proof.get(
+                "ownership_boundary_verified"
+            )
+        )
+        and bool(
+            proof.get(
+                "termination_verified"
+            )
+        )
+        and remaining == 0
+    )
+
+    return {
+        "verified": verified,
+        "runtime_ownership": dict(
+            runtime_ownership
+        ),
+        "termination_proof": proof,
+        "error": (
+            None
+            if verified
+            else
+            "runtime_termination_not_verified"
+        ),
+    }
 
 
 def _process_alive(pid: int | None) -> bool:
@@ -434,7 +493,9 @@ def _interactive_session_context() -> dict[str, Any]:
         }
 
     try:
-        broker_session = require_interactive_session()
+        broker_session = require_interactive_session(
+            require_managed=True,
+        )
         session_id = int(broker_session.session_id)
     except WindowsSessionBrokerError as exc:
         raise GamingRuntimeError(
@@ -636,6 +697,10 @@ def create_session(
     state_root: Path,
     execution_backend: str,
     streaming_backend: str,
+    sunshine_api_url: str = "https://127.0.0.1:47990",
+    sunshine_api_username: str = "",
+    sunshine_api_password: str = "",
+    sunshine_verify_tls: bool = False,
     vdd_template_path: Path = Path(
         "C:/ProgramData/KhanCloud/VirtualDisplay/"
         "RuntimeConfig/khan-vdd-settings.xml"
@@ -691,19 +756,67 @@ def create_session(
             # mutate an existing session's lifecycle state. A delayed
             # duplicate create can arrive after a legitimate stop.
             existing["gpu"] = validation["gpu"]
+
+            if existing.get("status") == "running":
+                ownership = existing.get("runtime_ownership")
+                if not isinstance(ownership, dict):
+                    raise GamingRuntimeError(
+                        "Running runtime has no structural ownership metadata."
+                    )
+
+                launch_info = existing.get("launch_info")
+                if launch_info is not None and not isinstance(
+                    launch_info,
+                    dict,
+                ):
+                    raise GamingRuntimeError(
+                        "Running runtime launch metadata is invalid."
+                    )
+
+                display_activation = None
+                display_policy = existing.get("display_policy")
+                if isinstance(display_policy, dict):
+                    candidate = display_policy.get("activation")
+                    if isinstance(candidate, dict):
+                        display_activation = candidate
+
+                try:
+                    readiness = _verify_stream_readiness(
+                        runtime_id=runtime_id,
+                        runtime_ownership=ownership,
+                        launch_info=launch_info,
+                        display_activation=display_activation,
+                        sunshine_api_url=sunshine_api_url,
+                        sunshine_api_username=sunshine_api_username,
+                        sunshine_api_password=sunshine_api_password,
+                        sunshine_verify_tls=sunshine_verify_tls,
+                    )
+                except Exception:
+                    existing.pop(
+                        "stream_readiness",
+                        None,
+                    )
+                    existing[
+                        "runtime_stage"
+                    ] = "readiness_pending"
+                    _write_state(
+                        state_file,
+                        existing,
+                    )
+                    raise
+
+                existing["stream_readiness"] = readiness
+                existing["runtime_stage"] = "stream_ready"
+
             _write_state(state_file, existing)
 
             result: dict[str, Any] = {
                 "runtime_id": runtime_id,
                 "status": str(existing.get("status") or "unknown"),
-                "deployment_stage": (
-                    "stream_ready"
-                    if existing.get("status") == "running"
-                    else str(
-                        existing.get("runtime_stage")
-                        or existing.get("status")
-                        or "unknown"
-                    )
+                "deployment_stage": str(
+                    existing.get("runtime_stage")
+                    or existing.get("status")
+                    or "unknown"
                 ),
                 "interactive_session": interactive_session,
                 "idempotent": True,
@@ -711,6 +824,9 @@ def create_session(
 
             if existing.get("status") == "running":
                 result["connection_info"] = _connection_info(runtime_id)
+                result["stream_readiness"] = existing[
+                    "stream_readiness"
+                ]
 
             if existing.get("display_policy") is not None:
                 result["display_policy"] = existing[
@@ -814,6 +930,81 @@ def create_session(
                     pass
                 raise
 
+        runtime_ownership = (
+            dict(
+                launch_info.get(
+                    "runtime_ownership"
+                ) or {}
+            )
+            if launch_info is not None
+            else no_process_ownership()
+        )
+
+        display_activation = None
+        if isinstance(display_policy_result, dict):
+            candidate = display_policy_result.get("activation")
+            if isinstance(candidate, dict):
+                display_activation = candidate
+
+        try:
+            readiness = _verify_stream_readiness(
+                runtime_id=runtime_id,
+                runtime_ownership=runtime_ownership,
+                launch_info=launch_info,
+                display_activation=display_activation,
+                sunshine_api_url=sunshine_api_url,
+                sunshine_api_username=sunshine_api_username,
+                sunshine_api_password=sunshine_api_password,
+                sunshine_verify_tls=sunshine_verify_tls,
+            )
+        except Exception as readiness_exc:
+            if launch_info is not None:
+                cleanup = _cleanup_failed_launch(
+                    runtime_ownership
+                )
+
+                if cleanup["verified"]:
+                    try:
+                        state_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                else:
+                    cleanup_state = dict(
+                        launching_state
+                    )
+                    cleanup_state["status"] = (
+                        "cleanup_required"
+                    )
+                    cleanup_state["runtime_stage"] = (
+                        "cleanup_required"
+                    )
+                    cleanup_state[
+                        "runtime_ownership"
+                    ] = runtime_ownership
+                    cleanup_state["launch_info"] = (
+                        launch_info
+                    )
+                    cleanup_state[
+                        "readiness_failure"
+                    ] = {
+                        "type":
+                            type(
+                                readiness_exc
+                            ).__name__,
+                        "message":
+                            str(readiness_exc),
+                    }
+                    cleanup_state[
+                        "cleanup"
+                    ] = cleanup
+
+                    _write_state(
+                        state_file,
+                        cleanup_state,
+                    )
+
+            raise
+
         state = {
             "schema_version": 2,
             "session_id": session_id,
@@ -826,15 +1017,8 @@ def create_session(
             "minimum_vram_mb": minimum_vram_mb,
             "runtime_stage": "stream_ready",
             "interactive_session": interactive_session,
-            "runtime_ownership": (
-                dict(
-                    launch_info.get(
-                        "runtime_ownership"
-                    ) or {}
-                )
-                if launch_info is not None
-                else no_process_ownership()
-            ),
+            "runtime_ownership": runtime_ownership,
+            "stream_readiness": readiness,
         }
 
         if display_policy_result is not None:
@@ -879,6 +1063,7 @@ def create_session(
                 _connection_info(runtime_id),
             "gpu": validation["gpu"],
             "interactive_session": interactive_session,
+            "stream_readiness": readiness,
         }
 
         if display_policy_result is not None:
@@ -899,6 +1084,182 @@ def create_session(
         )
     except (GamingRuntimeError, GameLaunchError) as exc:
         return JobExecutionResult("blocked", {}, str(exc))
+
+
+
+def _verified_terminated_ownership(
+    ownership: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Validate persisted terminal ownership evidence.
+
+    A ``terminated`` descriptor is not an active ownership
+    mechanism and must never be accepted by stream-readiness
+    inspection.  It is durable evidence produced by a successful
+    schema-v2 STOP so a later DELETE can prove the already-destroyed
+    ownership boundary clean without attempting to terminate it
+    again.
+    """
+    if str(
+        ownership.get("ownership_type") or ""
+    ) != "terminated":
+        return None
+
+    try:
+        remaining = int(
+            ownership.get(
+                "owned_process_count_remaining",
+                ownership.get(
+                    "owned_process_count",
+                    -1,
+                ),
+            )
+        )
+    except (TypeError, ValueError):
+        return None
+
+    if (
+        not bool(
+            ownership.get(
+                "ownership_boundary_verified"
+            )
+        )
+        or not bool(
+            ownership.get(
+                "termination_verified"
+            )
+        )
+        or remaining != 0
+        or not bool(ownership.get("clean"))
+    ):
+        return None
+
+    return {
+        "ownership_type": "terminated",
+        "runtime_id": str(
+            ownership.get("runtime_id") or ""
+        ),
+        "owned_processes_before": [],
+        "owned_processes_remaining": [],
+        "owned_process_count_before": 0,
+        "owned_process_count_remaining": 0,
+        "termination_verified": True,
+        "ownership_boundary_verified": True,
+        "clean": True,
+        "already_terminated": True,
+    }
+
+
+def _verify_runtime_ownership_ready(
+    ownership: dict[str, Any],
+    *,
+    require_process: bool,
+) -> dict[str, Any]:
+    """Prove that the runtime ownership boundary is usable.
+
+    Generic sessions intentionally permit the no-process ownership
+    contract. Game-backed sessions require at least one process inside
+    the verified D1 ownership boundary.
+    """
+    try:
+        proof = inspect_runtime_ownership(ownership)
+    except RuntimeOwnershipError as exc:
+        raise GamingRuntimeError(
+            "Gaming runtime ownership readiness could not be verified: "
+            f"{exc}"
+        ) from exc
+
+    if not bool(proof.get("ownership_boundary_verified")):
+        raise GamingRuntimeError(
+            "Gaming runtime ownership boundary is not verified."
+        )
+
+    process_count = int(
+        proof.get(
+            "owned_process_count",
+            proof.get("owned_process_count_remaining", 0),
+        )
+        or 0
+    )
+
+    if require_process and process_count <= 0:
+        raise GamingRuntimeError(
+            "Gaming workload has no live process inside its verified "
+            "runtime ownership boundary."
+        )
+
+    return proof
+
+
+def _verify_stream_readiness(
+    *,
+    runtime_id: str,
+    runtime_ownership: dict[str, Any],
+    launch_info: dict[str, Any] | None,
+    display_activation: dict[str, Any] | None,
+    sunshine_api_url: str,
+    sunshine_api_username: str,
+    sunshine_api_password: str,
+    sunshine_verify_tls: bool,
+) -> dict[str, Any]:
+    """Build the authoritative D3 stream-readiness proof."""
+
+    if display_activation is not None:
+        if not bool(display_activation.get("healthy")):
+            raise GamingRuntimeError(
+                "Khan VDD did not produce a healthy post-activation "
+                "display state."
+            )
+
+    try:
+        sunshine = probe_sunshine_readiness(
+            api_url=sunshine_api_url,
+            username=sunshine_api_username,
+            password=sunshine_api_password,
+            verify_tls=sunshine_verify_tls,
+        )
+    except SunshineBrokerError as exc:
+        raise GamingRuntimeError(
+            "Sunshine stream readiness could not be verified: "
+            f"{exc}"
+        ) from exc
+
+    ownership = _verify_runtime_ownership_ready(
+        runtime_ownership,
+        require_process=launch_info is not None,
+    )
+
+    launcher_pid = None
+    if launch_info is not None:
+        try:
+            launcher_pid = int(
+                launch_info.get("launcher_pid")
+            )
+        except (TypeError, ValueError):
+            launcher_pid = None
+
+        if launcher_pid is None or launcher_pid <= 0:
+            raise GamingRuntimeError(
+                "Gaming workload launch did not return a valid "
+                "launcher process identity."
+            )
+
+    return {
+        "runtime_id": runtime_id,
+        "verified": True,
+        "display": {
+            "required": display_activation is not None,
+            "healthy": (
+                bool(display_activation.get("healthy"))
+                if display_activation is not None
+                else True
+            ),
+        },
+        "sunshine": sunshine,
+        "ownership": ownership,
+        "launcher_pid": launcher_pid,
+        "workload_process_required":
+            launch_info is not None,
+    }
 
 
 def change_session_state(
@@ -1047,6 +1408,19 @@ def change_session_state(
 
         sanitation: dict[str, Any] | None = None
 
+        # cleanup_required is a durable fail-closed recovery state.
+        # START must never create another workload/ownership boundary
+        # until the recorded failed-launch boundary has been proven
+        # clean. STOP/DELETE are the explicit recovery operations.
+        if (
+            action == "start"
+            and state.get("status") == "cleanup_required"
+        ):
+            raise GamingRuntimeError(
+                "Gaming runtime requires verified cleanup before "
+                "it can be started again."
+            )
+
         # A schema-v2 STOP that has already structurally terminated its
         # ownership boundary is idempotent only when the persisted proof
         # still establishes: boundary verified, termination verified,
@@ -1135,17 +1509,26 @@ def change_session_state(
                 int(state.get("schema_version") or 1) >= 2
                 and isinstance(ownership, dict)
             ):
-                try:
-                    ownership_proof = (
-                        terminate_runtime_ownership(
-                            ownership
-                        )
+                terminal_proof = (
+                    _verified_terminated_ownership(
+                        ownership
                     )
-                except RuntimeOwnershipError as exc:
-                    raise GamingRuntimeError(
-                        "Customer runtime ownership could not "
-                        f"be proven clean: {exc}"
-                    ) from exc
+                )
+
+                if terminal_proof is not None:
+                    ownership_proof = terminal_proof
+                else:
+                    try:
+                        ownership_proof = (
+                            terminate_runtime_ownership(
+                                ownership
+                            )
+                        )
+                    except RuntimeOwnershipError as exc:
+                        raise GamingRuntimeError(
+                            "Customer runtime ownership could not "
+                            f"be proven clean: {exc}"
+                        ) from exc
 
                 launcher_alive = (
                     _process_alive(launcher_pid)
@@ -1569,20 +1952,55 @@ def change_session_state(
                     "Running runtime has no structural ownership metadata."
                 )
 
-            proof = inspect_runtime_ownership(
-                ownership
-            )
-
-            if not bool(
-                proof.get("ownership_boundary_verified")
+            launch_info = state.get("launch_info")
+            if launch_info is not None and not isinstance(
+                launch_info,
+                dict,
             ):
                 raise GamingRuntimeError(
-                    "Running runtime ownership boundary cannot be verified."
+                    "Running runtime launch metadata is invalid."
                 )
+
+            display_activation = None
+            display_policy = state.get("display_policy")
+            if isinstance(display_policy, dict):
+                candidate = display_policy.get("activation")
+                if isinstance(candidate, dict):
+                    display_activation = candidate
+
+            try:
+                readiness = _verify_stream_readiness(
+                    runtime_id=runtime_id,
+                    runtime_ownership=ownership,
+                    launch_info=launch_info,
+                    display_activation=display_activation,
+                    sunshine_api_url=sunshine_api_url,
+                    sunshine_api_username=sunshine_api_username,
+                    sunshine_api_password=sunshine_api_password,
+                    sunshine_verify_tls=sunshine_verify_tls,
+                )
+            except Exception:
+                state.pop(
+                    "stream_readiness",
+                    None,
+                )
+                state[
+                    "runtime_stage"
+                ] = "readiness_pending"
+                state["interactive_session"] = (
+                    interactive_session
+                )
+                _write_state(
+                    state_file,
+                    state,
+                )
+                raise
 
             state["interactive_session"] = (
                 interactive_session
             )
+            state["stream_readiness"] = readiness
+            state["runtime_stage"] = "stream_ready"
             _write_state(state_file, state)
 
             return JobExecutionResult(
@@ -1597,6 +2015,8 @@ def change_session_state(
                         "stream_ready",
                     "interactive_session":
                         interactive_session,
+                    "stream_readiness":
+                        readiness,
                 },
             )
 
@@ -1673,9 +2093,7 @@ def change_session_state(
                 _write_state(state_file, state)
                 raise
 
-        state["status"] = "running"
-        state["runtime_stage"] = "stream_ready"
-        state["runtime_ownership"] = (
+        runtime_ownership = (
             dict(
                 launch_info.get(
                     "runtime_ownership"
@@ -1684,6 +2102,103 @@ def change_session_state(
             if launch_info is not None
             else no_process_ownership()
         )
+
+        display_activation = None
+        display_policy = state.get("display_policy")
+        if isinstance(display_policy, dict):
+            candidate = display_policy.get("activation")
+            if isinstance(candidate, dict):
+                display_activation = candidate
+
+        try:
+            readiness = _verify_stream_readiness(
+                runtime_id=runtime_id,
+                runtime_ownership=runtime_ownership,
+                launch_info=launch_info,
+                display_activation=display_activation,
+                sunshine_api_url=sunshine_api_url,
+                sunshine_api_username=sunshine_api_username,
+                sunshine_api_password=sunshine_api_password,
+                sunshine_verify_tls=sunshine_verify_tls,
+            )
+        except Exception as readiness_exc:
+            cleanup = {
+                "verified": True,
+                "runtime_ownership":
+                    no_process_ownership(),
+                "termination_proof":
+                    terminate_runtime_ownership(
+                        no_process_ownership()
+                    ),
+                "error": None,
+            }
+
+            if launch_info is not None:
+                cleanup = _cleanup_failed_launch(
+                    runtime_ownership
+                )
+
+            state.pop(
+                "stream_readiness",
+                None,
+            )
+
+            if cleanup["verified"]:
+                state["status"] = "stopped"
+                state["runtime_stage"] = "stopped"
+                state["runtime_ownership"] = (
+                    no_process_ownership()
+                )
+                state.pop(
+                    "launch_info",
+                    None,
+                )
+                state.pop(
+                    "readiness_failure",
+                    None,
+                )
+                state.pop(
+                    "cleanup",
+                    None,
+                )
+            else:
+                state["status"] = (
+                    "cleanup_required"
+                )
+                state["runtime_stage"] = (
+                    "cleanup_required"
+                )
+                state["runtime_ownership"] = (
+                    runtime_ownership
+                )
+
+                if launch_info is not None:
+                    state["launch_info"] = (
+                        launch_info
+                    )
+
+                state[
+                    "readiness_failure"
+                ] = {
+                    "type":
+                        type(
+                            readiness_exc
+                        ).__name__,
+                    "message":
+                        str(readiness_exc),
+                }
+                state["cleanup"] = cleanup
+
+            _write_state(
+                state_file,
+                state,
+            )
+            raise
+
+        state["status"] = "running"
+        state["runtime_stage"] = "stream_ready"
+        state["runtime_ownership"] = runtime_ownership
+        state["stream_readiness"] = readiness
 
         if (
             prepared_launch is not None
@@ -1717,6 +2232,8 @@ def change_session_state(
                 _connection_info(runtime_id),
             "interactive_session":
                 interactive_session,
+            "stream_readiness":
+                readiness,
         }
 
         if (
@@ -1768,6 +2285,21 @@ def pair_connection(
         if state.get("status") != "running":
             raise GamingRuntimeError(
                 "Gaming connection pairing requires a running runtime."
+            )
+
+        if state.get("runtime_stage") != "stream_ready":
+            raise GamingRuntimeError(
+                "Gaming connection pairing requires a stream-ready runtime."
+            )
+
+        readiness = state.get("stream_readiness")
+        if (
+            not isinstance(readiness, dict)
+            or not bool(readiness.get("verified"))
+        ):
+            raise GamingRuntimeError(
+                "Gaming connection pairing requires verified "
+                "stream readiness."
             )
 
         paired = pair_client(
@@ -1995,6 +2527,134 @@ def reconcile_runtime_ownership(
                 state.get("status") or ""
             )
 
+            if status == "cleanup_required":
+                try:
+                    proof = terminate_runtime_ownership(
+                        ownership
+                    )
+                except Exception as exc:
+                    state[
+                        "runtime_reconciliation"
+                    ] = {
+                        "state": "cleanup_required",
+                        "reason":
+                            "cleanup_termination_failed",
+                        "inspection": inspection,
+                        "error":
+                            f"{type(exc).__name__}: {exc}",
+                    }
+                    _write_state(
+                        state_file,
+                        state,
+                    )
+                    outcomes.append(
+                        {
+                            "runtime_id":
+                                state.get("runtime_id"),
+                            "state":
+                                "cleanup_required",
+                        }
+                    )
+                    continue
+
+                remaining = int(
+                    proof.get(
+                        "owned_process_count_remaining",
+                        proof.get(
+                            "owned_process_count",
+                            0,
+                        ),
+                    )
+                    or 0
+                )
+
+                cleanup_verified = (
+                    bool(
+                        proof.get(
+                            "ownership_boundary_verified"
+                        )
+                    )
+                    and bool(
+                        proof.get(
+                            "termination_verified"
+                        )
+                    )
+                    and remaining == 0
+                )
+
+                if not cleanup_verified:
+                    state[
+                        "runtime_reconciliation"
+                    ] = {
+                        "state": "cleanup_required",
+                        "reason":
+                            "cleanup_not_verified",
+                        "inspection": inspection,
+                        "ownership": proof,
+                    }
+                    state["cleanup"] = {
+                        "verified": False,
+                        "runtime_ownership":
+                            dict(ownership),
+                        "termination_proof": proof,
+                        "error":
+                            "runtime_termination_not_verified",
+                    }
+                    _write_state(
+                        state_file,
+                        state,
+                    )
+                    outcomes.append(
+                        {
+                            "runtime_id":
+                                state.get("runtime_id"),
+                            "state":
+                                "cleanup_required",
+                        }
+                    )
+                    continue
+
+                state["status"] = "stopped"
+                state["runtime_stage"] = "stopped"
+                state["runtime_ownership"] = proof
+                state["cleanup"] = {
+                    "verified": True,
+                    "runtime_ownership":
+                        dict(ownership),
+                    "termination_proof": proof,
+                    "error": None,
+                }
+                state.pop(
+                    "launch_info",
+                    None,
+                )
+                state.pop(
+                    "stream_readiness",
+                    None,
+                )
+                state[
+                    "runtime_reconciliation"
+                ] = {
+                    "state":
+                        "cleanup_completed",
+                    "ownership": proof,
+                }
+
+                _write_state(
+                    state_file,
+                    state,
+                )
+
+                outcomes.append(
+                    {
+                        "runtime_id":
+                            state.get("runtime_id"),
+                        "state":
+                            "cleanup_completed",
+                    }
+                )
+                continue
+
             if (
                 status
                 in {
@@ -2045,16 +2705,22 @@ def reconcile_runtime_ownership(
                 )
                 > 0
             ):
-                state["status"] = "running"
+                state["status"] = "starting"
                 state[
                     "runtime_stage"
-                ] = "stream_ready"
+                ] = "readiness_pending"
+                state.pop(
+                    "stream_readiness",
+                    None,
+                )
                 state[
                     "runtime_reconciliation"
                 ] = {
                     "state":
-                        "recovered_running",
+                        "readiness_pending",
                     "inspection": inspection,
+                    "reason":
+                        "ownership_survived_but_stream_readiness_requires_authoritative_revalidation",
                 }
                 _write_state(
                     state_file,
@@ -2065,7 +2731,7 @@ def reconcile_runtime_ownership(
                         "runtime_id":
                             state.get("runtime_id"),
                         "state":
-                            "recovered_running",
+                            "readiness_pending",
                     }
                 )
                 continue

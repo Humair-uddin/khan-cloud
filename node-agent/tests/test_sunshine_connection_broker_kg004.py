@@ -112,6 +112,14 @@ def test_runtime_pair_state_never_persists_pin(
   "session_id": "%s",
   "runtime_id": "%s",
   "status": "running",
+  "runtime_stage": "stream_ready",
+  "stream_readiness": {
+    "verified": true,
+    "sunshine": {
+      "ready": true,
+      "authenticated_api": true
+    }
+  },
   "paired_clients": []
 }
 """ % (session_id, runtime_id)

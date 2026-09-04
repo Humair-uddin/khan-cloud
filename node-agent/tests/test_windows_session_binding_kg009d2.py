@@ -43,7 +43,8 @@ def test_steam_backend_forwards_bound_session():
 def test_runtime_uses_authoritative_broker():
     text = source(gaming_runtime)
 
-    assert "require_interactive_session()" in text
+    assert "require_interactive_session(" in text
+    assert "require_managed=True" in text
     assert "active_console_session_id" not in text
 
 
@@ -65,10 +66,14 @@ def test_runtime_rejects_session_zero(monkeypatch):
     class Session:
         session_id = 0
 
+    def broker(**kwargs):
+        assert kwargs == {"require_managed": True}
+        return Session()
+
     monkeypatch.setattr(
         gaming_runtime,
         "require_interactive_session",
-        lambda: Session(),
+        broker,
     )
 
     try:
@@ -89,10 +94,14 @@ def test_runtime_accepts_nonzero_broker_session(monkeypatch):
     class Session:
         session_id = 4
 
+    def broker(**kwargs):
+        assert kwargs == {"require_managed": True}
+        return Session()
+
     monkeypatch.setattr(
         gaming_runtime,
         "require_interactive_session",
-        lambda: Session(),
+        broker,
     )
 
     assert gaming_runtime._interactive_session_context() == {

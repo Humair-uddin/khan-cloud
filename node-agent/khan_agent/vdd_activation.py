@@ -161,60 +161,70 @@ def restart_vdd_device(
     """
     Restart only ROOT\\DISPLAY\\0000.
 
-    pnputil is preferred because it is part of Windows and avoids
-    introducing a DevCon dependency. No reboot is requested.
+    Execute pnputil directly rather than nesting it beneath
+    PowerShell Start-Process. This keeps the restart operation
+    bounded by the caller-owned subprocess timeout and leaves
+    post-restart recovery to wait_for_vdd_health().
+
+    No reboot is requested.
     """
-    script = rf"""
-$ErrorActionPreference = 'Stop'
+    _require_windows()
 
-$instance = '{VDD_INSTANCE_ID}'
+    before = query_vdd_health(runner=runner)
 
-$d = Get-PnpDevice -InstanceId $instance -ErrorAction Stop
+    if not before.healthy:
+        raise VddActivationError(
+            "Refusing VDD restart because the device "
+            f"is unhealthy: status={before.status}, "
+            f"problem_code={before.problem_code}"
+        )
 
-if ($d.Status -ne 'OK') {{
-    throw "Khan VDD is not healthy before restart: $($d.Status)"
-}}
-
-$p = Start-Process `
-    -FilePath "$env:SystemRoot\System32\pnputil.exe" `
-    -ArgumentList @('/restart-device', $instance) `
-    -Wait `
-    -PassThru `
-    -NoNewWindow
-
-if ($p.ExitCode -ne 0) {{
-    throw "pnputil /restart-device failed with exit code $($p.ExitCode)"
-}}
-
-[pscustomobject]@{{
-    instance_id = $instance
-    exit_code   = $p.ExitCode
-}} | ConvertTo-Json -Compress
-"""
+    command = [
+        "pnputil.exe",
+        "/restart-device",
+        VDD_INSTANCE_ID,
+    ]
 
     started = time.monotonic()
-    raw = _powershell(
-        script,
-        runner=runner,
-        timeout=timeout,
-    )
+
+    try:
+        result = runner(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VddActivationError(
+            "Khan VDD restart timed out after "
+            f"{timeout:.1f} seconds."
+        ) from exc
+    except OSError as exc:
+        raise VddActivationError(
+            f"Unable to execute pnputil VDD restart: {exc}"
+        ) from exc
+
     elapsed_ms = round(
         (time.monotonic() - started) * 1000,
         2,
     )
 
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    if result.returncode != 0:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit code {result.returncode}"
+        )
+
         raise VddActivationError(
-            "Unable to parse VDD restart response."
-        ) from exc
+            "pnputil /restart-device failed: "
+            f"{detail}"
+        )
 
     return {
-        "instance_id": str(
-            payload.get("instance_id") or ""
-        ),
-        "exit_code": int(payload.get("exit_code") or 0),
+        "instance_id": VDD_INSTANCE_ID,
+        "exit_code": result.returncode,
         "elapsed_ms": elapsed_ms,
     }
 
@@ -252,28 +262,37 @@ def activate_vdd_policy(
     *,
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
-    before = query_vdd_health(runner=runner)
+    """
+    Verify the live Khan VDD after a runtime-policy update.
 
-    if not before.healthy:
+    A healthy, started VDD must not be restarted merely to prove
+    readiness. The explicit restart_vdd_device() primitive remains
+    available for controlled maintenance/recovery paths, but normal
+    gaming runtime activation is health-verification only.
+
+    This avoids destabilizing an already healthy UMDF display device
+    during customer runtime admission.
+    """
+    health = query_vdd_health(runner=runner)
+
+    if not health.healthy:
         raise VddActivationError(
             "Refusing VDD activation because the device "
-            f"is unhealthy before restart: "
-            f"status={before.status}, "
-            f"problem_code={before.problem_code}"
+            "is unhealthy: "
+            f"status={health.status}, "
+            f"problem_code={health.problem_code}"
         )
 
-    restart = restart_vdd_device(runner=runner)
-    after = wait_for_vdd_health(runner=runner)
-
     return {
-        "activation_required": True,
-        "activation_method": "pnputil-restart-device",
-        "instance_id": after.instance_id,
-        "pre_status": before.status,
-        "pre_problem_code": before.problem_code,
-        "post_status": after.status,
-        "post_problem_code": after.problem_code,
-        "restart_elapsed_ms": restart["elapsed_ms"],
-        "healthy": after.healthy,
+        "activation_required": False,
+        "activation_method": "health-verification-only",
+        "reason": "healthy-vdd-no-pnp-restart",
+        "instance_id": health.instance_id,
+        "pre_status": health.status,
+        "pre_problem_code": health.problem_code,
+        "post_status": health.status,
+        "post_problem_code": health.problem_code,
+        "restart_elapsed_ms": None,
+        "healthy": health.healthy,
         "reboot_required": False,
     }

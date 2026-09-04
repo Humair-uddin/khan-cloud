@@ -28,7 +28,9 @@ def health_json(status="OK", problem=0):
     )
 
 
-def test_activation_uses_device_only_pnputil_restart(monkeypatch):
+def test_activation_verifies_healthy_vdd_without_restart(
+    monkeypatch,
+):
     monkeypatch.setattr(
         activation.platform,
         "system",
@@ -39,20 +41,6 @@ def test_activation_uses_device_only_pnputil_restart(monkeypatch):
 
     def runner(argv, **kwargs):
         commands.append(argv)
-
-        script = argv[-1]
-
-        if "Start-Process" in script:
-            return cp(
-                json.dumps(
-                    {
-                        "instance_id":
-                            r"ROOT\DISPLAY\0000",
-                        "exit_code": 0,
-                    }
-                )
-            )
-
         return cp(health_json())
 
     result = activation.activate_vdd_policy(
@@ -64,18 +52,25 @@ def test_activation_uses_device_only_pnputil_restart(monkeypatch):
         for command in commands
     )
 
-    assert "pnputil.exe" in joined
-    assert "/restart-device" in joined
     assert r"ROOT\DISPLAY\0000" in joined
-
+    assert "pnputil.exe" not in joined
+    assert "/restart-device" not in joined
+    assert "Start-Process" not in joined
     assert "/reboot" not in joined.lower()
     assert "shutdown" not in joined.lower()
 
+    assert len(commands) == 1
     assert result["healthy"] is True
+    assert result["activation_required"] is False
     assert result["reboot_required"] is False
+    assert result["restart_elapsed_ms"] is None
     assert (
         result["activation_method"]
-        == "pnputil-restart-device"
+        == "health-verification-only"
+    )
+    assert (
+        result["reason"]
+        == "healthy-vdd-no-pnp-restart"
     )
 
 
@@ -125,33 +120,38 @@ def test_unhealthy_device_refuses_restart(monkeypatch):
     assert "Start-Process" not in text
 
 
-def test_restart_failure_is_fail_closed(monkeypatch):
+def test_activation_does_not_enter_restart_failure_path(
+    monkeypatch,
+):
     monkeypatch.setattr(
         activation.platform,
         "system",
         lambda: "Windows",
     )
 
-    count = 0
+    calls = []
 
     def runner(argv, **kwargs):
-        nonlocal count
-        count += 1
+        calls.append(argv)
 
-        if count == 1:
-            return cp(health_json())
+        if len(calls) > 1:
+            raise AssertionError(
+                "healthy activation attempted a second command"
+            )
 
-        return cp(
-            stderr="restart failed",
-            returncode=1,
-        )
+        return cp(health_json())
 
-    with pytest.raises(
-        activation.VddActivationError
-    ):
-        activation.activate_vdd_policy(
-            runner=runner
-        )
+    result = activation.activate_vdd_policy(
+        runner=runner,
+    )
+
+    assert len(calls) == 1
+    assert result["healthy"] is True
+    assert result["activation_required"] is False
+    assert (
+        result["activation_method"]
+        == "health-verification-only"
+    )
 
 
 def test_health_model_requires_ok_and_problem_zero():

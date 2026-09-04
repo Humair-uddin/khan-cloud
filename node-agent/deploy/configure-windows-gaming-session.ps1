@@ -51,201 +51,19 @@ function New-RandomPassword {
     )
 }
 
-$LsaSource = @'
-using System;
-using System.Runtime.InteropServices;
+$LsaHelper = Join-Path `
+    $PSScriptRoot `
+    "windows-lsa-secret.ps1"
 
-public static class KhanLsaSecret
-{
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LSA_UNICODE_STRING
-    {
-        public UInt16 Length;
-        public UInt16 MaximumLength;
-        public IntPtr Buffer;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LSA_OBJECT_ATTRIBUTES
-    {
-        public UInt32 Length;
-        public IntPtr RootDirectory;
-        public IntPtr ObjectName;
-        public UInt32 Attributes;
-        public IntPtr SecurityDescriptor;
-        public IntPtr SecurityQualityOfService;
-    }
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern UInt32 LsaOpenPolicy(
-        IntPtr SystemName,
-        ref LSA_OBJECT_ATTRIBUTES ObjectAttributes,
-        UInt32 DesiredAccess,
-        out IntPtr PolicyHandle
-    );
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern UInt32 LsaStorePrivateData(
-        IntPtr PolicyHandle,
-        ref LSA_UNICODE_STRING KeyName,
-        ref LSA_UNICODE_STRING PrivateData
-    );
-
-    [DllImport("advapi32.dll")]
-    private static extern UInt32 LsaNtStatusToWinError(
-        UInt32 Status
-    );
-
-    [DllImport("advapi32.dll")]
-    private static extern UInt32 LsaClose(
-        IntPtr PolicyHandle
-    );
-
-    private const UInt32 POLICY_CREATE_SECRET = 0x00000020;
-
-    private static LSA_UNICODE_STRING InitString(
-        string value,
-        out IntPtr buffer
+if (-not (Test-Path $LsaHelper -PathType Leaf)) {
+    throw (
+        "Khan Cloud Windows LSA helper is missing: " +
+        $LsaHelper
     )
-    {
-        buffer = Marshal.StringToHGlobalUni(value);
-
-        return new LSA_UNICODE_STRING {
-            Buffer = buffer,
-            Length = (UInt16)(value.Length * 2),
-            MaximumLength = (UInt16)((value.Length + 1) * 2)
-        };
-    }
-
-    [DllImport(
-        "advapi32.dll",
-        EntryPoint = "LsaStorePrivateData",
-        SetLastError = true
-    )]
-    private static extern UInt32 LsaStorePrivateDataNull(
-        IntPtr PolicyHandle,
-        ref LSA_UNICODE_STRING KeyName,
-        IntPtr PrivateData
-    );
-
-    public static void StoreDefaultPassword(string password)
-    {
-        LSA_OBJECT_ATTRIBUTES attributes =
-            new LSA_OBJECT_ATTRIBUTES();
-
-        attributes.Length = 0;
-
-        IntPtr policy;
-
-        UInt32 status = LsaOpenPolicy(
-            IntPtr.Zero,
-            ref attributes,
-            POLICY_CREATE_SECRET,
-            out policy
-        );
-
-        if (status != 0)
-        {
-            throw new InvalidOperationException(
-                "LsaOpenPolicy failed: " +
-                LsaNtStatusToWinError(status)
-            );
-        }
-
-        IntPtr nameBuffer = IntPtr.Zero;
-        IntPtr dataBuffer = IntPtr.Zero;
-
-        try
-        {
-            LSA_UNICODE_STRING name =
-                InitString("DefaultPassword", out nameBuffer);
-
-            LSA_UNICODE_STRING data =
-                InitString(password, out dataBuffer);
-
-            status = LsaStorePrivateData(
-                policy,
-                ref name,
-                ref data
-            );
-
-            if (status != 0)
-            {
-                throw new InvalidOperationException(
-                    "LsaStorePrivateData failed: " +
-                    LsaNtStatusToWinError(status)
-                );
-            }
-        }
-        finally
-        {
-            if (nameBuffer != IntPtr.Zero)
-                Marshal.FreeHGlobal(nameBuffer);
-
-            if (dataBuffer != IntPtr.Zero)
-                Marshal.FreeHGlobal(dataBuffer);
-
-            if (policy != IntPtr.Zero)
-                LsaClose(policy);
-        }
-    }
-
-    public static void ClearDefaultPassword()
-    {
-        LSA_OBJECT_ATTRIBUTES attributes =
-            new LSA_OBJECT_ATTRIBUTES();
-
-        attributes.Length = 0;
-
-        IntPtr policy;
-
-        UInt32 status = LsaOpenPolicy(
-            IntPtr.Zero,
-            ref attributes,
-            POLICY_CREATE_SECRET,
-            out policy
-        );
-
-        if (status != 0)
-        {
-            throw new InvalidOperationException(
-                "LsaOpenPolicy failed: " +
-                LsaNtStatusToWinError(status)
-            );
-        }
-
-        IntPtr nameBuffer = IntPtr.Zero;
-
-        try
-        {
-            LSA_UNICODE_STRING name =
-                InitString("DefaultPassword", out nameBuffer);
-
-            status = LsaStorePrivateDataNull(
-                policy,
-                ref name,
-                IntPtr.Zero
-            );
-
-            if (status != 0)
-            {
-                throw new InvalidOperationException(
-                    "Unable to delete LSA DefaultPassword secret: " +
-                    LsaNtStatusToWinError(status)
-                );
-            }
-        }
-        finally
-        {
-            if (nameBuffer != IntPtr.Zero)
-                Marshal.FreeHGlobal(nameBuffer);
-
-            if (policy != IntPtr.Zero)
-                LsaClose(policy);
-        }
-    }
 }
-'@
+
+. $LsaHelper
+
 
 Write-Host "============================================================"
 Write-Host " KHAN CLOUD - MANAGED WINDOWS GAMING SESSION"
@@ -490,13 +308,17 @@ if ($Action -eq "Deconfigure") {
     exit 0
 }
 
-$passwordText = New-RandomPassword
-$password = ConvertTo-SecureString `
-    $passwordText `
-    -AsPlainText `
-    -Force
+$passwordText = $null
+$password = $null
+$credentialsChanged = $false
 
 if (-not $account) {
+    $passwordText = New-RandomPassword
+    $password = ConvertTo-SecureString `
+        $passwordText `
+        -AsPlainText `
+        -Force
+
     New-LocalUser `
         -Name $UserName `
         -Password $password `
@@ -505,6 +327,8 @@ if (-not $account) {
         -UserMayNotChangePassword `
         -Description "Khan Cloud managed gaming desktop account" |
         Out-Null
+
+    $credentialsChanged = $true
 
     $accountOwnership = [ordered]@{
         contract_version = "kg009d2-account-v1"
@@ -531,11 +355,14 @@ if (-not $account) {
     Write-Host "ACCOUNT_OWNERSHIP_STATE=$AccountStatePath"
 }
 else {
-    Set-LocalUser `
-        -Name $UserName `
-        -Password $password
+    if (-not ($stateIsOwned -or $accountIsOwned)) {
+        throw (
+            "Refusing to reuse an existing local account without " +
+            "Khan Cloud ownership state: $UserName"
+        )
+    }
 
-    Write-Host "ACCOUNT_ROTATED=$UserName"
+    Write-Host "ACCOUNT_PRESERVED=$UserName"
 }
 
 $admins = Get-LocalGroupMember `
@@ -558,9 +385,11 @@ if ($adminMatch.Count -gt 0) {
     )
 }
 
-[KhanLsaSecret]::StoreDefaultPassword(
-    $passwordText
-)
+if ($credentialsChanged) {
+    [KhanLsaSecret]::StoreDefaultPassword(
+        $passwordText
+    )
+}
 
 # Remove plaintext fallback before enabling autologon.
 Remove-ItemProperty `
@@ -608,11 +437,19 @@ $state = [ordered]@{
 
 $temp = "$StatePath.tmp"
 
-$state |
-    ConvertTo-Json -Depth 5 |
-    Set-Content `
-        -Path $temp `
-        -Encoding UTF8
+$stateJson = (
+    $state |
+    ConvertTo-Json -Depth 5
+)
+
+$utf8NoBom = New-Object `
+    System.Text.UTF8Encoding($false)
+
+[System.IO.File]::WriteAllText(
+    $temp,
+    $stateJson,
+    $utf8NoBom
+)
 
 Move-Item `
     -Path $temp `
@@ -629,5 +466,11 @@ Write-Host "BROKER_STATE=$StatePath"
 Write-Host "AUTOADMINLOGON=ENABLED"
 Write-Host "PASSWORD_STORAGE=LSA_PRIVATE_DATA"
 Write-Host "PLAINTEXT_DEFAULTPASSWORD=ABSENT"
-Write-Host "REBOOT_REQUIRED_FOR_NEW_CONSOLE_SESSION=YES"
+if ($credentialsChanged) {
+    Write-Host "REBOOT_REQUIRED_FOR_NEW_CONSOLE_SESSION=YES"
+}
+else {
+    Write-Host "REBOOT_REQUIRED_FOR_NEW_CONSOLE_SESSION=NO"
+}
+
 Write-Host "KG009D2_MANAGED_SESSION_CONFIGURATION=PASS"

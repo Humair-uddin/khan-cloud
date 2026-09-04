@@ -11,14 +11,19 @@ def test_windows_runtime_accepts_real_interactive_session(
         "system",
         lambda: "Windows",
     )
-    monkeypatch.setattr(
-        gaming_runtime,
-        "require_interactive_session",
-        lambda: type(
+
+    def broker(**kwargs):
+        assert kwargs == {"require_managed": True}
+        return type(
             "Session",
             (),
             {"session_id": 2},
-        )(),
+        )()
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "require_interactive_session",
+        broker,
     )
 
     value = (
@@ -41,14 +46,19 @@ def test_windows_runtime_rejects_session_zero(
         "system",
         lambda: "Windows",
     )
-    monkeypatch.setattr(
-        gaming_runtime,
-        "require_interactive_session",
-        lambda: type(
+
+    def broker(**kwargs):
+        assert kwargs == {"require_managed": True}
+        return type(
             "Session",
             (),
             {"session_id": 0},
-        )(),
+        )()
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "require_interactive_session",
+        broker,
     )
 
     with pytest.raises(
@@ -67,7 +77,8 @@ def test_windows_runtime_fails_closed_when_session_missing(
         lambda: "Windows",
     )
 
-    def missing():
+    def missing(**kwargs):
+        assert kwargs == {"require_managed": True}
         raise gaming_runtime.WindowsSessionBrokerError(
             "No active console session."
         )

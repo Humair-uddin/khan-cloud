@@ -17,6 +17,20 @@ COMMON = {
 
 
 def _good_environment(monkeypatch):
+    class ManagedSession:
+        session_id = 1
+        available = True
+        source = "test"
+        managed = True
+        username = "KhanGaming"
+        broker_mode = "managed_autologon"
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "require_interactive_session",
+        lambda **kwargs: ManagedSession(),
+    )
+
     monkeypatch.setattr(gaming_runtime, "locate_sunshine", lambda: Path("/sunshine.exe"))
     monkeypatch.setattr(
         gaming_runtime,
@@ -27,6 +41,16 @@ def _good_environment(monkeypatch):
             "name": "NVIDIA RTX Test",
             "memory_total_mib": 12288,
             "driver_version": "595.95",
+        },
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "probe_sunshine_readiness",
+        lambda **kwargs: {
+            "ready": True,
+            "authenticated_api": True,
+            "endpoint": "/api/clients/list",
         },
     )
 
@@ -217,6 +241,17 @@ def test_kg002_catalog_session_launches_through_adapter(
 ):
     _good_environment(monkeypatch)
 
+    monkeypatch.setattr(
+        gaming_runtime,
+        "inspect_runtime_ownership",
+        lambda ownership: {
+            **ownership,
+            "ownership_boundary_verified": True,
+            "owned_process_count": 1,
+            "clean": False,
+        },
+    )
+
     from khan_agent.gaming_launchers import (
         PreparedGameLaunch,
     )
@@ -252,6 +287,17 @@ def test_kg002_catalog_session_launches_through_adapter(
                 "launcher_game_id": "730",
                 "game_slug": "counter-strike-2",
                 "launcher_pid": 4242,
+                "runtime_ownership": {
+                    "schema_version": 2,
+                    "ownership_type":
+                        "windows_job_object",
+                    "job_name":
+                        "Global\\KhanCloudGaming_test",
+                    "supervisor_pid": 3131,
+                    "owned_process_count": 1,
+                    "ownership_boundary_verified": True,
+                    "termination_verified": False,
+                },
             }
         ),
     )

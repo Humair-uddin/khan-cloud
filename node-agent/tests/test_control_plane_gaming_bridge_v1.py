@@ -61,10 +61,33 @@ async def test_agent_bridges_gaming_job_result_to_control_plane(
         },
     }
 
+    class ManagedSession:
+        session_id = 1
+        available = True
+        source = "test"
+        managed = True
+        username = "KhanGaming"
+        broker_mode = "managed_autologon"
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "require_interactive_session",
+        lambda **kwargs: ManagedSession(),
+    )
+
     monkeypatch.setattr(
         gaming_runtime,
         "locate_sunshine",
         lambda: Path(r"C:\\Program Files\\Sunshine\\sunshine.exe"),
+    )
+    monkeypatch.setattr(
+        gaming_runtime,
+        "probe_sunshine_readiness",
+        lambda **kwargs: {
+            "ready": True,
+            "authenticated_api": True,
+            "endpoint": "/api/clients/list",
+        },
     )
     monkeypatch.setattr(
         gaming_runtime,

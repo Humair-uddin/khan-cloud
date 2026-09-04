@@ -388,6 +388,20 @@ def test_vdd_runtime_policy_has_single_production_owner():
 def _good_session_environment(monkeypatch):
     from khan_agent import gaming_runtime
 
+    class ManagedSession:
+        session_id = 1
+        available = True
+        source = "test"
+        managed = True
+        username = "KhanGaming"
+        broker_mode = "managed_autologon"
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "require_interactive_session",
+        lambda **kwargs: ManagedSession(),
+    )
+
     # These are runtime-policy/session unit tests.  A real Windows
     # host may have a healthy Khan VDD, so availability probing would
     # otherwise execute pnputil /restart-device during pytest.
@@ -395,7 +409,18 @@ def _good_session_environment(monkeypatch):
     monkeypatch.setattr(
         gaming_runtime,
         "live_activation_available",
-        lambda: False,
+        lambda: True,
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "activate_vdd_policy",
+        lambda *args, **kwargs: {
+            "healthy": True,
+            "status": "OK",
+            "problem_code": 0,
+            "activation_verified": True,
+        },
     )
 
     from khan_agent import gaming_runtime
@@ -404,6 +429,16 @@ def _good_session_environment(monkeypatch):
         gaming_runtime,
         "locate_sunshine",
         lambda: Path("/sunshine.exe"),
+    )
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "probe_sunshine_readiness",
+        lambda **kwargs: {
+            "ready": True,
+            "authenticated_api": True,
+            "endpoint": "/api/clients/list",
+        },
     )
 
     monkeypatch.setattr(
@@ -1410,9 +1445,9 @@ def test_session_policy_new_apply_triggers_live_activation(
         calls["activate"] += 1
 
         return {
-            "activation_required": True,
+            "activation_required": False,
             "activation_method":
-                "pnputil-restart-device",
+                "health-verification-only",
             "instance_id":
                 r"ROOT\DISPLAY\0000",
             "healthy": True,
@@ -1450,7 +1485,13 @@ def test_session_policy_new_apply_triggers_live_activation(
     assert (
         result["activation"]
         ["activation_method"]
-        == "pnputil-restart-device"
+        == "health-verification-only"
+    )
+
+    assert (
+        result["activation"]
+        ["activation_required"]
+        is False
     )
 
     assert (
