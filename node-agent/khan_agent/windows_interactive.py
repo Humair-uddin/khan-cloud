@@ -174,6 +174,8 @@ def launch_in_active_session(
         command_line = subprocess.list2cmdline(resolved_argv)
 
         startup = win32process.STARTUPINFO()
+        # Session-token affinity does not select the interactive desktop.
+        startup.lpDesktop = r"winsta0\default"
         startup.dwFlags |= win32process.STARTF_USESHOWWINDOW
         startup.wShowWindow = win32con.SW_SHOWNORMAL
 

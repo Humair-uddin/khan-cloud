@@ -280,7 +280,13 @@ def record_connection_event(
         lease.revoked_reason = "customer_quit"
         from app.services.gaming_service import queue_gaming_action
         if session.desired_state == "running":
-            queue_gaming_action(db, session=session, action="stop", commit=False)
+            queue_gaming_action(
+                db,
+                session=session,
+                action="stop",
+                commit=False,
+                stop_reason="customer_quit",
+            )
             db.commit()
         return lease
     else:
@@ -327,12 +333,23 @@ def reconcile_connection_leases_for_node(db: Session, *, node_id: UUID) -> list[
         lease.revoked_reason = reason
         if session.desired_state == "running":
             from app.services.gaming_service import queue_gaming_action
-            queue_gaming_action(db, session=session, action="stop", commit=False)
+            queue_gaming_action(
+                db,
+                session=session,
+                action="stop",
+                commit=False,
+                stop_reason=reason,
+            )
             stop_ids.append(session.id)
     return stop_ids
 
 
-def prepare_connection_shutdown(db: Session, *, session: GamingSession) -> bool:
+def prepare_connection_shutdown(
+    db: Session,
+    *,
+    session: GamingSession,
+    stop_reason: str | None = None,
+) -> bool:
     leases = list(db.scalars(select(GamingConnectionLease).where(
         GamingConnectionLease.gaming_session_id == session.id,
         GamingConnectionLease.state.in_(ACTIVE_LEASE_STATES | {"failed", "expired"}),
@@ -363,6 +380,10 @@ def prepare_connection_shutdown(db: Session, *, session: GamingSession) -> bool:
                         "session_id": str(session.id), "lease_id": str(lease.id),
                         "sunshine_client_uuid": lease.sunshine_client_uuid,
                         "automatic_shutdown": True,
+                        "stop_reason": (
+                            str(stop_reason or "").strip()
+                            or "customer_stop"
+                        )[:80],
                     },
                 ))
             waiting = True
@@ -378,7 +399,12 @@ def prepare_connection_shutdown(db: Session, *, session: GamingSession) -> bool:
     return not waiting
 
 
-def continue_deferred_session_action(db: Session, *, session: GamingSession) -> None:
+def continue_deferred_session_action(
+    db: Session,
+    *,
+    session: GamingSession,
+    stop_reason: str | None = None,
+) -> None:
     if session.desired_state not in {"stopped", "terminated"}:
         return
     blocking = db.scalar(select(GamingConnectionLease).where(
@@ -404,15 +430,32 @@ def continue_deferred_session_action(db: Session, *, session: GamingSession) -> 
     job_type = f"gaming.vm.{action}" if session.deployment_mode == "proxmox_windows_vm" else f"gaming.session.{action}"
     db.add(NodeJob(
         node_id=session.node_id, gaming_session_id=session.id, job_type=job_type,
-        payload={"session_id": str(session.id), "gpu_uuid": session.gpu_uuid},
+        payload={
+            "session_id": str(session.id),
+            "gpu_uuid": session.gpu_uuid,
+            **(
+                {
+                    "stop_reason": (
+                        str(stop_reason or "").strip()
+                        or "customer_stop"
+                    )[:80]
+                }
+                if action == "stop"
+                else {}
+            ),
+        },
     ))
 
 
 def finish_connection_job(
     db: Session, *, job: NodeJob, status: str, result: dict, error_message: str
 ) -> None:
-    raw_lease_id = str((job.payload or {}).get("lease_id") or "")
-    # Never retain a customer pairing PIN after completion.
+    raw_payload = dict(job.payload or {})
+    raw_lease_id = str(raw_payload.get("lease_id") or "")
+    stop_reason = str(
+        raw_payload.get("stop_reason") or "customer_stop"
+    ).strip()[:80] or "customer_stop"
+    # Never retain a customer pairing PIN or shutdown metadata after completion.
     job.payload = {"lease_id": raw_lease_id, "redacted": True}
     try:
         lease_id = UUID(raw_lease_id)
@@ -458,4 +501,8 @@ def finish_connection_job(
         lease.reconnect_grace_expires_at = None
         lease.failure_message = ""
         if session is not None:
-            continue_deferred_session_action(db, session=session)
+            continue_deferred_session_action(
+                db,
+                session=session,
+                stop_reason=stop_reason,
+            )

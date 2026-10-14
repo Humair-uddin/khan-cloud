@@ -3402,6 +3402,26 @@ SwapChainProcessor::SwapChainProcessor(
 {
 	stringstream logStream;
 
+        logStream
+            << "RAW-N8G38Q2 CONSTRUCT"
+            << " PROC="
+            << static_cast<const void*>(this)
+            << " MONITOR="
+            << static_cast<void*>(Monitor)
+            << " SWAPCHAIN="
+            << static_cast<void*>(hSwapChain)
+            << " CALLER_TID="
+            << GetCurrentThreadId()
+            << " EVENT="
+            << NewFrameEvent;
+        vddlog(
+            "i",
+            logStream.str().c_str()
+        );
+        logStream.str("");
+        logStream.clear();
+
+
 	logStream << "Constructing SwapChainProcessor:"
 		<< "\n  SwapChain Handle: " << static_cast<void*>(hSwapChain)
 		<< "\n  Device Pointer: " << static_cast<void*>(Device.get())
@@ -3441,6 +3461,36 @@ SwapChainProcessor::SwapChainProcessor(
 SwapChainProcessor::~SwapChainProcessor()
 {
 	stringstream logStream;
+
+        logStream
+            << "RAW-N8G38Q2 DESTRUCT_BEGIN"
+            << " PROC="
+            << static_cast<const void*>(this)
+            << " MONITOR="
+            << static_cast<void*>(m_Monitor)
+            << " SWAPCHAIN="
+            << static_cast<void*>(m_hSwapChain)
+            << " CALLER_TID="
+            << GetCurrentThreadId()
+            << " PROCESSED="
+            << m_ProcessedFrameCount.load(
+                std::memory_order_relaxed
+            )
+            << " FAILURES="
+            << m_FrameProcessingFailureCount.load(
+                std::memory_order_relaxed
+            )
+            << " DROPPED="
+            << m_FrameHandoffDroppedCount.load(
+                std::memory_order_relaxed
+            );
+        vddlog(
+            "i",
+            logStream.str().c_str()
+        );
+        logStream.str("");
+        logStream.clear();
+
 
 	logStream << "Destructing SwapChainProcessor:";
 
@@ -3501,6 +3551,20 @@ DWORD CALLBACK SwapChainProcessor::RunThread(LPVOID Argument)
 {
 	stringstream logStream;
 
+        logStream
+            << "RAW-N8G38Q2 THREAD_ENTER"
+            << " PROC="
+            << Argument
+            << " TID="
+            << GetCurrentThreadId();
+        vddlog(
+            "i",
+            logStream.str().c_str()
+        );
+        logStream.str("");
+        logStream.clear();
+
+
 	logStream << "RunThread started. Argument: " << Argument;
 	vddlog("d", logStream.str().c_str());
 
@@ -3511,6 +3575,22 @@ DWORD CALLBACK SwapChainProcessor::RunThread(LPVOID Argument)
 void SwapChainProcessor::Run()
 {
 	stringstream logStream;
+
+        logStream
+            << "RAW-N8G38Q2 RUN_ENTER"
+            << " PROC="
+            << static_cast<const void*>(this)
+            << " SWAPCHAIN="
+            << static_cast<void*>(m_hSwapChain)
+            << " TID="
+            << GetCurrentThreadId();
+        vddlog(
+            "i",
+            logStream.str().c_str()
+        );
+        logStream.str("");
+        logStream.clear();
+
 
 	logStream << "Run method started.";
 	vddlog("d", logStream.str().c_str());
@@ -3535,6 +3615,36 @@ void SwapChainProcessor::Run()
 
 	RunCore();
 
+        logStream.str("");
+        logStream.clear();
+
+        logStream
+            << "RAW-N8G38Q2 RUNCORE_RETURN"
+            << " PROC="
+            << static_cast<const void*>(this)
+            << " SWAPCHAIN="
+            << static_cast<void*>(m_hSwapChain)
+            << " TID="
+            << GetCurrentThreadId()
+            << " PROCESSED="
+            << m_ProcessedFrameCount.load(
+                std::memory_order_relaxed
+            )
+            << " FAILURES="
+            << m_FrameProcessingFailureCount.load(
+                std::memory_order_relaxed
+            )
+            << " DROPPED="
+            << m_FrameHandoffDroppedCount.load(
+                std::memory_order_relaxed
+            );
+
+        vddlog(
+            "i",
+            logStream.str().c_str()
+        );
+
+
 	logStream.str("");
 	logStream << "Core processing function RunCore() completed.";
 	vddlog("d", logStream.str().c_str());
@@ -3547,6 +3657,21 @@ void SwapChainProcessor::Run()
 	*/
 	if (m_hSwapChain)
 	{
+                logStream.str("");
+                logStream.clear();
+                logStream
+                    << "RAW-N8G38Q4 WDF_DELETE"
+                    << " PROC="
+                    << static_cast<const void*>(this)
+                    << " SWAPCHAIN="
+                    << static_cast<void*>(m_hSwapChain)
+                    << " TID="
+                    << GetCurrentThreadId();
+                vddlog(
+                    "i",
+                    logStream.str().c_str()
+                );
+
 		WdfObjectDelete((WDFOBJECT)m_hSwapChain);
 		logStream.str("");
 		logStream << "Swap-chain object deleted.";
@@ -3984,6 +4109,246 @@ HRESULT SwapChainProcessor::ProcessFrame(
             frameTexture.Get()
         );
 
+        //
+        // RAW-N8G38B diagnostic only.
+        //
+        // Sample the acquired IddCx source texture and the post-CopyResource
+        // handoff texture from this exact ProcessFrame invocation.
+        //
+        // This is intentionally rate-limited to one diagnostic sample
+        // every 120 acquired frames. This lets RAW-N8G38C overlap the
+        // independently verified Session-1 white canary instead of sampling
+        // only the first frame after driver startup.
+        //
+        // This diagnostic MUST NOT remain in the production fast path after
+        // the fault is localized.
+        //
+        static std::atomic<UINT64> rawN8G38BFrameCounter{0};
+
+        const UINT64 rawN8G38BFrameNumber =
+            rawN8G38BFrameCounter.fetch_add(
+                1,
+                std::memory_order_relaxed
+            ) + 1;
+
+        if (
+            rawN8G38BFrameNumber % 120 == 0
+        )
+        {
+            struct RawN8G38BStats
+            {
+                UINT64 TotalPixels = 0;
+                UINT64 BlackPixels = 0;
+                UINT64 NonBlackPixels = 0;
+                UINT64 SumR = 0;
+                UINT64 SumG = 0;
+                UINT64 SumB = 0;
+                BYTE MinChannel = 255;
+                BYTE MaxChannel = 0;
+            };
+
+            auto sampleTexture =
+                [&](ID3D11Texture2D* texture,
+                    const char* label,
+                    RawN8G38BStats& stats) -> HRESULT
+            {
+                if (texture == nullptr)
+                {
+                    return E_POINTER;
+                }
+
+                D3D11_TEXTURE2D_DESC sourceDesc = {};
+                texture->GetDesc(&sourceDesc);
+
+                if (
+                    sourceDesc.Width == 0 ||
+                    sourceDesc.Height == 0 ||
+                    sourceDesc.ArraySize != 1 ||
+                    sourceDesc.MipLevels == 0
+                )
+                {
+                    return E_INVALIDARG;
+                }
+
+                D3D11_TEXTURE2D_DESC stagingDesc = sourceDesc;
+
+                stagingDesc.Usage = D3D11_USAGE_STAGING;
+                stagingDesc.BindFlags = 0;
+                stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                stagingDesc.MiscFlags = 0;
+                stagingDesc.ArraySize = 1;
+                stagingDesc.MipLevels = 1;
+
+                ComPtr<ID3D11Texture2D> stagingTexture;
+
+                HRESULT diagnosticHr =
+                    m_Device->Device->CreateTexture2D(
+                        &stagingDesc,
+                        nullptr,
+                        &stagingTexture
+                    );
+
+                if (FAILED(diagnosticHr))
+                {
+                    return diagnosticHr;
+                }
+
+                m_Device->DeviceContext->CopyResource(
+                    stagingTexture.Get(),
+                    texture
+                );
+
+                D3D11_MAPPED_SUBRESOURCE mapped = {};
+
+                diagnosticHr =
+                    m_Device->DeviceContext->Map(
+                        stagingTexture.Get(),
+                        0,
+                        D3D11_MAP_READ,
+                        0,
+                        &mapped
+                    );
+
+                if (FAILED(diagnosticHr))
+                {
+                    return diagnosticHr;
+                }
+
+                for (
+                    UINT y = 0;
+                    y < sourceDesc.Height;
+                    ++y
+                )
+                {
+                    const BYTE* row =
+                        static_cast<const BYTE*>(mapped.pData) +
+                        static_cast<size_t>(y) *
+                        mapped.RowPitch;
+
+                    for (
+                        UINT x = 0;
+                        x < sourceDesc.Width;
+                        ++x
+                    )
+                    {
+                        const BYTE* pixel =
+                            row +
+                            static_cast<size_t>(x) * 4;
+
+                        const BYTE b = pixel[0];
+                        const BYTE g = pixel[1];
+                        const BYTE r = pixel[2];
+
+                        ++stats.TotalPixels;
+
+                        if (
+                            r == 0 &&
+                            g == 0 &&
+                            b == 0
+                        )
+                        {
+                            ++stats.BlackPixels;
+                        }
+                        else
+                        {
+                            ++stats.NonBlackPixels;
+                        }
+
+                        stats.SumR += r;
+                        stats.SumG += g;
+                        stats.SumB += b;
+
+                        const BYTE pixelMin =
+                            min(r, min(g, b));
+
+                        const BYTE pixelMax =
+                            max(r, max(g, b));
+
+                        if (pixelMin < stats.MinChannel)
+                        {
+                            stats.MinChannel = pixelMin;
+                        }
+
+                        if (pixelMax > stats.MaxChannel)
+                        {
+                            stats.MaxChannel = pixelMax;
+                        }
+                    }
+                }
+
+                m_Device->DeviceContext->Unmap(
+                    stagingTexture.Get(),
+                    0
+                );
+
+                std::stringstream diagnosticLog;
+
+                diagnosticLog
+                    << "RAW-N8G38B "
+                    << label
+                    << " WIDTH="
+                    << sourceDesc.Width
+                    << " HEIGHT="
+                    << sourceDesc.Height
+                    << " FORMAT="
+                    << static_cast<UINT>(sourceDesc.Format)
+                    << " TOTAL_PIXELS="
+                    << stats.TotalPixels
+                    << " BLACK_PIXELS="
+                    << stats.BlackPixels
+                    << " NONBLACK_PIXELS="
+                    << stats.NonBlackPixels
+                    << " MIN_CHANNEL="
+                    << static_cast<UINT>(stats.MinChannel)
+                    << " MAX_CHANNEL="
+                    << static_cast<UINT>(stats.MaxChannel);
+
+                vddlog(
+                    "i",
+                    diagnosticLog.str().c_str()
+                );
+
+                return S_OK;
+            };
+
+            RawN8G38BStats sourceStats;
+            RawN8G38BStats handoffStats;
+
+            HRESULT sourceDiagnosticHr =
+                sampleTexture(
+                    frameTexture.Get(),
+                    "SOURCE",
+                    sourceStats
+                );
+
+            HRESULT handoffDiagnosticHr =
+                sampleTexture(
+                    handoffTexture.Get(),
+                    "HANDOFF",
+                    handoffStats
+                );
+
+            std::stringstream summaryLog;
+
+            summaryLog
+                << "RAW-N8G38B SUMMARY"
+                << " FRAME="
+                << rawN8G38BFrameNumber
+                << " SOURCE_HR="
+                << sourceDiagnosticHr
+                << " SOURCE_NONBLACK="
+                << sourceStats.NonBlackPixels
+                << " HANDOFF_HR="
+                << handoffDiagnosticHr
+                << " HANDOFF_NONBLACK="
+                << handoffStats.NonBlackPixels;
+
+            vddlog(
+                "i",
+                summaryLog.str().c_str()
+            );
+        }
+
         HRESULT releaseHr =
             handoffMutex->ReleaseSync(1);
 
@@ -4014,6 +4379,24 @@ HRESULT SwapChainProcessor::ProcessFrame(
 void SwapChainProcessor::RunCore()
 {
 	stringstream logStream;
+
+   logStream
+       << "RAW-N8G38Q2 RUNCORE_ENTER"
+       << " PROC="
+       << static_cast<const void*>(this)
+       << " SWAPCHAIN="
+       << static_cast<void*>(m_hSwapChain)
+       << " TID="
+       << GetCurrentThreadId();
+
+   vddlog(
+       "i",
+       logStream.str().c_str()
+   );
+
+   logStream.str("");
+   logStream.clear();
+
 	DWORD retryDelay = 1;
 	const DWORD maxRetryDelay = 100;
 	int retryCount = 0;
@@ -4041,14 +4424,56 @@ void SwapChainProcessor::RunCore()
 	IDARG_IN_SWAPCHAINSETDEVICE SetDevice = {};
 	SetDevice.pDevice = DxgiDevice.Get();
 
+        logStream.str("");
+        logStream.clear();
+        logStream
+            << "RAW-N8G38Q4 SETDEVICE_BEGIN"
+            << " PROC="
+            << static_cast<const void*>(this)
+            << " SWAPCHAIN="
+            << static_cast<void*>(m_hSwapChain)
+            << " TID="
+            << GetCurrentThreadId();
+        vddlog("i", logStream.str().c_str());
+
 	hr = IddCxSwapChainSetDevice(m_hSwapChain, &SetDevice);
 	logStream.str("");
 	if (FAILED(hr))
 	{
+                logStream
+                    << "RAW-N8G38Q4 SETDEVICE_FAIL"
+                    << " PROC="
+                    << static_cast<const void*>(this)
+                    << " SWAPCHAIN="
+                    << static_cast<void*>(m_hSwapChain)
+                    << " TID="
+                    << GetCurrentThreadId()
+                    << " HRESULT="
+                    << hr;
+                vddlog("i", logStream.str().c_str());
+
+                logStream.str("");
+                logStream.clear();
+
 		logStream << "Failed to set device to swap chain. HRESULT: " << hr;
 		vddlog("e", logStream.str().c_str());
 		return;
 	}
+        logStream.str("");
+        logStream.clear();
+        logStream
+            << "RAW-N8G38Q4 SETDEVICE_PASS"
+            << " PROC="
+            << static_cast<const void*>(this)
+            << " SWAPCHAIN="
+            << static_cast<void*>(m_hSwapChain)
+            << " TID="
+            << GetCurrentThreadId();
+        vddlog("i", logStream.str().c_str());
+
+        logStream.str("");
+        logStream.clear();
+
 	logStream << "Device set to swap chain successfully.";
 	//vddlog("d", logStream.str().c_str());
 
@@ -4222,6 +4647,30 @@ void SwapChainProcessor::RunCore()
 			retryDelay = 1;
 			retryCount = 0;
 
+                        {
+                            stringstream q4Log;
+                            q4Log
+                                << "RAW-N8G38Q4 ACQUIRE_SUCCESS"
+                                << " PROC="
+                                << static_cast<const void*>(this)
+                                << " SWAPCHAIN="
+                                << static_cast<void*>(m_hSwapChain)
+                                << " TID="
+                                << GetCurrentThreadId()
+                                << " NEXT_FRAME="
+                                << (
+                                    m_ProcessedFrameCount.load(
+                                        std::memory_order_relaxed
+                                    ) + 1
+                                )
+                                << " SURFACE="
+                                << static_cast<void*>(pSurface);
+                            vddlog(
+                                "i",
+                                q4Log.str().c_str()
+                            );
+                        }
+
 			AcquiredBuffer.Attach(pSurface);
 
 			// ==============================
@@ -4238,6 +4687,28 @@ void SwapChainProcessor::RunCore()
 			HRESULT frameProcessingHr =
 			    ProcessFrame(AcquiredBuffer.Get());
 
+                        {
+                            stringstream q4Log;
+                            q4Log
+                                << "RAW-N8G38Q4 PROCESSFRAME_RESULT"
+                                << " PROC="
+                                << static_cast<const void*>(this)
+                                << " SWAPCHAIN="
+                                << static_cast<void*>(m_hSwapChain)
+                                << " TID="
+                                << GetCurrentThreadId()
+                                << " HRESULT="
+                                << frameProcessingHr
+                                << " PROCESSED="
+                                << m_ProcessedFrameCount.load(
+                                    std::memory_order_relaxed
+                                );
+                            vddlog(
+                                "i",
+                                q4Log.str().c_str()
+                            );
+                        }
+
 			if (FAILED(frameProcessingHr))
 			{
 			    stringstream frameLog;
@@ -4253,6 +4724,28 @@ void SwapChainProcessor::RunCore()
 
 			AcquiredBuffer.Reset();
 			hr = IddCxSwapChainFinishedProcessingFrame(m_hSwapChain);
+
+                        {
+                            stringstream q4Log;
+                            q4Log
+                                << "RAW-N8G38Q4 FINISHED_RESULT"
+                                << " PROC="
+                                << static_cast<const void*>(this)
+                                << " SWAPCHAIN="
+                                << static_cast<void*>(m_hSwapChain)
+                                << " TID="
+                                << GetCurrentThreadId()
+                                << " HRESULT="
+                                << hr
+                                << " PROCESSED="
+                                << m_ProcessedFrameCount.load(
+                                    std::memory_order_relaxed
+                                );
+                            vddlog(
+                                "i",
+                                q4Log.str().c_str()
+                            );
+                        }
 			if (FAILED(hr))
 			{
 				break;
@@ -4923,6 +5416,28 @@ void IndirectDeviceContext::CreateMonitor(unsigned int index) {
 
 void IndirectDeviceContext::AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent)
 {
+        {
+            stringstream q4Log;
+            q4Log
+                << "RAW-N8G38Q4 ASSIGN_ENTER"
+                << " MONITOR="
+                << static_cast<void*>(Monitor)
+                << " SWAPCHAIN="
+                << static_cast<void*>(SwapChain)
+                << " CALLER_TID="
+                << GetCurrentThreadId()
+                << " EVENT="
+                << NewFrameEvent
+                << " LUID="
+                << RenderAdapter.HighPart
+                << ":"
+                << RenderAdapter.LowPart;
+            vddlog(
+                "i",
+                q4Log.str().c_str()
+            );
+        }
+
         ++m_AssignSwapChainCallCount;
 
         m_LastRenderAdapterLuidHigh.store(
@@ -4963,6 +5478,30 @@ void IndirectDeviceContext::AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHA
 			auto& processorSlot = m_ProcessingThreads[Monitor];
 			previousProcessor = std::move(processorSlot);
 			processorSlot = std::move(newProcessor);
+
+                        {
+                            stringstream q4Log;
+                            q4Log
+                                << "RAW-N8G38Q4 ASSIGN_PUBLISHED"
+                                << " MONITOR="
+                                << static_cast<void*>(Monitor)
+                                << " PROC="
+                                << static_cast<const void*>(
+                                    processorSlot.get()
+                                )
+                                << " CALLER_TID="
+                                << GetCurrentThreadId()
+                                << " REPLACED="
+                                << (
+                                    previousProcessor
+                                    ? 1
+                                    : 0
+                                );
+                            vddlog(
+                                "i",
+                                q4Log.str().c_str()
+                            );
+                        }
 		}
 
 		if (previousProcessor) {
@@ -5073,6 +5612,20 @@ bool IndirectDeviceContext::GetFrameHandoffDiscoveryMetadata(
 
 void IndirectDeviceContext::UnassignSwapChain(IDDCX_MONITOR Monitor)
 {
+        {
+            stringstream q4Log;
+            q4Log
+                << "RAW-N8G38Q4 UNASSIGN_ENTER"
+                << " MONITOR="
+                << static_cast<void*>(Monitor)
+                << " CALLER_TID="
+                << GetCurrentThreadId();
+            vddlog(
+                "i",
+                q4Log.str().c_str()
+            );
+        }
+
         ++m_UnassignSwapChainCallCount;
 
 	std::unique_ptr<SwapChainProcessor> processorToStop;
@@ -5089,6 +5642,24 @@ void IndirectDeviceContext::UnassignSwapChain(IDDCX_MONITOR Monitor)
 
 	if (processorToStop)
 	{
+                {
+                    stringstream q4Log;
+                    q4Log
+                        << "RAW-N8G38Q4 UNASSIGN_FOUND"
+                        << " MONITOR="
+                        << static_cast<void*>(Monitor)
+                        << " PROC="
+                        << static_cast<const void*>(
+                            processorToStop.get()
+                        )
+                        << " CALLER_TID="
+                        << GetCurrentThreadId();
+                    vddlog(
+                        "i",
+                        q4Log.str().c_str()
+                    );
+                }
+
 		vddlog("i", "Unassigning swapchain for one monitor. Its processing thread will be stopped.");
 	}
 	else

@@ -158,6 +158,55 @@ function Get-CompatiblePython {
                 }
             }
 
+            $ResolvedPython = $ResolvedPython.Trim()
+
+            # KhanCloudAgent is a machine service and its interpreter must
+            # therefore have machine-scoped authority. Never build the
+            # production runtime from a user-profile Python installation.
+            $FullPythonPath = [System.IO.Path]::GetFullPath(
+                $ResolvedPython
+            )
+
+            $UserProfileRoot = [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::UserProfile
+            )
+
+            $LocalAppDataRoot = [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::LocalApplicationData
+            )
+
+            $UserScopedRoots = @(
+                $UserProfileRoot,
+                $LocalAppDataRoot
+            ) | Where-Object { $_ }
+
+            $UserScoped = $false
+
+            foreach ($Root in $UserScopedRoots) {
+                $FullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd(
+                    [System.IO.Path]::DirectorySeparatorChar
+                )
+
+                if (
+                    $FullPythonPath.Equals(
+                        $FullRoot,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    ) -or
+                    $FullPythonPath.StartsWith(
+                        $FullRoot +
+                        [System.IO.Path]::DirectorySeparatorChar,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    )
+                ) {
+                    $UserScoped = $true
+                    break
+                }
+            }
+
+            if ($UserScoped) {
+                continue
+            }
+
             $Version = Convert-Version $VersionText
             $Minimum = Convert-Version $MinimumPythonVersion
 
@@ -167,7 +216,7 @@ function Get-CompatiblePython {
                 $Version -ge $Minimum
             ) {
                 return [PSCustomObject]@{
-                    Path = $ResolvedPython.Trim()
+                    Path = $FullPythonPath
                     Version = $Version.ToString()
                 }
             }
@@ -220,16 +269,13 @@ Install a supported Python 3.12+ runtime and rerun this bootstrap.
         [EnvironmentVariableTarget]::Machine
     )
 
-    $UserPath = [Environment]::GetEnvironmentVariable(
-        "Path",
-        [EnvironmentVariableTarget]::User
-    )
-
-    $env:Path = "$MachinePath;$UserPath"
+    # Machine bootstrap deliberately excludes the invoking user's
+    # PATH and LOCALAPPDATA. A system Agent must not depend on private
+    # profile traversal or a user-owned interpreter.
+    $env:Path = $MachinePath
 
     $CommonCandidates = @(
-        "$env:ProgramFiles\Python312\python.exe",
-        "$env:LocalAppData\Programs\Python\Python312\python.exe"
+        "$env:ProgramFiles\Python312\python.exe"
     )
 
     foreach ($Candidate in $CommonCandidates) {
@@ -308,14 +354,50 @@ Write-Stage "PYTHON DISCOVERY"
 
 $Python = Get-CompatiblePython
 
-if (-not $Python) {
-    Install-PythonSafely
+$PythonRemediationMaxAttempts = 3
+$PythonRemediationAttempt = 0
 
+while (
+    -not $Python -and
+    $PythonRemediationAttempt -lt $PythonRemediationMaxAttempts
+) {
+    # Preservation gate: rediscover immediately before every mutation.
+    # This makes each retry safe after an external repair, package-manager
+    # completion, or another administrator satisfying the prerequisite.
+    $Python = Get-CompatiblePython
+
+    if ($Python) {
+        break
+    }
+
+    $PythonRemediationAttempt++
+
+    Write-Host (
+        "Python remediation attempt {0} of {1}." -f
+        $PythonRemediationAttempt,
+        $PythonRemediationMaxAttempts
+    )
+
+    try {
+        Install-PythonSafely
+    }
+    catch {
+        Write-Warning (
+            "Python remediation attempt {0} failed: {1}" -f
+            $PythonRemediationAttempt,
+            $_.Exception.Message
+        )
+    }
+
+    # Verification gate after mutation.
     $Python = Get-CompatiblePython
 }
 
 if (-not $Python) {
-    throw "Python remediation completed but no compatible Python runtime was detected."
+    throw (
+        "Python remediation exhausted {0} bounded attempts without " +
+        "detecting a compatible machine-scoped Python runtime."
+    ) -f $PythonRemediationMaxAttempts
 }
 
 Write-Host "Python executable: $($Python.Path)"

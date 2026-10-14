@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -82,13 +83,50 @@ def _session_username(
             )
             or ""
         ).strip()
-    except Exception:
-        return ""
+    except Exception as exc:
+        raise WindowsSessionBrokerError(
+            "Unable to query Windows interactive-session identity."
+        ) from exc
 
     if not user:
         return ""
 
     return f"{domain}\\{user}" if domain else user
+
+
+def _session_username_with_retry(
+    win32ts: Any,
+    session_id: int,
+    *,
+    attempts: int = 3,
+    retry_delay_seconds: float = 0.1,
+) -> str:
+    attempts = max(1, int(attempts))
+    last_error: WindowsSessionBrokerError | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            username = _session_username(
+                win32ts,
+                session_id,
+            )
+        except WindowsSessionBrokerError as exc:
+            last_error = exc
+        else:
+            if username:
+                return username
+
+            last_error = WindowsSessionBrokerError(
+                "Windows interactive-session identity was blank."
+            )
+
+        if attempt < attempts:
+            time.sleep(retry_delay_seconds)
+
+    raise WindowsSessionBrokerError(
+        "Unable to query Windows interactive-session identity "
+        f"after {attempts} attempts."
+    ) from last_error
 
 
 def discover_interactive_session(
@@ -127,7 +165,7 @@ def discover_interactive_session(
             source="non_interactive_session",
         )
 
-    username = _session_username(
+    username = _session_username_with_retry(
         win32ts,
         session_id,
     )

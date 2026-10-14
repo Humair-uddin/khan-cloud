@@ -236,6 +236,27 @@ def _remaining(reservation: UsageReservation) -> int:
     return reservation.reserved_minor - reservation.consumed_minor - reservation.released_minor
 
 
+def _gaming_reservation_extension_idempotency_key(
+    *,
+    session_id: UUID,
+    reservation_id: UUID,
+    target_reserved_minor: int,
+) -> str:
+    """Bind an extension retry to one reservation lifecycle.
+
+    Historical v1 keys omitted ``reservation_id`` and could therefore replay
+    an extension transaction from an older reservation for the same gaming
+    session. The v2 namespace is deliberately forward-only: a committed v1
+    extension has already advanced ``reserved_minor``, while a collided v1
+    no-op can be retried safely under the reservation-specific v2 key.
+    """
+
+    return (
+        f"gaming:{session_id}:reservation:{reservation_id}:"
+        f"extend:{target_reserved_minor}:v2"
+    )
+
+
 def ensure_runtime_coverage(db: Session, *, session: GamingSession) -> UsageReservation | None:
     reservation = _reservation_for_update(db, session)
     if reservation is None or reservation.status == "closed":
@@ -255,12 +276,15 @@ def ensure_runtime_coverage(db: Session, *, session: GamingSession) -> UsageRese
         session.billing_stop_reason = "insufficient_wallet_balance"
         return reservation
     try:
+        target_reserved_minor = reservation.reserved_minor + topup
         extend_reservation(
             db,
             reservation=reservation,
             amount_minor=topup,
-            idempotency_key=(
-                f"gaming:{session.id}:extend:{reservation.reserved_minor + topup}:v1"
+            idempotency_key=_gaming_reservation_extension_idempotency_key(
+                session_id=session.id,
+                reservation_id=reservation.id,
+                target_reserved_minor=target_reserved_minor,
             ),
         )
     except WalletError as exc:

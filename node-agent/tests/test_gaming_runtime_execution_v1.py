@@ -2,6 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from khan_agent import gaming_runtime
+from khan_agent import runtime_ownership
 from khan_agent.job_dispatch import execute_node_job
 
 
@@ -29,6 +30,20 @@ def _good_environment(monkeypatch):
         gaming_runtime,
         "require_interactive_session",
         lambda **kwargs: ManagedSession(),
+    )
+    monkeypatch.setattr(
+        gaming_runtime,
+        "_establish_presentation_contract",
+        lambda session: {
+            "required": True,
+            "verified": True,
+            "session_id": session.get("session_id"),
+            "requested_mode": {
+                "width": 1920,
+                "height": 1080,
+                "refresh_hz": 60,
+            },
+        },
     )
 
     monkeypatch.setattr(gaming_runtime, "locate_sunshine", lambda: Path("/sunshine.exe"))
@@ -235,20 +250,26 @@ def test_duplicate_create_never_resurrects_stopped_session(
     assert state["status"] == "stopped"
 
 
-def test_kg002_catalog_session_launches_through_adapter(
+
+def test_kg002_catalog_session_prepares_game_without_auto_launch(
     tmp_path,
     monkeypatch,
 ):
     _good_environment(monkeypatch)
 
+    # This Linux unit test exercises the Windows-native commercial
+    # session contract.  Production _interactive_session_context()
+    # normalizes the broker's InteractiveSession object into this
+    # verified dictionary before Y44E establishes its observation
+    # boundary.
     monkeypatch.setattr(
         gaming_runtime,
-        "inspect_runtime_ownership",
-        lambda ownership: {
-            **ownership,
-            "ownership_boundary_verified": True,
-            "owned_process_count": 1,
-            "clean": False,
+        "_interactive_session_context",
+        lambda: {
+            "required": True,
+            "validated": True,
+            "session_id": 1,
+            "execution_context": "interactive_user",
         },
     )
 
@@ -265,41 +286,48 @@ def test_kg002_catalog_session_launches_through_adapter(
             "app_id": "730",
             "name": "Counter-Strike 2",
             "installed": True,
+            "install_path": (
+                r"C:\Steam\steamapps\common"
+                r"\Counter-Strike Global Offensive"
+            ),
         },
         launcher_executable=r"C:\Steam\steam.exe",
     )
 
+    prepared_payloads = []
+
+    def fake_prepare(payload):
+        prepared_payloads.append(dict(payload))
+        return prepared
+
     monkeypatch.setattr(
         gaming_runtime,
         "prepare_game_launch",
-        lambda payload: prepared,
+        fake_prepare,
+    )
+
+    # Y44E establishes the customer-workload observation baseline
+    # before exposing stream readiness.  This unit test runs on
+    # non-Windows CI and is testing catalog preparation/no-auto-launch,
+    # not the Windows process-enumeration primitive.
+    monkeypatch.setattr(
+        gaming_runtime,
+        "snapshot_game_processes",
+        lambda **kwargs: [],
     )
 
     launches = []
 
+    def forbidden_launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        raise AssertionError(
+            "commercial session START must not auto-launch game"
+        )
+
     monkeypatch.setattr(
         gaming_runtime,
         "launch_prepared_game",
-        lambda item: (
-            launches.append(item)
-            or {
-                "launcher_type": "steam",
-                "launcher_game_id": "730",
-                "game_slug": "counter-strike-2",
-                "launcher_pid": 4242,
-                "runtime_ownership": {
-                    "schema_version": 2,
-                    "ownership_type":
-                        "windows_job_object",
-                    "job_name":
-                        "Global\\KhanCloudGaming_test",
-                    "supervisor_pid": 3131,
-                    "owned_process_count": 1,
-                    "ownership_boundary_verified": True,
-                    "termination_verified": False,
-                },
-            }
-        ),
+        forbidden_launch,
     )
 
     session_id = uuid4()
@@ -319,13 +347,53 @@ def test_kg002_catalog_session_launches_through_adapter(
     )
 
     assert result.status == "succeeded"
-    assert len(launches) == 1
+    assert len(prepared_payloads) == 1
+    assert launches == []
+
     assert result.result["game"]["app_id"] == "730"
-    assert (
-        result.result["launch_info"]["launcher_pid"]
-        == 4242
+    assert result.result["game_slug"] == "counter-strike-2"
+    assert result.result["launcher_type"] == "steam"
+    assert result.result["launcher_game_id"] == "730"
+    assert "launch_info" not in result.result
+
+    state_file = (
+        tmp_path
+        / "sessions"
+        / f"kc-gaming-{session_id}.json"
     )
 
+    import json
+
+    saved = json.loads(
+        state_file.read_text(encoding="utf-8")
+    )
+
+    assert saved["status"] == "running"
+    assert saved["runtime_stage"] == "stream_ready"
+    assert saved["game_slug"] == "counter-strike-2"
+    assert saved["launcher_type"] == "steam"
+    assert saved["launcher_game_id"] == "730"
+    assert saved["game"]["app_id"] == "730"
+    assert "launch_info" not in saved
+
+    readiness = saved["stream_readiness"]
+    assert readiness["verified"] is True
+    assert readiness["workload_process_required"] is False
+    assert readiness["launcher_pid"] is None
+
+    ownership = saved["runtime_ownership"]
+    ownership_proof = (
+        runtime_ownership.inspect_runtime_ownership(
+            ownership
+        )
+    )
+
+    assert (
+        ownership_proof["ownership_boundary_verified"]
+        is True
+    )
+    assert ownership_proof["owned_process_count"] == 0
+    assert ownership_proof["clean"] is True
 
 def test_kg002_generic_session_remains_backward_compatible(
     tmp_path,

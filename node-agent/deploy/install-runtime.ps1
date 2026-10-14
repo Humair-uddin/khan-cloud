@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$SourceDir,
 
@@ -99,7 +99,9 @@ if (
 # WINDOWS RUNTIME UPGRADE TRANSACTION
 # ------------------------------------------------------------
 
-$RuntimeBackup = Join-Path $AgentRoot "runtime.rollback"
+$RuntimeTransactionId = [Guid]::NewGuid().ToString("N")
+
+$RuntimeBackup = Join-Path $AgentRoot ("runtime.rollback." + $RuntimeTransactionId)
 $ExistingServicePresent = $false
 $ExistingServiceWasRunning = $false
 $RuntimeBackupCreated = $false
@@ -368,14 +370,163 @@ try {
 
     Stop-KhanCloudAgentForRuntimeMutation
 
-    Write-Host "===== BACKUP EXISTING RUNTIME ====="
 
+# The Windows service may report Stopped before its Python launcher/child
+# process chain has fully released runtime executables and extension modules.
+# Never begin the transactional runtime rename while any process still has
+# runtime-backed execution authority.
+$runtimeQuiesceDeadline = (Get-Date).AddSeconds(30)
+
+do {
+    $runtimeProcesses = @(
+        Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object {
+                ($_.ExecutablePath -and
+                 $_.ExecutablePath.StartsWith(
+                     $Runtime,
+                     [System.StringComparison]::OrdinalIgnoreCase
+                 )) -or
+                ($_.CommandLine -and
+                 $_.CommandLine.IndexOf(
+                     $Runtime,
+                     [System.StringComparison]::OrdinalIgnoreCase
+                 ) -ge 0)
+            }
+    )
+
+    if ($runtimeProcesses.Count -eq 0) {
+        break
+    }
+
+    if ((Get-Date) -ge $runtimeQuiesceDeadline) {
+        $details = (
+            $runtimeProcesses |
+                ForEach-Object {
+                    "PID=$($_.ProcessId) Name=$($_.Name)"
+                }
+        ) -join "; "
+
+        throw (
+            "Khan Cloud runtime did not quiesce after service stop. " +
+            "Refusing runtime mutation. Remaining processes: " +
+            $details
+        )
+    }
+
+    Start-Sleep -Milliseconds 250
+} while ($true)
+
+Write-Host "Runtime process quiescence verified."
+
+    # Runtime replacement is transactional and begins by renaming the
+    # runtime root. Establish a working directory outside runtime and
+    # prove the root can complete a reversible rename before backup.
+    $RuntimeMutationWorkingDirectory = $AgentRoot
+
+    if (
+        -not (
+            Test-Path `
+                -LiteralPath $RuntimeMutationWorkingDirectory `
+                -PathType Container
+        )
+    ) {
+        throw (
+            "Runtime mutation working directory is missing: " +
+            $RuntimeMutationWorkingDirectory
+        )
+    }
+
+    Set-Location -LiteralPath $RuntimeMutationWorkingDirectory
+
+    Write-Host (
+        "Runtime mutation working directory: " +
+        (Get-Location).Path
+    )
+
+    if (
+        Test-Path `
+            -LiteralPath $Runtime `
+            -PathType Container
+    ) {
+        $RuntimeReadinessCanary = (
+            $Runtime +
+            ".rename-readiness-" +
+            [Guid]::NewGuid().ToString("N")
+        )
+
+        $RuntimeReadinessMoved = $false
+        $RuntimeReadinessDeadline = (Get-Date).AddSeconds(30)
+        $RuntimeReadinessLastError = $null
+
+        do {
+            try {
+                [System.IO.Directory]::Move(
+                    $Runtime,
+                    $RuntimeReadinessCanary
+                )
+
+                $RuntimeReadinessMoved = $true
+
+                [System.IO.Directory]::Move(
+                    $RuntimeReadinessCanary,
+                    $Runtime
+                )
+
+                $RuntimeReadinessMoved = $false
+                $RuntimeReadinessLastError = $null
+
+                break
+            }
+            catch {
+                $RuntimeReadinessLastError = $_.Exception.Message
+
+                if (
+                    $RuntimeReadinessMoved -and
+                    (Test-Path `
+                        -LiteralPath $RuntimeReadinessCanary `
+                        -PathType Container) -and
+                    -not (
+                        Test-Path `
+                            -LiteralPath $Runtime `
+                            -PathType Container
+                    )
+                ) {
+                    [System.IO.Directory]::Move(
+                        $RuntimeReadinessCanary,
+                        $Runtime
+                    )
+
+                    $RuntimeReadinessMoved = $false
+                }
+
+                if ((Get-Date) -ge $RuntimeReadinessDeadline) {
+                    throw (
+                        "Khan Cloud runtime root did not become " +
+                        "rename-ready after service/process " +
+                        "quiescence. Refusing runtime mutation. " +
+                        "Last error: " +
+                        $RuntimeReadinessLastError
+                    )
+                }
+
+                Start-Sleep -Milliseconds 250
+            }
+        } while ($true)
+
+        Write-Host "Runtime root rename-readiness verified."
+    }
+
+
+Write-Host "===== BACKUP EXISTING RUNTIME ====="
+
+    # Each transaction owns a fresh rollback generation. A stale
+    # committed rollback tree from an earlier transaction must never
+    # block creation of the next runtime backup.
     if (Test-Path $RuntimeBackup) {
-        Remove-Item `
-            $RuntimeBackup `
-            -Recurse `
-            -Force `
-            -ErrorAction Stop
+        throw (
+            "Fresh runtime rollback generation unexpectedly already exists: " +
+            $RuntimeBackup
+        )
     }
 
     if (Test-Path $Runtime -PathType Container) {
@@ -562,6 +713,83 @@ Invoke-BoundedPythonCommand `
     -TimeoutSeconds $DependencyTimeoutSeconds
 
 # ------------------------------------------------------------
+# RUNTIME DEPENDENCY ACCEPTANCE
+# ------------------------------------------------------------
+
+Write-Host "===== VERIFY RUNTIME DEPENDENCIES ====="
+
+$DependencyProbe = @'
+import importlib
+import sys
+
+required = [
+    "psutil",
+]
+
+if sys.platform == "win32":
+    required.extend(
+        [
+            "servicemanager",
+            "win32event",
+            "win32service",
+            "win32serviceutil",
+            "win32ts",
+        ]
+    )
+
+failures = []
+
+for module_name in required:
+    try:
+        importlib.import_module(module_name)
+    except Exception as exc:
+        failures.append(
+            f"{module_name}: {type(exc).__name__}: {exc}"
+        )
+
+if failures:
+    raise SystemExit(
+        "Khan Cloud runtime dependency verification failed: "
+        + " | ".join(failures)
+    )
+
+print("RUNTIME_DEPENDENCY_IMPORTS=PASS")
+'@
+
+$DependencyProbePath = Join-Path `
+    $AgentRoot `
+    ("runtime-dependency-probe." + $RuntimeTransactionId + ".py")
+
+try {
+    try {
+        Set-Content `
+            -LiteralPath $DependencyProbePath `
+            -Value $DependencyProbe `
+            -Encoding UTF8 `
+            -ErrorAction Stop
+
+        Invoke-BoundedPythonCommand `
+            -PythonPath $Python `
+            -Arguments @($DependencyProbePath) `
+            -Description "Khan Cloud runtime dependency verification" `
+            -TimeoutSeconds $DependencyTimeoutSeconds
+    }
+    catch {
+        throw (
+            "Khan Cloud runtime dependency verification failed. " +
+            "Refusing to continue with an incomplete runtime. " +
+            $_.Exception.Message
+        )
+    }
+}
+finally {
+    Remove-Item `
+        -LiteralPath $DependencyProbePath `
+        -Force `
+        -ErrorAction SilentlyContinue
+}
+
+# ------------------------------------------------------------
 # VALIDATION
 # ------------------------------------------------------------
 
@@ -578,7 +806,7 @@ Write-Host "===== TEST ====="
 Push-Location $Runtime
 
 try {
-    & $Python -m pytest -q -m "not source_tree_only"
+    & $Python -m pytest -q -m "deployment_safe"
 
     if ($LASTEXITCODE -ne 0) {
         throw "Khan Cloud node-agent tests failed."
@@ -794,6 +1022,47 @@ if (
         throw (
             "Unsupported sunshine_credential_source: " +
             $SunshineCredentialSource
+        )
+    }
+}
+
+# ------------------------------------------------------------
+# WINDOWS SUNSHINE APPLICATION POLICY
+# ------------------------------------------------------------
+
+if (
+    $SunshineGamingEnabled -and
+    $SunshineBackend -eq "sunshine"
+) {
+    Write-Host "===== CONFIGURE SUNSHINE APPLICATION POLICY ====="
+
+    $SunshineAppsPolicyScript = Join-Path `
+        $Runtime `
+        "deploy\configure-windows-sunshine-apps.ps1"
+
+    if (
+        -not (
+            Test-Path `
+                $SunshineAppsPolicyScript `
+                -PathType Leaf
+        )
+    ) {
+        throw (
+            "Sunshine application policy configurator is missing: " +
+            $SunshineAppsPolicyScript
+        )
+    }
+
+    & powershell.exe `
+        -NoProfile `
+        -NonInteractive `
+        -ExecutionPolicy Bypass `
+        -File $SunshineAppsPolicyScript `
+        -Action Configure
+
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "Sunshine application policy configuration failed."
         )
     }
 }
@@ -1082,14 +1351,26 @@ finally {
 
 Write-Host "===== COMMIT RUNTIME TRANSACTION ====="
 
-if (Test-Path $RuntimeBackup) {
-    Remove-Item `
-        $RuntimeBackup `
-        -Recurse `
-        -Force
-}
-
+# Health verification has succeeded. From this point onward the new
+# runtime is authoritative and cleanup failure must never trigger rollback.
 $RuntimeTransactionActive = $false
+$RuntimeBackupCreated = $false
+
+if (Test-Path $RuntimeBackup) {
+    try {
+        Remove-Item `
+            $RuntimeBackup `
+            -Recurse `
+            -Force `
+            -ErrorAction Stop
+    }
+    catch {
+        Write-Warning (
+            "Committed runtime is healthy, but rollback backup cleanup failed: " +
+            $_.Exception.Message
+        )
+    }
+}
 
 Write-Host ""
 Write-Host "SUCCESS: KHAN CLOUD WINDOWS AGENT INSTALLED"

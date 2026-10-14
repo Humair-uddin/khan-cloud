@@ -115,3 +115,99 @@ def test_py_launcher_selection_is_exact():
     for name, expected_launcher in names.items():
         actual_launcher = name in {"py.exe", "py"}
         assert actual_launcher is expected_launcher
+
+
+def test_bootstrap_rejects_user_scoped_python_for_machine_agent():
+    source = _bootstrap()
+
+    assert "[Environment+SpecialFolder]::UserProfile" in source
+    assert "[Environment+SpecialFolder]::LocalApplicationData" in source
+    assert "$UserScoped" in source
+    assert "if ($UserScoped)" in source
+    assert "continue" in source
+
+
+def test_python_remediation_uses_only_machine_path():
+    source = _bootstrap()
+
+    assert '$env:Path = $MachinePath' in source
+    assert '"$env:ProgramFiles\\Python312\\python.exe"' in source
+
+    remediation = source[
+        source.index("function Install-PythonSafely"):
+        source.index(
+            'Write-Host "===== KHAN CLOUD UNIVERSAL WINDOWS BOOTSTRAP ====="'
+        )
+    ]
+
+    assert "EnvironmentVariableTarget]::User" not in remediation
+    assert "$env:LocalAppData\\Programs\\Python" not in remediation
+
+
+def test_machine_python_authority_uses_resolved_interpreter():
+    source = _bootstrap()
+
+    assert "$ResolvedPython = $ResolvedPython.Trim()" in source
+    assert "$FullPythonPath = [System.IO.Path]::GetFullPath(" in source
+    assert "Path = $FullPythonPath" in source
+
+
+def test_python_remediation_is_bounded_and_revalidated():
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert "$PythonRemediationMaxAttempts = 3" in source
+    assert "$PythonRemediationAttempt = 0" in source
+    assert "$PythonRemediationAttempt -lt $PythonRemediationMaxAttempts" in source
+    assert "$PythonRemediationAttempt++" in source
+
+    loop_start = source.index(
+        "while (\n    -not $Python -and"
+    )
+    loop_end = source.index(
+        'if (-not $Python) {\n    throw (',
+        loop_start,
+    )
+    loop = source[loop_start:loop_end]
+
+    assert "Install-PythonSafely" in loop
+    assert "$Python = Get-CompatiblePython" in loop
+
+
+def test_python_remediation_exhaustion_fails_closed():
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert (
+        "Python remediation exhausted {0} bounded attempts"
+        in source
+    )
+    assert (
+        "$PythonRemediationAttempt -lt $PythonRemediationMaxAttempts"
+        in source
+    )
+
+
+def test_python_retry_rechecks_before_every_mutation():
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    start = source.index(
+        "while (\n    -not $Python -and"
+    )
+    end = source.index(
+        'if (-not $Python) {\n    throw (',
+        start,
+    )
+    loop = source[start:end]
+
+    rediscoveries = [
+        i for i in range(len(loop))
+        if loop.startswith("$Python = Get-CompatiblePython", i)
+    ]
+
+    install = loop.index("Install-PythonSafely")
+    preservation_probe = rediscoveries[0]
+    verification_probe = rediscoveries[-1]
+
+    assert len(rediscoveries) >= 2
+    assert preservation_probe < install < verification_probe
+    assert "if ($Python)" in loop
+    assert "break" in loop

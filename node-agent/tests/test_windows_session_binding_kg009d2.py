@@ -53,7 +53,8 @@ def test_runtime_binds_both_preparation_paths():
 
     assert text.count(
         'interactive_session.get("session_id")'
-    ) == 2
+    ) >= 2
+    assert "_establish_presentation_contract(" in text
 
 
 def test_runtime_rejects_session_zero(monkeypatch):

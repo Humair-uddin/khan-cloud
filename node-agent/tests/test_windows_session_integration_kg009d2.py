@@ -134,15 +134,28 @@ def test_managed_secret_not_embedded_in_template_scripts():
         assert "DefaultPassword" not in text
 
 
-def test_installed_runtime_validation_excludes_source_tree_only_tests():
+def test_installed_runtime_validation_uses_positive_safe_allowlist():
     installer = (
         ROOT / "deploy" / "install-runtime.ps1"
     ).read_text(encoding="utf-8")
 
     assert (
-        '-m "not source_tree_only"'
+        '-m "deployment_safe"'
         in installer
     )
+    assert '-m "not source_tree_only"' not in installer
+
+
+def test_runtime_updater_uses_positive_safe_allowlist():
+    updater = (
+        ROOT / "deploy" / "apply-runtime-update.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        '-m "deployment_safe"'
+        in updater
+    )
+    assert '-m "not source_tree_only"' not in updater
 
 
 def test_source_tree_only_marker_is_registered():
@@ -200,4 +213,3 @@ def test_install_runtime_allows_config_already_at_installed_path():
         in script
     )
     assert "Copy-Item $ConfigFile $InstalledConfig -Force" in script
-

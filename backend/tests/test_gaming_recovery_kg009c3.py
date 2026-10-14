@@ -69,6 +69,7 @@ def test_runtime_watchdog_requires_three_consecutive_failures(monkeypatch):
     )
     node = SimpleNamespace(id=session.node_id)
     queued = []
+    queued_reasons = []
 
     class FakeDb:
         def scalars(self, statement):
@@ -85,7 +86,10 @@ def test_runtime_watchdog_requires_three_consecutive_failures(monkeypatch):
     monkeypatch.setattr(
         gaming_service,
         "queue_gaming_action",
-        lambda db, session, action, commit=False: queued.append(action),
+        lambda db, session, action, commit=False, stop_reason=None: (
+            queued.append(action),
+            queued_reasons.append(stop_reason),
+        ),
     )
 
     db = FakeDb()
@@ -96,6 +100,7 @@ def test_runtime_watchdog_requires_three_consecutive_failures(monkeypatch):
 
     assert stopped == [session.id]
     assert queued == ["stop"]
+    assert queued_reasons == ["runtime_health_lost"]
     assert session.failure_category == "runtime_health_lost"
 
 

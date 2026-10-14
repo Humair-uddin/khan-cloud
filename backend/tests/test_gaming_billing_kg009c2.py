@@ -88,7 +88,13 @@ def test_heartbeat_reconciles_usage_and_can_request_stop():
     nodes = _read("app/api/v1/nodes.py")
     gaming = _read("app/services/gaming_service.py")
     assert "reconcile_gaming_billing_for_node" in nodes
-    assert 'action="stop", commit=False' in gaming
+    billing_reconcile = gaming.split(
+        "def reconcile_gaming_billing_for_node", 1
+    )[1].split("def finish_gaming_job", 1)[0]
+    assert 'action="stop"' in billing_reconcile
+    assert "commit=False" in billing_reconcile
+    assert "stop_reason=" in billing_reconcile
+    assert "session.billing_stop_reason" in billing_reconcile
     assert 'billing_stop_reason = "insufficient_wallet_balance"' in _read("app/services/gaming_billing_service.py")
 
 
