@@ -18,6 +18,7 @@ from khan_agent.plugins import PluginManager
 from khan_agent.job_dispatch import execute_node_job
 from khan_agent.job_result_spool import JobResultSpool
 from khan_agent.gaming_runtime import (
+    reconcile_customer_workloads,
     reconcile_runtime_ownership,
 )
 from khan_agent.state import AgentState, StateMachine
@@ -274,6 +275,33 @@ class AgentRuntime:
 
         self._gaming_runtime_reconciled = True
 
+    def _reconcile_customer_workloads(self) -> None:
+        if not self.settings.gaming.enabled:
+            return
+
+        outcomes = reconcile_customer_workloads(
+            self.settings.agent.state_directory
+            / "gaming"
+        )
+
+        meaningful = [
+            item
+            for item in outcomes
+            if item.get("changed")
+            or item.get("state") == "error"
+        ]
+
+        if meaningful:
+            logger.info(
+                json.dumps(
+                    {
+                        "event":
+                            "gaming_customer_workload_reconciliation",
+                        "outcomes": meaningful,
+                    }
+                )
+            )
+
     async def _process_one_node_job(self, credentials: NodeCredentials) -> None:
         self._reconcile_gaming_runtime_once()
 
@@ -393,6 +421,7 @@ class AgentRuntime:
             credentials,
         )
         await self._report_installer_telemetry(credentials)
+        self._reconcile_customer_workloads()
         await self._process_one_node_job(credentials)
 
         logger.info(
@@ -467,6 +496,7 @@ class AgentRuntime:
                 await self._report_provisioning_state(credentials)
                 await self._run_desired_image_build()
                 await self._report_provisioning_state(credentials)
+                self._reconcile_customer_workloads()
                 await self._process_one_node_job(credentials)
                 self.state.transition(AgentState.CONNECTED)
                 logger.info(

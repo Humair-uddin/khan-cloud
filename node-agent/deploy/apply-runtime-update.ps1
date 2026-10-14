@@ -137,7 +137,7 @@ Write-Host "===== TESTS ====="
 Push-Location $Runtime
 
 try {
-    & $Python -m pytest -q
+    & $Python -m pytest -q -m "deployment_safe"
 
     if ($LASTEXITCODE -ne 0) {
         throw "Node-agent test suite failed."

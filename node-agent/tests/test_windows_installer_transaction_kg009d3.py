@@ -1,5 +1,10 @@
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.deployment_safe
+
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "deploy" / "install-runtime.ps1"
@@ -34,7 +39,9 @@ def test_service_quiesces_before_runtime_mutation():
 def test_runtime_backup_contains_old_runtime_before_new_runtime_creation():
     text = source()
 
-    assert '$RuntimeBackup = Join-Path $AgentRoot "runtime.rollback"' in text
+    assert '$RuntimeTransactionId = [Guid]::NewGuid().ToString("N")' in text
+    assert '"runtime.rollback." + $RuntimeTransactionId' in text
+    assert '$RuntimeBackup = Join-Path' in text
     assert "$RuntimeBackupCreated = $false" in text
 
     backup = text.index(
@@ -149,7 +156,9 @@ def test_identity_and_credentials_remain_outside_runtime_transaction():
     assert '$Credentials = Join-Path $AgentRoot "credentials.json"' in text
     assert '$Identity = Join-Path $AgentRoot "identity.json"' in text
     assert '$Runtime = Join-Path $AgentRoot "runtime"' in text
-    assert '$RuntimeBackup = Join-Path $AgentRoot "runtime.rollback"' in text
+    assert '$RuntimeTransactionId = [Guid]::NewGuid().ToString("N")' in text
+    assert '"runtime.rollback." + $RuntimeTransactionId' in text
+    assert '$RuntimeBackup = Join-Path' in text
 
 
 def test_transaction_preparation_failure_restores_previous_running_service():

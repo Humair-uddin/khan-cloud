@@ -177,6 +177,8 @@ class GamingSession(BaseModel):
     pricing_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     last_metered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    availability_cutoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    availability_interrupted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_stop_reason: Mapped[str] = mapped_column(String(80), nullable=False, default="")
     runtime_health_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     runtime_health_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

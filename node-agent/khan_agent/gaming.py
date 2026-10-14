@@ -8,6 +8,7 @@ from khan_agent.gaming_runtime import (
     change_session_state,
     create_session,
     pair_connection,
+    play_customer_workload,
     revoke_connection,
 )
 from khan_agent.vdd_runtime_policy import (
@@ -176,6 +177,28 @@ def execute_gaming_job(
             sunshine_api_username=sunshine_api_username,
             sunshine_api_password=sunshine_api_password,
             sunshine_verify_tls=sunshine_verify_tls,
+        )
+
+    if job_type == "gaming.workload.play":
+        if not execution_enabled:
+            return JobExecutionResult(
+                "blocked",
+                {},
+                "Gaming execution is disabled by node policy.",
+            )
+
+        payload = job.get("payload") or {}
+        if not isinstance(payload, dict):
+            return JobExecutionResult(
+                "failed",
+                {},
+                "Gaming workload PLAY payload must be an object.",
+            )
+
+        return play_customer_workload(
+            payload,
+            state_root=state_root,
+            node_job_id=str(job.get("id") or "").strip(),
         )
 
     lifecycle = {

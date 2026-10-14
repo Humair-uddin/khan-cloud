@@ -409,6 +409,28 @@ def extend_reservation(
         )
     )
     if preexisting_tx is not None:
+        replay_entries = db.scalars(
+            select(LedgerEntry).where(
+                LedgerEntry.transaction_id == preexisting_tx.id
+            )
+        ).all()
+
+        if (
+            preexisting_tx.transaction_type
+            != "wallet_reservation_extension"
+            or preexisting_tx.currency != reservation.currency
+            or preexisting_tx.external_reference != str(reservation.id)
+            or len(replay_entries) != 2
+            or any(
+                entry.amount_minor != amount_minor
+                for entry in replay_entries
+            )
+        ):
+            raise WalletError(
+                "Reservation extension idempotency key "
+                "was reused with different contents."
+            )
+
         return preexisting_tx
 
     wallet = db.scalar(

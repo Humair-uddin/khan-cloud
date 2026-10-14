@@ -74,6 +74,20 @@ async def test_agent_bridges_gaming_job_result_to_control_plane(
         "require_interactive_session",
         lambda **kwargs: ManagedSession(),
     )
+    monkeypatch.setattr(
+        gaming_runtime,
+        "_establish_presentation_contract",
+        lambda session: {
+            "required": True,
+            "verified": True,
+            "session_id": session.get("session_id"),
+            "requested_mode": {
+                "width": 1920,
+                "height": 1080,
+                "refresh_hz": 60,
+            },
+        },
+    )
 
     monkeypatch.setattr(
         gaming_runtime,

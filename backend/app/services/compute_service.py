@@ -457,7 +457,14 @@ def _synchronize_commercial_order_for_vps_job(
 
 
 def finish_job(db: Session, *, node: Node, job_id: UUID, status: str, result: dict, error_message: str) -> NodeJob:
-    job = db.get(NodeJob, job_id)
+    # Serialize competing completion callbacks before checking job status.
+    # The second worker must observe the first worker's committed result.
+    job = db.scalar(
+        select(NodeJob)
+        .where(NodeJob.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if job is None or job.node_id != node.id:
         raise ComputeError("Node job not found.")
     if job.status not in {"running", "pending"}:

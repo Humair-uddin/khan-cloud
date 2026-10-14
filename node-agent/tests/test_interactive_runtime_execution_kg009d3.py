@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from khan_agent import (
@@ -67,6 +68,22 @@ def test_create_process_boundary_revalidates_managed_session():
     assert gate < expected < managed < token < create
 
 
+def test_create_process_boundary_targets_interactive_desktop():
+    text = _source(windows_interactive)
+
+    startup = text.index("startup = win32process.STARTUPINFO()")
+    desktop = text.index(
+        r'startup.lpDesktop = r"winsta0\default"',
+        startup,
+    )
+    create = text.index(
+        "CreateProcessAsUser(",
+        desktop,
+    )
+
+    assert startup < desktop < create
+
+
 def test_steam_keeps_session_binding_and_job_ownership():
     text = _source(gaming_backends)
 
@@ -89,41 +106,94 @@ def test_steam_keeps_session_binding_and_job_ownership():
     assert function < interactive < ownership < bound
 
 
-def test_runtime_binds_broker_session_to_prepared_launch():
+
+
+def test_runtime_binds_session_to_prepared_game_without_auto_launch():
     text = _source(gaming_runtime)
 
-    context = text.index(
+    create_start = text.index(
+        "def create_session("
+    )
+    restart_start = text.index(
+        "def change_session_state("
+    )
+
+    create = text[create_start:restart_start]
+
+    context = create.index(
         "interactive_session = ("
     )
-    prepared = text.index(
-        "prepared_launch = replace(",
+    presentation = create.index(
+        "_establish_presentation_contract(",
         context,
     )
-    binding = text.index(
+    prepare = create.index(
+        "prepare_game_launch(payload)",
+        presentation,
+    )
+    prepared = create.index(
+        "prepared_launch = replace(",
+        prepare,
+    )
+    binding = create.index(
         'interactive_session.get("session_id")',
         prepared,
     )
-    launch = text.index(
-        "launch_prepared_game(",
-        binding,
+
+    assert (
+        context
+        < presentation
+        < prepare
+        < prepared
+        < binding
     )
 
-    assert context < prepared < binding < launch
+    tree = ast.parse(create)
+
+    calls = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+    }
+
+    assert "prepare_game_launch" in calls
+    assert "launch_prepared_game" not in calls
+    assert (
+        "build_prepared_launch_attempt_authority"
+        not in calls
+    )
 
 
-def test_starting_state_persists_session_and_ownership():
+def test_resource_session_uses_no_process_ownership_before_ready():
     text = _source(gaming_runtime)
 
-    starting = text.index(
-        '"status": "starting"'
+    create_start = text.index(
+        "def create_session("
     )
-    session = text.index(
-        '"interactive_session": interactive_session',
-        starting,
-    )
-    ownership = text.index(
-        '"runtime_ownership":',
-        session,
+    restart_start = text.index(
+        "def change_session_state("
     )
 
-    assert starting < session < ownership
+    create = text[create_start:restart_start]
+    tree = ast.parse(create)
+
+    calls = [
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+    ]
+
+    assert "no_process_ownership" in calls
+    assert "_verify_stream_readiness" in calls
+    assert "launch_prepared_game" not in calls
+    assert (
+        "build_prepared_launch_attempt_authority"
+        not in calls
+    )
+
+    no_process = calls.index("no_process_ownership")
+    readiness = calls.index("_verify_stream_readiness")
+
+    assert no_process < readiness

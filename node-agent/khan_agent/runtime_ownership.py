@@ -367,7 +367,55 @@ def terminate_runtime_ownership(
                 "Windows runtime ownership is missing job_name."
             )
 
-        return terminate_windows_job(job_name)
+        try:
+            return terminate_windows_job(job_name)
+        except RuntimeOwnershipError as exc:
+            error = str(exc)
+
+            if (
+                bool(ownership.get("boundary_established"))
+                and "WinError 2" in error
+            ):
+                return {
+                    "ownership_type": "terminated",
+                    "job_name": job_name,
+                    "owned_processes_before": [],
+                    "owned_processes_remaining": [],
+                    "owned_process_count_before": 0,
+                    "owned_process_count_remaining": 0,
+                    "termination_verified": True,
+                    "ownership_boundary_verified": True,
+                    "clean": True,
+                    "ownership_boundary_retired": True,
+                    "retirement_reason":
+                        "established_kill_on_close_job_absent",
+                }
+
+            raise
+
+    if ownership_type == "windows_verified_process":
+        try:
+            from khan_agent.windows_verified_process import (
+                terminate_verified_process_ownership,
+            )
+
+            return terminate_verified_process_ownership(
+                ownership
+            )
+        except Exception as exc:
+            from khan_agent.windows_verified_process import (
+                WindowsVerifiedProcessError,
+            )
+
+            if isinstance(
+                exc,
+                WindowsVerifiedProcessError,
+            ):
+                raise RuntimeOwnershipError(
+                    str(exc)
+                ) from exc
+
+            raise
 
     if ownership_type == "posix_process_group":
         return terminate_posix_group(ownership)
@@ -394,6 +442,57 @@ def inspect_runtime_ownership(
             "clean": True,
         }
 
+    if ownership_type == "terminated":
+        try:
+            schema_version = int(
+                ownership.get("schema_version") or 0
+            )
+            remaining = int(
+                ownership.get(
+                    "owned_process_count_remaining",
+                    ownership.get("owned_process_count", -1),
+                )
+            )
+        except (TypeError, ValueError):
+            schema_version = 0
+            remaining = -1
+
+        termination_verified = (
+            ownership.get("termination_verified") is True
+        )
+        boundary_verified = (
+            ownership.get("ownership_boundary_verified") is True
+        )
+
+        if (
+            schema_version >= 2
+            and termination_verified
+            and boundary_verified
+            and remaining == 0
+            and ownership.get("clean") is True
+        ):
+            return {
+                "ownership_type": "terminated",
+                "ownership_boundary_verified": True,
+                "ownership_boundary_retired": True,
+                "termination_verified": True,
+                "owned_process_count": 0,
+                "owned_processes": [],
+                "clean": True,
+                "retirement_reason": str(
+                    ownership.get("retirement_reason")
+                    or "verified_terminal_proof"
+                ),
+            }
+
+        return {
+            "ownership_type": "terminated",
+            "ownership_boundary_verified": False,
+            "termination_verified": termination_verified,
+            "clean": False,
+            "error": "terminated_ownership_proof_unverified",
+        }
+
     if ownership_type == "windows_job_object":
         job_name = str(
             ownership.get("job_name") or ""
@@ -402,12 +501,30 @@ def inspect_runtime_ownership(
         try:
             pids = query_windows_job_processes(job_name)
         except RuntimeOwnershipError as exc:
+            error = str(exc)
+
+            if (
+                bool(ownership.get("boundary_established"))
+                and "WinError 2" in error
+            ):
+                return {
+                    "ownership_type": ownership_type,
+                    "job_name": job_name,
+                    "ownership_boundary_verified": True,
+                    "ownership_boundary_retired": True,
+                    "owned_process_count": 0,
+                    "owned_processes": [],
+                    "clean": True,
+                    "retirement_reason":
+                        "established_kill_on_close_job_absent",
+                }
+
             return {
                 "ownership_type": ownership_type,
                 "job_name": job_name,
                 "ownership_boundary_verified": False,
                 "clean": False,
-                "error": str(exc),
+                "error": error,
             }
 
         return {
@@ -418,6 +535,27 @@ def inspect_runtime_ownership(
             "owned_processes": pids,
             "clean": not pids,
         }
+
+    if ownership_type == "windows_verified_process":
+        try:
+            from khan_agent.windows_verified_process import (
+                inspect_verified_process_ownership,
+            )
+
+            return inspect_verified_process_ownership(
+                ownership
+            )
+        except Exception as exc:
+            return {
+                "ownership_type":
+                    "windows_verified_process",
+                "ownership_boundary_verified": False,
+                "owned_process_count": 0,
+                "owned_processes": [],
+                "clean": False,
+                "error":
+                    f"{type(exc).__name__}: {exc}",
+            }
 
     if ownership_type == "posix_process_group":
         try:

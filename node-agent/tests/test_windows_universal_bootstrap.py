@@ -1,5 +1,10 @@
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.deployment_safe
+
 
 ROOT = Path(__file__).parents[1]
 BOOTSTRAP = ROOT / "deploy" / "universal-bootstrap.ps1"

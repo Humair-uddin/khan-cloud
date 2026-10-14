@@ -264,6 +264,7 @@ def launch_steam_app(
     *,
     runtime_id: str = "",
     expected_session_id: int | None = None,
+    launch_arguments: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """
     Ask the existing Steam client to launch one installed AppID.
@@ -283,6 +284,7 @@ def launch_steam_app(
         str(steam_executable),
         "-applaunch",
         normalized,
+        *launch_arguments,
     ]
 
     if platform.system() == "Windows":

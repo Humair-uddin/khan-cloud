@@ -18,8 +18,11 @@ from uuid import UUID
 
 from khan_agent.file_security import secure_private_file
 from khan_agent.gaming_backends import locate_sunshine, probe_nvidia_gpu
+from khan_agent.launch_diagnostics import LaunchTrace
 from khan_agent.gaming_launchers import (
     GameLaunchError,
+    build_prepared_launch_attempt_authority,
+    dispatch_prepared_game,
     launch_prepared_game,
     prepare_game_launch,
 )
@@ -28,6 +31,17 @@ from khan_agent.sunshine_broker import (
     pair_client,
     probe_sunshine_readiness,
     unpair_client,
+)
+from khan_agent.windows_workload_observer import (
+    WindowsWorkloadObserverError,
+    adopt_customer_workload,
+    discover_customer_workload_processes,
+    make_workload_observation_authority,
+)
+from khan_agent.windows_verified_process import (
+    WindowsVerifiedProcessError,
+    inspect_verified_process_ownership,
+    snapshot_game_processes,
 )
 from khan_agent.runtime_ownership import (
     OWNERSHIP_SCHEMA_VERSION,
@@ -519,6 +533,53 @@ def _interactive_session_context() -> dict[str, Any]:
     }
 
 
+def _establish_presentation_contract(
+    interactive_session: dict[str, Any],
+) -> dict[str, Any]:
+    """Fail closed on Windows unless Session-1 VDD is 1:1 before launch."""
+    if platform.system() != "Windows":
+        return {
+            "required": True,
+            "verified": False,
+            "reason": "non_windows_test_environment",
+            "requested_mode": {
+                "width": 1920,
+                "height": 1080,
+                "refresh_hz": 60,
+            },
+        }
+
+    session_id = int(
+        interactive_session.get("session_id") or 0
+    )
+
+    if (
+        not interactive_session.get("validated")
+        or session_id <= 0
+    ):
+        raise GamingRuntimeError(
+            "A validated managed Windows session is required "
+            "before establishing the VDD presentation contract."
+        )
+
+    try:
+        from khan_agent.windows_presentation import (
+            establish_vdd_presentation_contract,
+        )
+
+        return establish_vdd_presentation_contract(
+            expected_session_id=session_id,
+            width=1920,
+            height=1080,
+            refresh_hz=60,
+        )
+    except Exception as exc:
+        raise GamingRuntimeError(
+            "Pre-launch VDD presentation contract failed: "
+            f"{exc}"
+        ) from exc
+
+
 def _connection_info(runtime_id: str) -> dict[str, Any]:
     # Endpoint/credentials are intentionally not invented here. Secure,
     # short-lived customer connection credentials belong to the control-plane
@@ -691,6 +752,735 @@ def _apply_session_display_policy(
 
 
 
+
+def _prepared_workload_observation(
+    *,
+    runtime_id: str,
+    prepared_launch: Any,
+    interactive_session: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build a clean customer-PLAY observation boundary.
+
+    Commercial session readiness must never silently adopt a process that
+    existed before the READY boundary.  The initial snapshot is persisted
+    as the observation baseline.  A later customer PLAY must produce an
+    identity absent from that baseline.
+    """
+    if prepared_launch is None:
+        return None
+
+    expected_session_id = interactive_session.get("session_id")
+    if expected_session_id is None:
+        raise GamingRuntimeError(
+            "Managed gaming session has no verified Windows session ID."
+        )
+
+    game = getattr(prepared_launch, "game", None)
+    if not isinstance(game, dict):
+        raise GamingRuntimeError(
+            "Prepared game metadata is missing."
+        )
+
+    install_root = str(
+        game.get("install_path") or ""
+    ).strip()
+    if not install_root:
+        raise GamingRuntimeError(
+            "Prepared game has no verified install root."
+        )
+
+    try:
+        baseline = snapshot_game_processes(
+            install_root=install_root,
+            expected_session_id=int(expected_session_id),
+        )
+    except WindowsVerifiedProcessError as exc:
+        raise GamingRuntimeError(
+            "Customer workload observation baseline could not be "
+            f"established: {exc}"
+        ) from exc
+
+    if baseline:
+        raise GamingRuntimeError(
+            "Assigned game already has a process in the managed "
+            "session before stream readiness; refusing to arm "
+            "customer workload observation over a stale process."
+        )
+
+    authority = make_workload_observation_authority(
+        runtime_id=runtime_id,
+        install_root=install_root,
+        expected_session_id=int(expected_session_id),
+        launcher_type=str(
+            getattr(prepared_launch, "launcher_type", "") or ""
+        ),
+        launcher_game_id=str(
+            getattr(prepared_launch, "launcher_game_id", "") or ""
+        ),
+        baseline=baseline,
+    )
+
+    return {
+        "schema_version": 1,
+        "generation": 1,
+        "state": "armed",
+        "authority": authority,
+        "last_observed_processes": [],
+    }
+
+
+def _rearm_customer_workload(
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    observation = state.get("workload_observation")
+    if not isinstance(observation, dict):
+        raise GamingRuntimeError(
+            "Running resource session has no workload observation state."
+        )
+
+    authority = observation.get("authority")
+    if not isinstance(authority, dict):
+        raise GamingRuntimeError(
+            "Workload observation authority is missing."
+        )
+
+    install_root = str(authority.get("install_root") or "").strip()
+    expected_session_id = authority.get(
+        "interactive_session_id"
+    )
+
+    if not install_root or expected_session_id is None:
+        raise GamingRuntimeError(
+            "Workload observation authority is incomplete."
+        )
+
+    try:
+        baseline = snapshot_game_processes(
+            install_root=install_root,
+            expected_session_id=int(expected_session_id),
+        )
+    except WindowsVerifiedProcessError as exc:
+        raise GamingRuntimeError(
+            f"Workload observation could not be re-armed: {exc}"
+        ) from exc
+
+    if baseline:
+        raise GamingRuntimeError(
+            "Cannot re-arm workload observation while an unowned "
+            "assigned-game process is present."
+        )
+
+    generation = int(observation.get("generation") or 1) + 1
+
+    new_authority = make_workload_observation_authority(
+        runtime_id=str(authority.get("runtime_id") or ""),
+        install_root=install_root,
+        expected_session_id=int(expected_session_id),
+        launcher_type=str(authority.get("launcher_type") or ""),
+        launcher_game_id=str(
+            authority.get("launcher_game_id") or ""
+        ),
+        baseline=baseline,
+    )
+
+    return {
+        "schema_version": 1,
+        "generation": generation,
+        "state": "armed",
+        "authority": new_authority,
+        "last_observed_processes": [],
+    }
+
+
+def _reconcile_customer_workload_state(
+    state: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Observe/adopt/retire customer-launched game workload.
+
+    This function never starts a game and never changes commercial billing.
+    """
+    observation = state.get("workload_observation")
+    if not isinstance(observation, dict):
+        return state, {
+            "changed": False,
+            "state": "not_configured",
+        }
+
+    ownership = state.get("runtime_ownership")
+    if not isinstance(ownership, dict):
+        raise GamingRuntimeError(
+            "Runtime ownership metadata is missing."
+        )
+
+    ownership_type = str(
+        ownership.get("ownership_type") or ""
+    )
+
+    # Armed: detect only identities newer than the persisted baseline.
+    if ownership_type == "none":
+        if observation.get("state") != "armed":
+            raise GamingRuntimeError(
+                "Workload observation generation is not armed."
+            )
+
+        authority = observation.get("authority")
+        if not isinstance(authority, dict):
+            raise GamingRuntimeError(
+                "Workload observation authority is missing."
+            )
+
+        try:
+            discovered = discover_customer_workload_processes(
+                authority
+            )
+        except WindowsWorkloadObserverError as exc:
+            raise GamingRuntimeError(
+                f"Customer workload observation failed: {exc}"
+            ) from exc
+
+        if not discovered:
+            observation["state"] = "armed"
+            state["workload_observation"] = observation
+            return state, {
+                "changed": False,
+                "state": "armed",
+                "generation": int(
+                    observation.get("generation") or 1
+                ),
+            }
+
+        try:
+            adopted = adopt_customer_workload(
+                authority,
+                discovered,
+            )
+        except WindowsWorkloadObserverError as exc:
+            raise GamingRuntimeError(
+                f"Customer workload adoption failed: {exc}"
+            ) from exc
+
+        state["runtime_ownership"] = adopted
+        observation["state"] = "running"
+        observation["last_observed_processes"] = discovered
+        state["workload_observation"] = observation
+
+        workload_launch = state.get("workload_launch")
+        if isinstance(workload_launch, dict):
+            state["last_play"] = {
+                "node_job_id": str(
+                    workload_launch.get("node_job_id") or ""
+                ),
+                "attempt_id": str(
+                    workload_launch.get("attempt_id") or ""
+                ),
+                "generation": int(
+                    observation.get("generation") or 1
+                ),
+                "state": "observed",
+            }
+            state.pop("launch_attempt", None)
+            state.pop("workload_launch", None)
+            state.pop("launch_failure", None)
+
+        return state, {
+            "changed": True,
+            "state": "running",
+            "generation": int(
+                observation.get("generation") or 1
+            ),
+            "owned_process_count": len(discovered),
+        }
+
+    # Adopted D1 workload: inspect exact persisted identities.
+    if ownership_type == "windows_verified_process":
+        try:
+            proof = inspect_verified_process_ownership(
+                ownership
+            )
+        except WindowsVerifiedProcessError as exc:
+            raise GamingRuntimeError(
+                f"Customer workload ownership inspection failed: {exc}"
+            ) from exc
+
+        remaining = int(
+            proof.get(
+                "owned_process_count_remaining",
+                proof.get("owned_process_count", 0),
+            )
+            or 0
+        )
+
+        if remaining > 0:
+            observation["state"] = "running"
+            state["workload_observation"] = observation
+            return state, {
+                "changed": False,
+                "state": "running",
+                "generation": int(
+                    observation.get("generation") or 1
+                ),
+                "owned_process_count": remaining,
+            }
+
+        if not bool(
+            proof.get("ownership_boundary_verified")
+        ):
+            raise GamingRuntimeError(
+                "Retired customer workload ownership boundary "
+                "could not be verified."
+            )
+
+        # Exact D1 generation is retired. Commercial session remains
+        # running; arm the next customer PLAY generation.
+        state["runtime_ownership"] = no_process_ownership()
+        state["workload_observation"] = (
+            _rearm_customer_workload(state)
+        )
+
+        return state, {
+            "changed": True,
+            "state": "armed",
+            "generation": int(
+                state["workload_observation"]["generation"]
+            ),
+            "previous_generation_retired": True,
+        }
+
+    raise GamingRuntimeError(
+        "Running resource session has unsupported workload ownership "
+        f"type: {ownership_type!r}"
+    )
+
+
+
+def play_customer_workload(
+    payload: dict[str, Any],
+    *,
+    state_root: Path,
+    node_job_id: str,
+) -> JobExecutionResult:
+    """Dispatch one customer PLAY inside an existing commercial session."""
+
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return JobExecutionResult(
+            "failed",
+            {},
+            "PLAY requires session_id.",
+        )
+
+    try:
+        normalized_job_id = str(UUID(str(node_job_id))).lower()
+    except (TypeError, ValueError, AttributeError):
+        return JobExecutionResult(
+            "failed",
+            {},
+            "PLAY requires an authoritative node job ID.",
+        )
+
+    forbidden_launch_fields = {
+        "executable",
+        "launcher_executable",
+        "install_path",
+        "install_root",
+        "app_id",
+    }
+    supplied_forbidden = sorted(
+        forbidden_launch_fields.intersection(payload)
+    )
+    if supplied_forbidden:
+        return JobExecutionResult(
+            "failed",
+            {},
+            "PLAY payload contains forbidden launch fields: "
+            + ", ".join(supplied_forbidden),
+        )
+
+    try:
+        _, runtime_id, state_file = _state_paths(
+            state_root,
+            session_id,
+        )
+
+        state = _read_state(state_file)
+        if not isinstance(state, dict):
+            raise GamingRuntimeError(
+                "PLAY runtime state does not exist."
+            )
+
+        if str(state.get("runtime_id") or "") != runtime_id:
+            raise GamingRuntimeError(
+                "PLAY runtime identity mismatch."
+            )
+
+        requested_runtime_id = str(
+            payload.get("runtime_id") or ""
+        ).strip()
+
+        if requested_runtime_id != runtime_id:
+            raise GamingRuntimeError(
+                "PLAY requested a different runtime."
+            )
+
+        if state.get("status") != "running":
+            raise GamingRuntimeError(
+                "PLAY requires a running commercial runtime."
+            )
+
+        if state.get("runtime_stage") != "stream_ready":
+            raise GamingRuntimeError(
+                "PLAY requires stream_ready."
+            )
+
+        if not str(payload.get("gaming_title_id") or "").strip():
+            raise GamingRuntimeError(
+                "PLAY requires server-assigned title identity."
+            )
+
+        persisted_identity = {
+            "game_slug": str(state.get("game_slug") or "").strip(),
+            "launcher_type": str(
+                state.get("launcher_type")
+                or state.get("launcher")
+                or ""
+            ).strip().lower(),
+            "launcher_game_id": str(
+                state.get("launcher_game_id")
+                or state.get("launcher_app_id")
+                or ""
+            ).strip(),
+        }
+        for key, persisted_value in persisted_identity.items():
+            requested_value = str(payload.get(key) or "").strip()
+            if key == "launcher_type":
+                requested_value = requested_value.lower()
+            if not persisted_value or requested_value != persisted_value:
+                raise GamingRuntimeError(
+                    "PLAY server assignment does not match persisted "
+                    f"runtime {key}."
+                )
+
+        interactive_session = state.get("interactive_session")
+        if not isinstance(interactive_session, dict):
+            raise GamingRuntimeError(
+                "PLAY managed interactive-session authority is missing."
+            )
+        try:
+            expected_session_id = int(
+                interactive_session.get("session_id") or 0
+            )
+        except (TypeError, ValueError):
+            expected_session_id = 0
+        if (
+            interactive_session.get("validated") is not True
+            or expected_session_id <= 0
+        ):
+            raise GamingRuntimeError(
+                "PLAY requires a verified managed interactive session."
+            )
+
+        # A reclaimed NodeJob that already reached observer adoption is
+        # complete. It must not depend on the still-running workload being
+        # inspectable before acknowledging the same logical job again.
+        last_play = state.get("last_play")
+        if (
+            isinstance(last_play, dict)
+            and str(last_play.get("node_job_id") or "").lower()
+            == normalized_job_id
+        ):
+            return JobExecutionResult(
+                "succeeded",
+                {
+                    "session_id": session_id,
+                    "runtime_id": runtime_id,
+                    "deployment_stage": "stream_ready",
+                    "play_state": str(last_play.get("state") or "observed"),
+                    "idempotent": True,
+                },
+            )
+
+        # Reconcile first so PLAY cannot race a game which appeared
+        # after the previous heartbeat.
+        state, observation = _reconcile_customer_workload_state(
+            state
+        )
+
+        if observation.get("changed"):
+            _write_state(state_file, state)
+
+        workload = state.get("workload_observation")
+        if not isinstance(workload, dict):
+            raise GamingRuntimeError(
+                "PLAY workload observation authority is missing."
+            )
+        generation = int(workload.get("generation") or 0)
+
+        launch_attempt = state.get("launch_attempt")
+        workload_launch = state.get("workload_launch")
+        if isinstance(launch_attempt, dict):
+            if not isinstance(workload_launch, dict):
+                raise GamingRuntimeError(
+                    "PLAY launch-attempt authority has no job binding."
+                )
+            if (
+                str(workload_launch.get("node_job_id") or "").lower()
+                == normalized_job_id
+            ):
+                return JobExecutionResult(
+                    "succeeded",
+                    {
+                        "session_id": session_id,
+                        "runtime_id": runtime_id,
+                        "deployment_stage": "stream_ready",
+                        "play_state": str(
+                            workload_launch.get("state") or "dispatch_pending"
+                        ),
+                        "launch_attempt_id": str(
+                            launch_attempt.get("attempt_id") or ""
+                        ),
+                        "idempotent": True,
+                    },
+                )
+            raise GamingRuntimeError(
+                "Another PLAY launch attempt is still pending."
+            )
+        if isinstance(workload_launch, dict):
+            raise GamingRuntimeError(
+                "PLAY job binding exists without launch-attempt authority."
+            )
+
+        ownership = state.get("runtime_ownership")
+        if not isinstance(ownership, dict):
+            raise GamingRuntimeError(
+                "PLAY runtime ownership authority is missing."
+            )
+
+        if str(ownership.get("ownership_type") or "") != "none":
+            raise GamingRuntimeError(
+                "Assigned workload is already owned/running."
+            )
+
+        if workload.get("state") != "armed":
+            raise GamingRuntimeError(
+                "PLAY workload generation is not armed."
+            )
+
+        # START already prepared and persisted the server-authoritative
+        # assigned game metadata. Rebuild local launch preparation from
+        # that authority; never accept executable/install paths from
+        # the customer request.
+        launch_payload = {
+            "session_id": session_id,
+            "runtime_id": runtime_id,
+            **persisted_identity,
+        }
+
+        prepared = prepare_game_launch(launch_payload)
+
+        if prepared is None:
+            raise GamingRuntimeError(
+                "Assigned game could not be prepared for PLAY."
+            )
+
+        prepared = replace(
+            prepared,
+            runtime_id=runtime_id,
+            expected_session_id=expected_session_id,
+            presentation_contract=(
+                state.get("presentation_contract")
+                if isinstance(state.get("presentation_contract"), dict)
+                else None
+            ),
+        )
+
+        authority = workload.get("authority")
+        if not isinstance(authority, dict):
+            raise GamingRuntimeError(
+                "PLAY observation authority is missing."
+            )
+        prepared_install_root = str(
+            prepared.game.get("install_path") or ""
+        ).strip().rstrip("\\/").casefold()
+        observed_install_root = str(
+            authority.get("install_root") or ""
+        ).strip().rstrip("\\/").casefold()
+        if (
+            not prepared_install_root
+            or prepared_install_root != observed_install_root
+            or str(authority.get("runtime_id") or "") != runtime_id
+            or int(authority.get("interactive_session_id") or 0)
+            != expected_session_id
+        ):
+            raise GamingRuntimeError(
+                "PLAY prepared game does not match observation authority."
+            )
+
+        launch_attempt = build_prepared_launch_attempt_authority(
+            prepared
+        )
+
+        if not isinstance(launch_attempt, dict):
+            raise GamingRuntimeError(
+                "PLAY could not establish durable launch-attempt authority."
+            )
+
+        attempt_id = str(
+            launch_attempt.get("attempt_id") or ""
+        ).strip()
+        if not attempt_id:
+            raise GamingRuntimeError(
+                "PLAY launch-attempt authority has no identity."
+            )
+
+        # Crash-idempotence boundary: persist the exact process baseline,
+        # session/install authority, logical NodeJob, and generation before
+        # the launcher is allowed to create any process.
+        state["launch_attempt"] = launch_attempt
+        state["workload_launch"] = {
+            "node_job_id": normalized_job_id,
+            "attempt_id": attempt_id,
+            "generation": generation,
+            "state": "dispatch_pending",
+        }
+        state.pop("launch_failure", None)
+        _write_state(state_file, state)
+
+        try:
+            launch_info = dispatch_prepared_game(
+                prepared,
+                launch_attempt=launch_attempt,
+            )
+        except Exception as exc:
+            failed_state = _read_state(state_file) or state
+            current_attempt = failed_state.get("launch_attempt")
+            if (
+                isinstance(current_attempt, dict)
+                and str(current_attempt.get("attempt_id") or "")
+                == attempt_id
+            ):
+                failed_state["launch_failure"] = {
+                    "attempt_id": attempt_id,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                failed_state["workload_launch"] = {
+                    **dict(failed_state.get("workload_launch") or {}),
+                    "state": "dispatch_outcome_unknown",
+                }
+                _write_state(state_file, failed_state)
+            raise
+
+        # Dispatch success is not workload ownership. The observer will
+        # discover and adopt the exact post-baseline game asynchronously.
+        state = _read_state(state_file)
+        if not isinstance(state, dict):
+            raise GamingRuntimeError(
+                "PLAY runtime state disappeared after dispatch."
+            )
+        current_attempt = state.get("launch_attempt")
+        if (
+            not isinstance(current_attempt, dict)
+            or str(current_attempt.get("attempt_id") or "") != attempt_id
+        ):
+            raise GamingRuntimeError(
+                "PLAY runtime authority changed during dispatch."
+            )
+
+        if isinstance(launch_info, dict):
+            state["launch_info"] = launch_info
+
+        state["workload_launch"] = {
+            **dict(state.get("workload_launch") or {}),
+            "state": "dispatched",
+        }
+
+        state["runtime_stage"] = "stream_ready"
+        _write_state(state_file, state)
+
+        return JobExecutionResult(
+            "succeeded",
+            {
+                "session_id": session_id,
+                "runtime_id": runtime_id,
+                "deployment_stage": "stream_ready",
+                "game_slug": state.get("game_slug"),
+                "play_state": "dispatched",
+                "launch_attempt_id": attempt_id,
+            },
+        )
+
+    except GamingRuntimeError as exc:
+        return JobExecutionResult(
+            "blocked",
+            {},
+            str(exc),
+        )
+    except Exception as exc:
+        return JobExecutionResult(
+            "failed",
+            {},
+            f"PLAY failed: {type(exc).__name__}: {exc}",
+        )
+
+def reconcile_customer_workloads(
+    state_root: Path,
+) -> list[dict[str, Any]]:
+    """Lightweight recurring reconciliation for customer PLAY/EXIT.
+
+    Unlike startup recovery reconciliation, this is safe to call on every
+    heartbeat.  It does not launch workloads, stop commercial sessions,
+    modify billing, or sanitize unrelated processes.
+    """
+    outcomes: list[dict[str, Any]] = []
+    paths = GamingRuntimePaths(Path(state_root))
+
+    if not paths.sessions_dir.exists():
+        return outcomes
+
+    for state_file in sorted(
+        paths.sessions_dir.glob("kc-gaming-*.json")
+    ):
+        state = _read_state(state_file)
+        if not isinstance(state, dict):
+            continue
+
+        if (
+            state.get("status") != "running"
+            or state.get("runtime_stage") != "stream_ready"
+        ):
+            continue
+
+        session_id = str(state.get("session_id") or "")
+
+        try:
+            updated, outcome = (
+                _reconcile_customer_workload_state(state)
+            )
+
+            if outcome.get("changed"):
+                _write_state(state_file, updated)
+
+            outcomes.append(
+                {
+                    "session_id": session_id,
+                    **outcome,
+                }
+            )
+        except Exception as exc:
+            outcomes.append(
+                {
+                    "session_id": session_id,
+                    "changed": False,
+                    "state": "error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+
+    return outcomes
+
+
+
 def create_session(
     payload: dict[str, Any],
     *,
@@ -722,6 +1512,8 @@ def create_session(
 
     try:
         paths, runtime_id, state_file = _state_paths(state_root, session_id)
+        trace = LaunchTrace(runtime_id=runtime_id)
+        trace.emit("runtime_preparation_begin")
 
         display_policy_request = _display_policy_payload(
             payload
@@ -844,6 +1636,8 @@ def create_session(
             execution_backend=execution_backend,
             streaming_backend=streaming_backend,
         )
+        trace.emit("runtime_validation_end")
+        trace.emit("managed_session_validation_begin")
 
         # KG-009: authoritative last-moment session broker gate.
         # Scheduling heartbeat evidence can become stale after placement;
@@ -852,6 +1646,11 @@ def create_session(
         interactive_session = (
             _interactive_session_context()
         )
+        trace.emit(
+            "managed_session_validation_end",
+            validated=bool(interactive_session.get("validated")),
+        )
+        trace.emit("display_prerequisites_begin")
 
         display_policy_result: dict[str, Any] | None = None
 
@@ -864,11 +1663,39 @@ def create_session(
                 )
             )
 
+        presentation_contract = (
+            _establish_presentation_contract(
+                interactive_session
+            )
+        )
+        trace.emit("display_prerequisites_end")
+        trace.emit("steam_inventory_readiness_begin")
         # Display policy is validated and atomically persisted
         # before game preparation or launch. Invalid VDD policy
         # therefore fails closed before customer workload start.
         prepared_launch = prepare_game_launch(payload)
+        trace.emit(
+            "steam_inventory_readiness_end",
+            has_prepared_launch=prepared_launch is not None,
+        )
+        trace.emit("runtime_preparation_end")
 
+        # Q38IU-Y44C-R2:
+        # The assigned game remains part of the commercial session,
+        # but customer workload execution is NOT part of resource
+        # session START.
+        #
+        # prepare_game_launch() above has already:
+        #   - resolved the requested game identity,
+        #   - verified the Steam AppID is installed on this node,
+        #   - resolved the installed-game metadata/install path,
+        #   - verified that Steam is available.
+        #
+        # We deliberately do not build launch-attempt authority and
+        # do not call launch_prepared_game() here. The customer will
+        # authenticate to Steam and press PLAY interactively later.
+        # A separate workload-observer lifecycle will adopt/verify
+        # that resulting process without controlling GPU billing.
         launch_info: dict[str, Any] | None = None
 
         if prepared_launch is not None:
@@ -880,55 +1707,16 @@ def create_session(
                     if interactive_session.get("validated")
                     else None
                 ),
+                presentation_contract=presentation_contract,
             )
 
-            # Persist a deterministic ownership intent before process
-            # creation. For Windows the Job Object name can therefore
-            # be recovered after an agent crash even if the final
-            # launch-result write never occurred.
-            launching_state = {
-                "schema_version": 2,
-                "session_id": session_id,
-                "runtime_id": runtime_id,
-                "status": "starting",
-                "execution_backend": "windows_native",
-                "streaming_backend": "sunshine",
-                "gpu_uuid": gpu_uuid,
-                "gpu": validation["gpu"],
-                "minimum_vram_mb": minimum_vram_mb,
-                "runtime_stage": "launching",
-                "interactive_session": interactive_session,
-                "runtime_ownership":
-                    planned_runtime_ownership(
-                        runtime_id
-                    ),
-            }
-
-            if display_policy_result is not None:
-                launching_state[
-                    "display_policy_request"
-                ] = display_policy_request
-                launching_state[
-                    "display_policy"
-                ] = display_policy_result
-
-            _write_state(
-                state_file,
-                launching_state,
+        workload_observation = (
+            _prepared_workload_observation(
+                runtime_id=runtime_id,
+                prepared_launch=prepared_launch,
+                interactive_session=interactive_session,
             )
-
-            try:
-                launch_info = launch_prepared_game(
-                    prepared_launch
-                )
-            except Exception:
-                # Create remains retry-safe when no owned runtime was
-                # successfully established.
-                try:
-                    state_file.unlink()
-                except FileNotFoundError:
-                    pass
-                raise
+        )
 
         runtime_ownership = (
             dict(
@@ -946,6 +1734,7 @@ def create_session(
             if isinstance(candidate, dict):
                 display_activation = candidate
 
+        trace.emit("stream_readiness_begin")
         try:
             readiness = _verify_stream_readiness(
                 runtime_id=runtime_id,
@@ -958,6 +1747,8 @@ def create_session(
                 sunshine_verify_tls=sunshine_verify_tls,
             )
         except Exception as readiness_exc:
+            trace.emit("stream_readiness_end", verified=False,
+                       error_type=type(readiness_exc).__name__)
             if launch_info is not None:
                 cleanup = _cleanup_failed_launch(
                     runtime_ownership
@@ -1005,6 +1796,7 @@ def create_session(
 
             raise
 
+        trace.emit("stream_readiness_end", verified=True)
         state = {
             "schema_version": 2,
             "session_id": session_id,
@@ -1017,6 +1809,8 @@ def create_session(
             "minimum_vram_mb": minimum_vram_mb,
             "runtime_stage": "stream_ready",
             "interactive_session": interactive_session,
+            "presentation_contract":
+                presentation_contract,
             "runtime_ownership": runtime_ownership,
             "stream_readiness": readiness,
         }
@@ -1029,10 +1823,10 @@ def create_session(
                 display_policy_result
             )
 
-        if (
-            prepared_launch is not None
-            and launch_info is not None
-        ):
+        if prepared_launch is not None:
+            # Q38IU-Y44C-R2:
+            # Persist the concerned installed game even though no
+            # customer game process exists yet.
             state.update(
                 {
                     "game_slug":
@@ -1041,18 +1835,21 @@ def create_session(
                         prepared_launch.launcher_type,
                     "launcher_game_id":
                         prepared_launch.launcher_game_id,
-                    # Preserve KG-001 state keys while the
-                    # backend schema evolves to launch profiles.
+                    # Preserve KG-001 compatibility keys.
                     "launcher":
                         prepared_launch.launcher_type,
                     "launcher_app_id":
                         prepared_launch.launcher_game_id,
                     "game":
                         prepared_launch.game,
-                    "launch_info":
-                        launch_info,
                 }
             )
+
+        if workload_observation is not None:
+            state["workload_observation"] = workload_observation
+
+        if launch_info is not None:
+            state["launch_info"] = launch_info
 
         _write_state(state_file, state)
 
@@ -1063,6 +1860,8 @@ def create_session(
                 _connection_info(runtime_id),
             "gpu": validation["gpu"],
             "interactive_session": interactive_session,
+            "presentation_contract":
+                presentation_contract,
             "stream_readiness": readiness,
         }
 
@@ -1071,11 +1870,17 @@ def create_session(
                 display_policy_result
             )
 
-        if (
-            prepared_launch is not None
-            and launch_info is not None
-        ):
+        if prepared_launch is not None:
             result["game"] = prepared_launch.game
+            result["game_slug"] = prepared_launch.game_slug
+            result["launcher_type"] = (
+                prepared_launch.launcher_type
+            )
+            result["launcher_game_id"] = (
+                prepared_launch.launcher_game_id
+            )
+
+        if launch_info is not None:
             result["launch_info"] = launch_info
 
         return JobExecutionResult(
@@ -1228,6 +2033,32 @@ def _verify_stream_readiness(
         require_process=launch_info is not None,
     )
 
+    if launch_info is not None:
+        presentation = launch_info.get(
+            "presentation"
+        )
+
+        if (
+            isinstance(presentation, dict)
+            and bool(
+                presentation.get("required")
+            )
+            and not bool(
+                presentation.get("verified")
+            )
+        ):
+            detail = str(
+                presentation.get("error")
+                or presentation.get("reason")
+                or "presentation verification failed"
+            )
+
+            raise GamingRuntimeError(
+                "Customer game presentation was not "
+                "verified on Khan VDD before stream "
+                f"readiness: {detail}"
+            )
+
     launcher_pid = None
     if launch_info is not None:
         try:
@@ -1277,6 +2108,10 @@ def change_session_state(
     session_id = str(payload.get("session_id") or "")
     try:
         _, runtime_id, state_file = _state_paths(state_root, session_id)
+        trace = LaunchTrace(runtime_id=runtime_id)
+        if action == "start":
+            trace.emit("runtime_start_enter")
+            trace.emit("runtime_preparation_begin")
         state = _read_state(state_file)
         if state is None:
             if (
@@ -1414,7 +2249,12 @@ def change_session_state(
         # clean. STOP/DELETE are the explicit recovery operations.
         if (
             action == "start"
-            and state.get("status") == "cleanup_required"
+            and (
+                state.get("status")
+                == "cleanup_required"
+                or state.get("runtime_stage")
+                == "launch_recovery_pending"
+            )
         ):
             raise GamingRuntimeError(
                 "Gaming runtime requires verified cleanup before "
@@ -1480,7 +2320,127 @@ def change_session_state(
                 "refusing idempotent stop."
             )
 
+        if (
+            action in {"stop", "delete"}
+            and (
+                state.get("runtime_stage")
+                == "launch_recovery_pending"
+                or isinstance(state.get("launch_attempt"), dict)
+            )
+        ):
+            pending_cleanup = (
+                _cleanup_pending_launch_attempt(
+                    state
+                )
+            )
+
+            if not bool(
+                pending_cleanup.get("verified")
+            ):
+                recovered_ownership = (
+                    pending_cleanup.get(
+                        "runtime_ownership"
+                    )
+                )
+
+                if isinstance(
+                    recovered_ownership,
+                    dict,
+                ):
+                    # A late workload was identified but could not be
+                    # proven terminated. Preserve that exact ownership
+                    # boundary for subsequent cleanup.
+                    state["status"] = (
+                        "cleanup_required"
+                    )
+                    state["runtime_stage"] = (
+                        "cleanup_required"
+                    )
+                    state["runtime_ownership"] = (
+                        dict(recovered_ownership)
+                    )
+                    state["cleanup"] = (
+                        pending_cleanup
+                    )
+                    _write_state(
+                        state_file,
+                        state,
+                    )
+
+                raise GamingRuntimeError(
+                    "Pending Steam launch attempt could not "
+                    "be proven sanitized; refusing runtime "
+                    "repool."
+                )
+
+            proof = dict(
+                pending_cleanup.get(
+                    "termination_proof"
+                )
+                or {}
+            )
+
+            state["runtime_ownership"] = (
+                _terminated_ownership_from_proof(
+                    runtime_id=runtime_id,
+                    proof=proof,
+                    retirement_reason=(
+                        "late_launch_sanitized_before_"
+                        + action
+                    ),
+                )
+            )
+
+            state["runtime_stage"] = (
+                "deleting"
+                if action == "delete"
+                else "stopping"
+            )
+
+            state.pop(
+                "launch_attempt",
+                None,
+            )
+            state.pop(
+                "launch_failure",
+                None,
+            )
+            state.pop(
+                "pre_launch_runtime_ownership",
+                None,
+            )
+            state.pop("workload_launch", None)
+
+            state["runtime_reconciliation"] = {
+                "state":
+                    "late_launch_cleanup_completed",
+                "attempt_id":
+                    pending_cleanup.get(
+                        "attempt_id"
+                    ),
+                "action":
+                    action,
+            }
+
+            _write_state(
+                state_file,
+                state,
+            )
+
         if action in {"stop", "delete"}:
+            if (
+                state.get("status") == "running"
+                and state.get("runtime_stage") == "stream_ready"
+                and isinstance(
+                    state.get("workload_observation"),
+                    dict,
+                )
+            ):
+                state, _ = _reconcile_customer_workload_state(
+                    state
+                )
+                _write_state(state_file, state)
+
             paired_clients = [
                 item
                 for item in state.get("paired_clients", [])
@@ -1916,8 +2876,18 @@ def change_session_state(
 
             # A stopped runtime no longer has a live launcher identity.
             # Preserve the restart recipe separately, but never leave a PID
-            # that could later be mistaken for current ownership.
+            # or stale launch-attempt authority that could later be mistaken
+            # for current ownership.
             state.pop("launch_info", None)
+            state.pop("launch_attempt", None)
+            state.pop("launch_failure", None)
+            state.pop("workload_observation", None)
+            state.pop("workload_launch", None)
+            state.pop("last_play", None)
+            state.pop(
+                "pre_launch_runtime_ownership",
+                None,
+            )
 
             _write_state(state_file, state)
 
@@ -1938,8 +2908,23 @@ def change_session_state(
         # START after a structural STOP must create a new runtime ownership
         # boundary. Merely changing persisted state to "running" would claim
         # that a customer runtime exists after its process tree was destroyed.
+        #
+        # Preserve the durable STOP proof while START is in-flight. If no new
+        # runtime ownership boundary is successfully returned, failed START
+        # must restore this proof rather than weakening it to "none".
+        stopped_ownership_before_start = (
+            dict(state.get("runtime_ownership") or {})
+            if isinstance(state.get("runtime_ownership"), dict)
+            else None
+        )
+
+        trace.emit("managed_session_validation_begin")
         interactive_session = (
             _interactive_session_context()
+        )
+        trace.emit(
+            "managed_session_validation_end",
+            validated=bool(interactive_session.get("validated")),
         )
         state["interactive_session"] = (
             interactive_session
@@ -2020,6 +3005,24 @@ def change_session_state(
                 },
             )
 
+        trace.emit("display_prerequisites_begin")
+        display_activation = None
+        display_policy = state.get("display_policy")
+        if isinstance(display_policy, dict):
+            candidate = display_policy.get("activation")
+            if isinstance(candidate, dict):
+                display_activation = candidate
+
+        presentation_contract = (
+            _establish_presentation_contract(
+                interactive_session
+            )
+        )
+        state["presentation_contract"] = (
+            presentation_contract
+        )
+        trace.emit("display_prerequisites_end")
+
         game_slug = str(
             state.get("game_slug") or ""
         ).strip()
@@ -2051,10 +3054,20 @@ def change_session_state(
                 launcher_game_id
             )
 
+        trace.emit("steam_inventory_readiness_begin")
         prepared_launch = prepare_game_launch(
             restart_payload
         )
+        trace.emit(
+            "steam_inventory_readiness_end",
+            has_prepared_launch=prepared_launch is not None,
+        )
+        trace.emit("runtime_preparation_end")
 
+        # Q38IU-Y44C-R2:
+        # Restart restores the commercial resource/stream session and
+        # revalidates the assigned installed game. It must never
+        # automatically relaunch the customer's previous workload.
         launch_info: dict[str, Any] | None = None
 
         if prepared_launch is not None:
@@ -2066,32 +3079,16 @@ def change_session_state(
                     if interactive_session.get("validated")
                     else None
                 ),
+                presentation_contract=presentation_contract,
             )
 
-            # Crash recovery authority must exist before process creation.
-            state["status"] = "starting"
-            state["runtime_stage"] = "launching"
-            state["runtime_ownership"] = (
-                planned_runtime_ownership(
-                    runtime_id
-                )
+        workload_observation = (
+            _prepared_workload_observation(
+                runtime_id=runtime_id,
+                prepared_launch=prepared_launch,
+                interactive_session=interactive_session,
             )
-            _write_state(state_file, state)
-
-            try:
-                launch_info = launch_prepared_game(
-                    prepared_launch
-                )
-            except Exception:
-                # Unlike first create, the stopped state is durable session
-                # authority and must not be deleted on a failed restart.
-                state["status"] = "stopped"
-                state["runtime_stage"] = "stopped"
-                state["runtime_ownership"] = (
-                    no_process_ownership()
-                )
-                _write_state(state_file, state)
-                raise
+        )
 
         runtime_ownership = (
             dict(
@@ -2103,13 +3100,7 @@ def change_session_state(
             else no_process_ownership()
         )
 
-        display_activation = None
-        display_policy = state.get("display_policy")
-        if isinstance(display_policy, dict):
-            candidate = display_policy.get("activation")
-            if isinstance(candidate, dict):
-                display_activation = candidate
-
+        trace.emit("stream_readiness_begin")
         try:
             readiness = _verify_stream_readiness(
                 runtime_id=runtime_id,
@@ -2122,6 +3113,8 @@ def change_session_state(
                 sunshine_verify_tls=sunshine_verify_tls,
             )
         except Exception as readiness_exc:
+            trace.emit("stream_readiness_end", verified=False,
+                       error_type=type(readiness_exc).__name__)
             cleanup = {
                 "verified": True,
                 "runtime_ownership":
@@ -2146,9 +3139,62 @@ def change_session_state(
             if cleanup["verified"]:
                 state["status"] = "stopped"
                 state["runtime_stage"] = "stopped"
-                state["runtime_ownership"] = (
-                    no_process_ownership()
-                )
+
+                if launch_info is None:
+                    state["runtime_ownership"] = (
+                        dict(stopped_ownership_before_start)
+                        if stopped_ownership_before_start is not None
+                        else no_process_ownership()
+                    )
+                else:
+                    termination_proof = dict(
+                        cleanup.get("termination_proof")
+                        or cleanup.get("runtime_ownership")
+                        or {}
+                    )
+                    remaining = int(
+                        termination_proof.get(
+                            "owned_process_count_remaining",
+                            termination_proof.get(
+                                "owned_process_count",
+                                0,
+                            ),
+                        )
+                        or 0
+                    )
+                    boundary_verified = bool(
+                        termination_proof.get(
+                            "ownership_boundary_verified"
+                        )
+                    )
+                    termination_verified = bool(
+                        termination_proof.get(
+                            "termination_verified"
+                        )
+                    )
+
+                    state["runtime_ownership"] = {
+                        "schema_version":
+                            OWNERSHIP_SCHEMA_VERSION,
+                        "ownership_type":
+                            "terminated",
+                        "runtime_id":
+                            runtime_id,
+                        "ownership_boundary_verified":
+                            boundary_verified,
+                        "termination_verified":
+                            termination_verified,
+                        "owned_process_count":
+                            remaining,
+                        "owned_process_count_remaining":
+                            remaining,
+                        "clean": (
+                            boundary_verified
+                            and termination_verified
+                            and remaining == 0
+                        ),
+                    }
+
                 state.pop(
                     "launch_info",
                     None,
@@ -2159,6 +3205,18 @@ def change_session_state(
                 )
                 state.pop(
                     "cleanup",
+                    None,
+                )
+                state.pop(
+                    "launch_attempt",
+                    None,
+                )
+                state.pop(
+                    "launch_failure",
+                    None,
+                )
+                state.pop(
+                    "pre_launch_runtime_ownership",
                     None,
                 )
             else:
@@ -2195,15 +3253,23 @@ def change_session_state(
             )
             raise
 
+        trace.emit("stream_readiness_end", verified=True)
         state["status"] = "running"
         state["runtime_stage"] = "stream_ready"
         state["runtime_ownership"] = runtime_ownership
+        if workload_observation is not None:
+            state["workload_observation"] = workload_observation
+        else:
+            state.pop("workload_observation", None)
         state["stream_readiness"] = readiness
+        state.pop("launch_attempt", None)
+        state.pop("launch_failure", None)
+        state.pop(
+            "pre_launch_runtime_ownership",
+            None,
+        )
 
-        if (
-            prepared_launch is not None
-            and launch_info is not None
-        ):
+        if prepared_launch is not None:
             state["game_slug"] = (
                 prepared_launch.game_slug
             )
@@ -2220,7 +3286,11 @@ def change_session_state(
                 prepared_launch.launcher_game_id
             )
             state["game"] = prepared_launch.game
+
+        if launch_info is not None:
             state["launch_info"] = launch_info
+        else:
+            state.pop("launch_info", None)
 
         _write_state(state_file, state)
 
@@ -2232,15 +3302,23 @@ def change_session_state(
                 _connection_info(runtime_id),
             "interactive_session":
                 interactive_session,
+            "presentation_contract":
+                presentation_contract,
             "stream_readiness":
                 readiness,
         }
 
-        if (
-            prepared_launch is not None
-            and launch_info is not None
-        ):
+        if prepared_launch is not None:
             result["game"] = prepared_launch.game
+            result["game_slug"] = prepared_launch.game_slug
+            result["launcher_type"] = (
+                prepared_launch.launcher_type
+            )
+            result["launcher_game_id"] = (
+                prepared_launch.launcher_game_id
+            )
+
+        if launch_info is not None:
             result["launch_info"] = launch_info
 
         return JobExecutionResult(
@@ -2422,6 +3500,227 @@ def revoke_connection(
         )
 
 
+
+
+def _terminated_ownership_from_proof(
+    *,
+    runtime_id: str,
+    proof: dict[str, Any],
+    retirement_reason: str,
+) -> dict[str, Any]:
+    """
+    Normalize any successfully sanitized structural ownership proof into
+    the canonical durable schema-v2 terminal descriptor.
+    """
+    remaining = int(
+        proof.get(
+            "owned_process_count_remaining",
+            proof.get(
+                "owned_process_count",
+                0,
+            ),
+        )
+        or 0
+    )
+
+    boundary_verified = bool(
+        proof.get(
+            "ownership_boundary_verified"
+        )
+    )
+    termination_verified = bool(
+        proof.get(
+            "termination_verified"
+        )
+    )
+
+    clean = (
+        boundary_verified
+        and termination_verified
+        and remaining == 0
+    )
+
+    return {
+        "schema_version":
+            OWNERSHIP_SCHEMA_VERSION,
+        "ownership_type":
+            "terminated",
+        "runtime_id":
+            str(runtime_id),
+        "ownership_boundary_verified":
+            boundary_verified,
+        "termination_verified":
+            termination_verified,
+        "owned_process_count":
+            remaining,
+        "owned_process_count_remaining":
+            remaining,
+        "clean":
+            clean,
+        "retirement_reason":
+            str(retirement_reason),
+    }
+
+
+
+def _inspect_pending_launch_attempt(
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Inspect a durable asynchronous launch attempt.
+
+    This helper never performs process-name sweeping. It delegates process
+    correlation to the exact persisted baseline/session/install-root
+    authority in windows_verified_process.
+    """
+    from khan_agent.windows_verified_process import (
+        classify_launch_attempt_recovery,
+        ownership_from_launch_attempt,
+    )
+
+    authority = state.get("launch_attempt")
+    if not isinstance(authority, dict) and str(
+        state.get("runtime_stage") or ""
+    ) != "launch_recovery_pending":
+        return {"state": "not_pending"}
+
+    if not isinstance(authority, dict):
+        raise GamingRuntimeError(
+            "Launch recovery is pending without durable "
+            "launch-attempt authority."
+        )
+
+    result = classify_launch_attempt_recovery(
+        authority
+    )
+
+    if result["state"] == "candidate_discovered":
+        ownership = ownership_from_launch_attempt(
+            authority,
+            result["processes"],
+        )
+        return {
+            **result,
+            "runtime_ownership": ownership,
+        }
+
+    return result
+
+
+
+
+def _cleanup_pending_launch_attempt(
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Sanitize a pending asynchronous Steam attempt only when exact
+    persisted authority discovers an attributable workload.
+
+    No-candidate states never become clean merely because time elapsed.
+    """
+    recovery = _inspect_pending_launch_attempt(
+        state
+    )
+
+    recovery_state = str(
+        recovery.get("state") or ""
+    )
+
+    if recovery_state in {
+        "pending",
+        "expired_no_candidate",
+    }:
+        return {
+            "verified": False,
+            "recovery_state":
+                recovery_state,
+            "attempt_id":
+                recovery.get("attempt_id"),
+            "runtime_ownership": None,
+            "termination_proof": None,
+            "error": (
+                "launch_attempt_still_pending"
+                if recovery_state == "pending"
+                else
+                "launch_attempt_expired_without_cleanliness_proof"
+            ),
+        }
+
+    if recovery_state != "candidate_discovered":
+        raise GamingRuntimeError(
+            "Pending launch cleanup received an "
+            "unexpected recovery state."
+        )
+
+    ownership = dict(
+        recovery["runtime_ownership"]
+    )
+
+    try:
+        proof = terminate_runtime_ownership(
+            ownership
+        )
+    except Exception as exc:
+        return {
+            "verified": False,
+            "recovery_state":
+                "candidate_discovered",
+            "attempt_id":
+                recovery.get("attempt_id"),
+            "runtime_ownership":
+                ownership,
+            "termination_proof":
+                None,
+            "error":
+                f"{type(exc).__name__}: {exc}",
+        }
+
+    remaining = int(
+        proof.get(
+            "owned_process_count_remaining",
+            proof.get(
+                "owned_process_count",
+                0,
+            ),
+        )
+        or 0
+    )
+
+    verified = (
+        bool(
+            proof.get(
+                "ownership_boundary_verified"
+            )
+        )
+        and bool(
+            proof.get(
+                "termination_verified"
+            )
+        )
+        and remaining == 0
+    )
+
+    return {
+        "verified":
+            verified,
+        "recovery_state":
+            "candidate_discovered",
+        "attempt_id":
+            recovery.get("attempt_id"),
+        "runtime_ownership":
+            ownership,
+        "termination_proof":
+            dict(proof),
+        "error": (
+            None
+            if verified
+            else
+            "late_launch_termination_not_verified"
+        ),
+    }
+
+
+
 def reconcile_runtime_ownership(
     state_root: Path,
 ) -> list[dict[str, Any]]:
@@ -2464,6 +3763,245 @@ def reconcile_runtime_ownership(
                     }
                 )
                 continue
+
+            if (
+                str(state.get("runtime_stage") or "")
+                == "launch_recovery_pending"
+            ):
+                recovery = (
+                    _inspect_pending_launch_attempt(
+                        state
+                    )
+                )
+
+                if (
+                    recovery.get("state")
+                    == "candidate_discovered"
+                ):
+                    pending_cleanup = (
+                        _cleanup_pending_launch_attempt(
+                            state
+                        )
+                    )
+
+                    recovered_ownership = (
+                        pending_cleanup.get(
+                            "runtime_ownership"
+                        )
+                    )
+
+                    if not bool(
+                        pending_cleanup.get(
+                            "verified"
+                        )
+                    ):
+                        state["status"] = (
+                            "cleanup_required"
+                        )
+                        state["runtime_stage"] = (
+                            "cleanup_required"
+                        )
+
+                        if isinstance(
+                            recovered_ownership,
+                            dict,
+                        ):
+                            state[
+                                "runtime_ownership"
+                            ] = dict(
+                                recovered_ownership
+                            )
+
+                        state["cleanup"] = (
+                            pending_cleanup
+                        )
+                        state[
+                            "runtime_reconciliation"
+                        ] = {
+                            "state":
+                                "cleanup_required",
+                            "reason":
+                                "late_launch_cleanup_not_verified",
+                            "attempt_id":
+                                pending_cleanup.get(
+                                    "attempt_id"
+                                ),
+                        }
+
+                        _write_state(
+                            state_file,
+                            state,
+                        )
+
+                        outcomes.append(
+                            {
+                                "runtime_id":
+                                    state.get(
+                                        "runtime_id"
+                                    ),
+                                "state":
+                                    "cleanup_required",
+                            }
+                        )
+                        continue
+
+                    proof = dict(
+                        pending_cleanup.get(
+                            "termination_proof"
+                        )
+                        or {}
+                    )
+
+                    state["status"] = "stopped"
+                    state["runtime_stage"] = (
+                        "stopped"
+                    )
+                    state["runtime_ownership"] = (
+                        _terminated_ownership_from_proof(
+                            runtime_id=str(
+                                state.get(
+                                    "runtime_id"
+                                )
+                                or ""
+                            ),
+                            proof=proof,
+                            retirement_reason=(
+                                "late_launch_reconciled_and_sanitized"
+                            ),
+                        )
+                    )
+
+                    state.pop(
+                        "launch_info",
+                        None,
+                    )
+                    state.pop(
+                        "stream_readiness",
+                        None,
+                    )
+                    state.pop(
+                        "launch_attempt",
+                        None,
+                    )
+                    state.pop(
+                        "launch_failure",
+                        None,
+                    )
+                    state.pop(
+                        "pre_launch_runtime_ownership",
+                        None,
+                    )
+                    state.pop(
+                        "cleanup",
+                        None,
+                    )
+
+                    state[
+                        "runtime_reconciliation"
+                    ] = {
+                        "state":
+                            "late_launch_cleanup_completed",
+                        "attempt_id":
+                            pending_cleanup.get(
+                                "attempt_id"
+                            ),
+                    }
+
+                    _write_state(
+                        state_file,
+                        state,
+                    )
+
+                    outcomes.append(
+                        {
+                            "runtime_id":
+                                state.get(
+                                    "runtime_id"
+                                ),
+                            "state":
+                                "late_launch_cleanup_completed",
+                        }
+                    )
+                    continue
+
+                if recovery.get("state") == "pending":
+                    state[
+                        "runtime_reconciliation"
+                    ] = {
+                        "state":
+                            "launch_recovery_pending",
+                        "attempt_id":
+                            recovery.get("attempt_id"),
+                    }
+                    _write_state(
+                        state_file,
+                        state,
+                    )
+                    outcomes.append(
+                        {
+                            "runtime_id":
+                                state.get("runtime_id"),
+                            "state":
+                                "launch_recovery_pending",
+                        }
+                    )
+                    continue
+
+                if (
+                    recovery.get("state")
+                    == "expired_no_candidate"
+                ):
+                    # Expiry ends automatic attribution but is not itself
+                    # proof that Steam can never materialize a later game.
+                    # Keep the state fail-closed and require an explicit
+                    # sanitation/recovery operation before another START.
+                    state["status"] = (
+                        "cleanup_required"
+                    )
+                    state["runtime_stage"] = (
+                        "cleanup_required"
+                    )
+                    state[
+                        "runtime_reconciliation"
+                    ] = {
+                        "state":
+                            "launch_attempt_expired",
+                        "attempt_id":
+                            recovery.get("attempt_id"),
+                        "reason":
+                            "expiry_is_not_cleanliness_proof",
+                    }
+                    state["cleanup"] = {
+                        "verified": False,
+                        "runtime_ownership":
+                            dict(
+                                state.get(
+                                    "runtime_ownership"
+                                )
+                                or {}
+                            ),
+                        "termination_proof": None,
+                        "error":
+                            "launch_attempt_expired_without_candidate",
+                    }
+                    _write_state(
+                        state_file,
+                        state,
+                    )
+                    outcomes.append(
+                        {
+                            "runtime_id":
+                                state.get("runtime_id"),
+                            "state":
+                                "launch_attempt_expired",
+                        }
+                    )
+                    continue
+
+                raise GamingRuntimeError(
+                    "Launch-attempt recovery returned an "
+                    "unknown state."
+                )
 
             ownership = state.get(
                 "runtime_ownership"
@@ -2632,6 +4170,18 @@ def reconcile_runtime_ownership(
                     "stream_readiness",
                     None,
                 )
+                state.pop(
+                    "launch_attempt",
+                    None,
+                )
+                state.pop(
+                    "launch_failure",
+                    None,
+                )
+                state.pop(
+                    "pre_launch_runtime_ownership",
+                    None,
+                )
                 state[
                     "runtime_reconciliation"
                 ] = {
@@ -2695,15 +4245,75 @@ def reconcile_runtime_ownership(
                 )
                 continue
 
+            owned_count = int(
+                inspection.get(
+                    "owned_process_count"
+                )
+                or 0
+            )
+
+            ownership_type = str(
+                ownership.get("ownership_type")
+                or "none"
+            )
+
+            if (
+                status in {"running", "starting"}
+                and owned_count == 0
+                and ownership_type != "none"
+            ):
+                state["status"] = "stopped"
+                state["runtime_stage"] = "stopped"
+                state["runtime_ownership"] = {
+                    "schema_version":
+                        OWNERSHIP_SCHEMA_VERSION,
+                    "ownership_type":
+                        "terminated",
+                    "runtime_id":
+                        state.get("runtime_id"),
+                    "ownership_boundary_verified": True,
+                    "termination_verified": True,
+                    "owned_process_count": 0,
+                    "owned_process_count_remaining": 0,
+                    "clean": True,
+                    "retirement_reason":
+                        "verified_workload_identity_absent",
+                }
+                state.pop(
+                    "launch_info",
+                    None,
+                )
+                state.pop(
+                    "stream_readiness",
+                    None,
+                )
+                state[
+                    "runtime_reconciliation"
+                ] = {
+                    "state": "workload_retired",
+                    "inspection": inspection,
+                    "reason":
+                        "verified_runtime_has_no_live_owned_process",
+                }
+
+                _write_state(
+                    state_file,
+                    state,
+                )
+
+                outcomes.append(
+                    {
+                        "runtime_id":
+                            state.get("runtime_id"),
+                        "state":
+                            "workload_retired",
+                    }
+                )
+                continue
+
             if (
                 status == "starting"
-                and int(
-                    inspection.get(
-                        "owned_process_count"
-                    )
-                    or 0
-                )
-                > 0
+                and owned_count > 0
             ):
                 state["status"] = "starting"
                 state[

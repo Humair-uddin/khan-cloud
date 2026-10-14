@@ -385,7 +385,11 @@ def test_vdd_runtime_policy_has_single_production_owner():
     assert "def restore_last_known_good" in canonical
 
 
-def _good_session_environment(monkeypatch):
+def _good_session_environment(
+    monkeypatch,
+    *,
+    presentation_order=None,
+):
     from khan_agent import gaming_runtime
 
     class ManagedSession:
@@ -400,6 +404,28 @@ def _good_session_environment(monkeypatch):
         gaming_runtime,
         "require_interactive_session",
         lambda **kwargs: ManagedSession(),
+    )
+
+    def synthetic_presentation_contract(session):
+        if presentation_order is not None:
+            presentation_order.append(
+                "presentation_contract"
+            )
+        return {
+            "required": True,
+            "verified": True,
+            "session_id": session.get("session_id"),
+            "requested_mode": {
+                "width": 1920,
+                "height": 1080,
+                "refresh_hz": 60,
+            },
+        }
+
+    monkeypatch.setattr(
+        gaming_runtime,
+        "_establish_presentation_contract",
+        synthetic_presentation_contract,
     )
 
     # These are runtime-policy/session unit tests.  A real Windows
@@ -487,12 +513,15 @@ def test_session_create_applies_policy_before_game_launch(
     from uuid import uuid4
     from khan_agent import gaming_runtime
 
-    _good_session_environment(monkeypatch)
+    order = []
+
+    _good_session_environment(
+        monkeypatch,
+        presentation_order=order,
+    )
 
     template = _template(tmp_path / "template.xml")
     target = tmp_path / "programdata"
-
-    order = []
 
     real_apply = gaming_runtime.apply_display_policy
 
@@ -529,6 +558,7 @@ def test_session_create_applies_policy_before_game_launch(
     assert result.status == "succeeded"
     assert order == [
         "policy",
+        "presentation_contract",
         "prepare_game",
     ]
 

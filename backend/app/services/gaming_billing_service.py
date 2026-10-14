@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -236,6 +236,27 @@ def _remaining(reservation: UsageReservation) -> int:
     return reservation.reserved_minor - reservation.consumed_minor - reservation.released_minor
 
 
+def _gaming_reservation_extension_idempotency_key(
+    *,
+    session_id: UUID,
+    reservation_id: UUID,
+    target_reserved_minor: int,
+) -> str:
+    """Bind an extension retry to one reservation lifecycle.
+
+    Historical v1 keys omitted ``reservation_id`` and could therefore replay
+    an extension transaction from an older reservation for the same gaming
+    session. The v2 namespace is deliberately forward-only: a committed v1
+    extension has already advanced ``reserved_minor``, while a collided v1
+    no-op can be retried safely under the reservation-specific v2 key.
+    """
+
+    return (
+        f"gaming:{session_id}:reservation:{reservation_id}:"
+        f"extend:{target_reserved_minor}:v2"
+    )
+
+
 def ensure_runtime_coverage(db: Session, *, session: GamingSession) -> UsageReservation | None:
     reservation = _reservation_for_update(db, session)
     if reservation is None or reservation.status == "closed":
@@ -255,12 +276,15 @@ def ensure_runtime_coverage(db: Session, *, session: GamingSession) -> UsageRese
         session.billing_stop_reason = "insufficient_wallet_balance"
         return reservation
     try:
+        target_reserved_minor = reservation.reserved_minor + topup
         extend_reservation(
             db,
             reservation=reservation,
             amount_minor=topup,
-            idempotency_key=(
-                f"gaming:{session.id}:extend:{reservation.reserved_minor + topup}:v1"
+            idempotency_key=_gaming_reservation_extension_idempotency_key(
+                session_id=session.id,
+                reservation_id=reservation.id,
+                target_reserved_minor=target_reserved_minor,
             ),
         )
     except WalletError as exc:
@@ -268,26 +292,204 @@ def ensure_runtime_coverage(db: Session, *, session: GamingSession) -> UsageRese
     return reservation
 
 
-def meter_gaming_session(db: Session, *, session: GamingSession, now: datetime | None = None, force: bool = False) -> int:
-    if session.product_sku_id is None or session.usage_reservation_id is None:
-        return 0
-    if (session.status != "running" and not force) or session.started_at is None:
-        return 0
-    current = now or datetime.now(UTC)
-    anchor = session.last_metered_at or session.started_at
-    if anchor.tzinfo is None:
-        anchor = anchor.replace(tzinfo=UTC)
-    elapsed_seconds = max(0.0, (current - anchor).total_seconds())
-    units = int(elapsed_seconds // 60)
-    if units <= 0:
-        ensure_runtime_coverage(db, session=session)
+
+def _lock_gaming_session_for_billing(
+    db: Session,
+    session: GamingSession,
+) -> GamingSession:
+    """Serialize billing updates and track lock ownership across savepoints."""
+    from sqlalchemy import inspect as sa_inspect
+
+    if not isinstance(session, GamingSession):
+        return session
+
+    state = sa_inspect(session)
+    if not state.persistent or state.session is not db:
+        raise GamingBillingError(
+            "Billing requires a persistent gaming session in this transaction."
+        )
+
+    transaction = db.get_transaction()
+    if transaction is None:
+        raise GamingBillingError(
+            "Billing requires an active database transaction."
+        )
+
+    marker = db.info.get("_gaming_billing_lock_marker")
+
+    if marker is None or marker[0] is not transaction:
+        locked_ids = {}
+        db.info["_gaming_billing_lock_marker"] = (
+            transaction,
+            locked_ids,
+        )
+    else:
+        locked_ids = marker[1]
+
+    nested = db.get_nested_transaction()
+    current_owner = nested if nested is not None else transaction
+    recorded_owner = locked_ids.get(session.id)
+
+    if recorded_owner is not None:
+        owner_is_active = recorded_owner.is_active
+        owner_is_root = recorded_owner is transaction
+
+        if owner_is_active and (
+            owner_is_root or recorded_owner is current_owner
+        ):
+            db.flush([session])
+            return session
+
+    protected = {
+        "usage_reservation_id",
+        "billing_currency",
+        "per_minute_price_minor",
+        "host_payout_per_minute_minor",
+        "admission_reserved_minor",
+        "last_metered_at",
+        "availability_cutoff_at",
+        "availability_interrupted_at",
+        "billing_finalized_at",
+        "billing_stop_reason",
+    }
+
+    pending_lifecycle = {}
+
+    for attr in state.mapper.column_attrs:
+        key = attr.key
+        history = state.attrs[key].history
+
+        if history.has_changes() and key not in protected:
+            pending_lifecycle[key] = getattr(session, key)
+
+    with db.no_autoflush:
+        locked = db.scalar(
+            select(GamingSession)
+            .where(GamingSession.id == session.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    if locked is None:
+        raise GamingBillingError(
+            "Gaming session disappeared during billing."
+        )
+
+    for key, value in pending_lifecycle.items():
+        setattr(locked, key, value)
+
+    locked_ids[session.id] = current_owner
+
+    return locked
+
+
+def meter_gaming_session(
+    db: Session,
+    *,
+    session: GamingSession,
+    now: datetime | None = None,
+    force: bool = False,
+) -> int:
+    from datetime import timedelta
+
+    from app.services.gaming_availability_policy import (
+        availability_boundary,
+        capped_time,
+        utc,
+    )
+
+    session = _lock_gaming_session_for_billing(db, session)
+
+    if getattr(session, "billing_finalized_at", None) is not None:
         return 0
 
-    reservation = ensure_runtime_coverage(db, session=session)
+    if session.product_sku_id is None or session.usage_reservation_id is None:
+        return 0
+
+    if (session.status != "running" and not force) or session.started_at is None:
+        return 0
+
+    requested_now = utc(now or datetime.now(UTC))
+
+    node = db.get(Node, session.node_id) if session.node_id else None
+    guest_node_id = getattr(session, "guest_node_id", None)
+    guest_node = db.get(Node, guest_node_id) if guest_node_id else None
+
+    required_nodes = [node]
+    if guest_node_id is not None:
+        required_nodes.append(guest_node)
+
+    boundaries = [
+        availability_boundary(n.last_seen_at) if n is not None else None
+        for n in required_nodes
+    ]
+
+    heartbeat_boundary = (
+        min(boundaries)
+        if boundaries and all(boundary is not None for boundary in boundaries)
+        else None
+    )
+
+    if heartbeat_boundary is None:
+        anchor = session.last_metered_at or session.started_at
+
+        if anchor is not None:
+            anchor = utc(anchor)
+            previous_cutoff = session.availability_cutoff_at
+
+            if previous_cutoff is None or utc(previous_cutoff) > anchor:
+                session.availability_cutoff_at = anchor
+
+        session.availability_interrupted_at = requested_now
+        session.failure_category = "host_heartbeat_unavailable"
+        session.desired_state = "stopped"
+
+        if node is not None:
+            node.gaming_admission_auto_blocked = True
+
+        return 0
+
+    if requested_now > heartbeat_boundary:
+        previous_cutoff = session.availability_cutoff_at
+
+        if previous_cutoff is None or utc(previous_cutoff) > heartbeat_boundary:
+            session.availability_cutoff_at = heartbeat_boundary
+            session.availability_interrupted_at = requested_now
+            session.failure_category = "host_heartbeat_stale"
+            session.desired_state = "stopped"
+
+            if node is not None:
+                node.gaming_admission_auto_blocked = True
+
+    current = capped_time(requested_now, session.availability_cutoff_at)
+
+    anchor = session.last_metered_at or session.started_at
+    anchor = utc(anchor)
+
+    elapsed_seconds = max(0.0, (current - anchor).total_seconds())
+    units = int(elapsed_seconds // 60)
+
+    if units <= 0:
+        if session.availability_cutoff_at is None:
+            ensure_runtime_coverage(db, session=session)
+        return 0
+
+    reservation = (
+        _reservation_for_update(db, session)
+        if session.availability_cutoff_at is not None
+        else ensure_runtime_coverage(db, session=session)
+    )
+
     if reservation is None:
         return 0
-    affordable_units = _remaining(reservation) // max(1, session.per_minute_price_minor)
+
+    affordable_units = (
+        _remaining(reservation)
+        // max(1, session.per_minute_price_minor)
+    )
+
     units = min(units, affordable_units)
+
     if units <= 0:
         session.desired_state = "stopped"
         session.billing_stop_reason = "reserved_funds_exhausted"
@@ -295,9 +497,14 @@ def meter_gaming_session(db: Session, *, session: GamingSession, now: datetime |
 
     gross = units * session.per_minute_price_minor
     host_amount = units * session.host_payout_per_minute_minor
-    from datetime import timedelta
+
     period_end = anchor + timedelta(minutes=units)
-    key = f"gaming:{session.id}:usage:{int(anchor.timestamp())}:{units}:v1"
+
+    key = (
+        f"gaming:{session.id}:reservation:{reservation.id}:usage:"
+        f"{int(anchor.timestamp())}:{units}:v2"
+    )
+
     try:
         if host_amount:
             consume_reserved_usage(
@@ -319,15 +526,28 @@ def meter_gaming_session(db: Session, *, session: GamingSession, now: datetime |
         raise GamingBillingError(str(exc)) from exc
 
     session.last_metered_at = period_end
-    ensure_runtime_coverage(db, session=session)
+
+    if session.availability_cutoff_at is None:
+        ensure_runtime_coverage(db, session=session)
+
     return units
 
 
+
 def finalize_gaming_billing(db: Session, *, session: GamingSession, reason: str) -> None:
+    observed_reservation_id = getattr(session, "usage_reservation_id", None)
+    session = _lock_gaming_session_for_billing(db, session)
+    if (
+        observed_reservation_id is not None
+        and observed_reservation_id != session.usage_reservation_id
+    ):
+        raise GamingBillingError(
+            "Stale finalization rejected: billing reservation changed."
+        )
     if session.billing_finalized_at is not None:
         return
     now = datetime.now(UTC)
-    if session.status == "running" and session.started_at is not None:
+    if session.status in {"running", "stopping"} and session.started_at is not None:
         meter_gaming_session(db, session=session, now=now, force=True)
     reservation = _reservation_for_update(db, session)
     if reservation is not None:
@@ -347,6 +567,15 @@ def finalize_gaming_billing(db: Session, *, session: GamingSession, reason: str)
 
 
 def reopen_gaming_billing(db: Session, *, session: GamingSession) -> None:
+    observed_reservation_id = getattr(session, "usage_reservation_id", None)
+    session = _lock_gaming_session_for_billing(db, session)
+    if (
+        observed_reservation_id is not None
+        and observed_reservation_id != session.usage_reservation_id
+    ):
+        raise GamingBillingError(
+            "Stale reopening rejected: billing reservation changed."
+        )
     if session.product_sku_id is None:
         return
     if session.billing_finalized_at is None:
@@ -359,7 +588,7 @@ def reopen_gaming_billing(db: Session, *, session: GamingSession) -> None:
             db,
             wallet=wallet,
             amount_minor=amount,
-            idempotency_key=f"gaming:{session.id}:restart:{int(datetime.now(UTC).timestamp())}:v1",
+            idempotency_key=f"gaming:{session.id}:restart:{uuid4()}:v1",
             reference_type="gaming_session_restart",
             reference_id=str(session.id),
         )
@@ -368,6 +597,8 @@ def reopen_gaming_billing(db: Session, *, session: GamingSession) -> None:
     session.usage_reservation_id = reservation.id
     session.admission_reserved_minor = amount
     session.last_metered_at = None
+    session.availability_cutoff_at = None
+    session.availability_interrupted_at = None
     session.billing_finalized_at = None
     session.billing_stop_reason = ""
 

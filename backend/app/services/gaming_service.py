@@ -590,15 +590,125 @@ def _gaming_runtime_job_type(session: GamingSession, action: str) -> str:
     return f"gaming.session.{action}"
 
 
+
+def queue_gaming_play(
+    db: Session,
+    *,
+    session: GamingSession,
+    commit: bool = True,
+) -> GamingSession:
+    """Queue customer PLAY without changing commercial lifecycle/billing."""
+
+    if session.status != "running":
+        raise ComputeError(
+            "Gaming session must be running before PLAY."
+        )
+
+    if session.desired_state != "running":
+        raise ComputeError(
+            "Gaming session is not desired running."
+        )
+
+    if session.deployment_stage != "stream_ready":
+        raise ComputeError(
+            "Gaming session must be stream-ready before PLAY."
+        )
+
+    if session.node_id is None:
+        raise ComputeError(
+            "Gaming session is not assigned to a node."
+        )
+
+    if session.deployment_mode != "bare_metal":
+        raise ComputeError(
+            "Customer PLAY is supported only for bare_metal runtimes."
+        )
+
+    if session.gaming_title_id is None:
+        raise ComputeError(
+            "Gaming session has no assigned title."
+        )
+
+    title = db.get(GamingTitle, session.gaming_title_id)
+    if title is None:
+        raise ComputeError(
+            "Gaming session assigned title does not exist."
+        )
+
+    title_identity = {
+        "game_slug": str(title.slug or "").strip(),
+        "launcher_type": str(title.launcher or "").strip().lower(),
+        "launcher_game_id": str(title.launcher_app_id or "").strip(),
+    }
+    if not all(title_identity.values()):
+        raise ComputeError(
+            "Gaming session assigned title identity is incomplete."
+        )
+
+    runtime_id = str(session.runtime_id or "").strip()
+    if not runtime_id:
+        raise ComputeError(
+            "Gaming session has no persisted runtime identity."
+        )
+
+    pending = db.scalar(
+        select(NodeJob)
+        .where(
+            NodeJob.gaming_session_id == session.id,
+            NodeJob.status.in_({"pending", "running"}),
+        )
+        .limit(1)
+    )
+
+    if pending is not None:
+        raise ComputeError(
+            "Gaming session already has an in-flight operation."
+        )
+
+    db.add(
+        NodeJob(
+            node_id=session.node_id,
+            gaming_session_id=session.id,
+            job_type="gaming.workload.play",
+            payload={
+                "session_id": str(session.id),
+                "runtime_id": runtime_id,
+                "gaming_title_id": str(title.id),
+                **title_identity,
+            },
+        )
+    )
+
+    if commit:
+        db.commit()
+        db.refresh(session)
+    else:
+        db.flush()
+
+    return session
+
 def queue_gaming_action(
     db: Session,
     *,
     session: GamingSession,
     action: str,
     commit: bool = True,
+    stop_reason: str | None = None,
 ) -> GamingSession:
     if action not in {"start", "stop", "terminate"}:
         raise ComputeError("Unsupported gaming session action.")
+
+    # Serialize lifecycle admission before inspecting session state
+    # or checking pending jobs. Refresh from the locked database row.
+    locked_session = db.scalar(
+        select(GamingSession)
+        .where(GamingSession.id == session.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_session is None:
+        raise ComputeError("Gaming session not found.")
+    session = locked_session
 
     if session.status in TERMINAL_SESSION_STATES:
         if action == "terminate" and session.status == "terminated":
@@ -615,6 +725,24 @@ def queue_gaming_action(
     )
 
     if pending is not None:
+        if (
+            action == "stop"
+            and pending.job_type in {
+                "gaming.session.start",
+                "gaming.vm.start",
+            }
+            and session.status == "starting"
+            and session.desired_state == "running"
+        ):
+            # Preserve the in-flight START. Its completion must dispatch
+            # the deferred STOP; no reservation or capacity is released here.
+            session.desired_state = "stopped"
+            if commit:
+                db.commit()
+                db.refresh(session)
+            else:
+                db.flush()
+            return session
         raise ComputeError(
             "Gaming session already has an in-flight operation."
         )
@@ -644,6 +772,7 @@ def queue_gaming_action(
                 payload={
                     "session_id": str(session.id),
                     "gpu_uuid": session.gpu_uuid,
+                    "billing_generation": str(session.usage_reservation_id or ""),
                 },
             )
         )
@@ -674,6 +803,11 @@ def queue_gaming_action(
     ready = prepare_connection_shutdown(
         db,
         session=session,
+        stop_reason=(
+            stop_reason
+            if action == "stop"
+            else None
+        ),
     )
 
     if ready:
@@ -697,6 +831,25 @@ def queue_gaming_action(
                 payload={
                     "session_id": str(session.id),
                     "gpu_uuid": session.gpu_uuid,
+                    **(
+                        {
+                            "billing_generation": str(
+                                session.usage_reservation_id or ""
+                            )
+                        }
+                        if action == "stop"
+                        else {}
+                    ),
+                    **(
+                        {
+                            "stop_reason": (
+                                str(stop_reason or "").strip()
+                                or "customer_stop"
+                            )[:80]
+                        }
+                        if action == "stop"
+                        else {}
+                    ),
                 },
             )
         )
@@ -1462,6 +1615,7 @@ def reconcile_gaming_runtime_health_for_node(
             session=session,
             action="stop",
             commit=False,
+            stop_reason="runtime_health_lost",
         )
         stopped.append(session.id)
 
@@ -1490,7 +1644,14 @@ def reconcile_gaming_billing_for_node(
         )
         if pending is None:
             queue_gaming_action(
-                db, session=session, action="stop", commit=False
+                db,
+                session=session,
+                action="stop",
+                commit=False,
+                stop_reason=(
+                    str(session.billing_stop_reason or "").strip()
+                    or "billing_reconciliation_failed"
+                ),
             )
     return stop_ids
 
@@ -1528,9 +1689,88 @@ def finish_gaming_job(
         )
         return
 
-    session = db.get(GamingSession, job.gaming_session_id)
+    session = db.scalar(
+        select(GamingSession)
+        .where(GamingSession.id == job.gaming_session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if session is None:
         return
+
+    # Customer PLAY is a workload operation, not a commercial lifecycle
+    # transition. Its node result is retained on NodeJob itself; neither a
+    # successful nor failed PLAY may alter billing, reservation, desired
+    # state, deployment stage, or commercial session status.
+    if job.job_type == "gaming.workload.play":
+        return
+
+    guarded_lifecycle = {
+        "gaming.session.start": ("running", "starting"),
+        "gaming.vm.start": ("running", "starting"),
+        "gaming.session.stop": ("stopped", "stopping"),
+        "gaming.vm.stop": ("stopped", "stopping"),
+    }
+    expected = guarded_lifecycle.get(job.job_type)
+    if expected is not None:
+        expected_desired, expected_status = expected
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        generation = payload.get("billing_generation")
+        if generation is not None and str(generation) != str(
+            session.usage_reservation_id or ""
+        ):
+            return
+
+        deferred_start_stop = (
+            job.job_type in {
+                "gaming.session.start",
+                "gaming.vm.start",
+            }
+            and session.desired_state == "stopped"
+            and session.status == "starting"
+        )
+        if deferred_start_stop:
+            if status != "succeeded":
+                # A failed START does not prove the runtime is absent.
+                # Retain financial and GPU reservations for reconciliation.
+                session.status = "error"
+                session.failure_category = "deferred_stop_start_uncertain"
+                session.failure_message = (
+                    error_message[:500]
+                    or "START failed while customer STOP was pending; "
+                       "runtime reconciliation required."
+                )
+                return
+
+            from app.services.gaming_connection_service import (
+                prepare_connection_shutdown,
+                continue_deferred_session_action,
+            )
+            # START has succeeded: anchor the new billing generation
+            # before dispatching the customer's deferred STOP.
+            started = datetime.now(UTC)
+            session.started_at = started
+            if session.usage_reservation_id is not None:
+                session.last_metered_at = started
+
+            ready = prepare_connection_shutdown(
+                db, session=session, stop_reason="customer_stop"
+            )
+            if ready:
+                # finish_job has already marked this START succeeded.
+                # Flush that status before the dispatcher queries active
+                # lifecycle jobs. This does not commit the transaction.
+                db.flush()
+                continue_deferred_session_action(
+                    db, session=session, stop_reason="customer_stop"
+                )
+            return
+
+        if (
+            session.desired_state != expected_desired
+            or session.status != expected_status
+        ):
+            return
 
     reservation = db.scalar(
         select(GamingReservation).where(
@@ -1563,7 +1803,14 @@ def finish_gaming_job(
         elif job.job_type == "gaming.vm.stop":
             if session.usage_reservation_id is not None:
                 from app.services.gaming_billing_service import finalize_gaming_billing
-                finalize_gaming_billing(db, session=session, reason="customer_stop")
+                stop_reason = str(
+                    (job.payload or {}).get("stop_reason") or "customer_stop"
+                ).strip()[:80] or "customer_stop"
+                finalize_gaming_billing(
+                    db,
+                    session=session,
+                    reason=stop_reason,
+                )
             session.status = "stopped"; session.connection_info = {}
         elif job.job_type == "gaming.vm.delete":
             if session.usage_reservation_id is not None:
@@ -1615,16 +1862,23 @@ def finish_gaming_job(
                 result.get("deployment_stage")
                 or "stream_ready"
             )
-            session.started_at = session.started_at or datetime.now(UTC)
+            session.started_at = datetime.now(UTC)
             if session.usage_reservation_id is not None:
-                session.last_metered_at = session.last_metered_at or datetime.now(UTC)
+                session.last_metered_at = session.started_at
             session.connection_info = dict(
                 result.get("connection_info") or {}
             )
 
         elif job.job_type == "gaming.session.stop":
             from app.services.gaming_billing_service import finalize_gaming_billing
-            finalize_gaming_billing(db, session=session, reason="customer_stop")
+            stop_reason = str(
+                (job.payload or {}).get("stop_reason") or "customer_stop"
+            ).strip()[:80] or "customer_stop"
+            finalize_gaming_billing(
+                db,
+                session=session,
+                reason=stop_reason,
+            )
             session.status = "stopped"
             session.deployment_stage = "stopped"
             session.connection_info = {}
