@@ -753,6 +753,34 @@ def queue_gaming_action(
         )
 
     if action == "start":
+        # Serialize restart admission with capacity scheduling and
+        # administrative gaming-availability changes.
+        capacity = db.scalar(
+            select(NodeCapacity)
+            .where(NodeCapacity.node_id == session.node_id)
+            .with_for_update()
+        )
+        if capacity is None:
+            raise ComputeError("Gaming host capacity is unavailable.")
+
+        node = db.scalar(
+            select(Node)
+            .where(Node.id == session.node_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            node is None
+            or node.intended_purpose != "gaming_host"
+            or node.lifecycle_state != "approved"
+            or not node.is_enabled
+            or not node.gaming_accepting_work
+            or node.gaming_admission_auto_blocked
+        ):
+            raise ComputeError(
+                "Gaming host is not accepting session starts."
+            )
+
         from app.services.gaming_billing_service import (
             GamingBillingError,
             reopen_gaming_billing,

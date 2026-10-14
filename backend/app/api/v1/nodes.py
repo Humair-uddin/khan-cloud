@@ -269,6 +269,23 @@ def set_gaming_availability(
             detail="Node is not configured as a gaming host.",
         )
 
+    # Coordinate administrative admission changes with scheduler
+    # placement and existing-session START decisions.
+    from app.models.compute import NodeCapacity
+
+    db.scalar(
+        select(NodeCapacity)
+        .where(NodeCapacity.node_id == node.id)
+        .with_for_update()
+    )
+
+    node = db.scalar(
+        select(Node)
+        .where(Node.id == node_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
     node.gaming_accepting_work = payload.accepting_work
     node.gaming_admission_auto_blocked = False
     db.commit()
