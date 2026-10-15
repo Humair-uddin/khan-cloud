@@ -189,6 +189,31 @@ def heartbeat_node(db: Session,node: Node,payload: NodeHeartbeatRequest) -> Node
     db.commit(); db.refresh(node); return node
 
 def transition_node(db: Session,*,node: Node,new_state: str,actor_user_id: UUID,reason: str="") -> Node:
+    if node.intended_purpose == "gaming_host":
+        # Coordinate lifecycle admission with START and placement.
+        # Drain callers may already hold the same capacity row lock.
+        from app.models.compute import NodeCapacity
+
+        capacity = db.scalar(
+            select(NodeCapacity)
+            .where(NodeCapacity.node_id == node.id)
+            .with_for_update()
+        )
+        if capacity is None:
+            raise NodeLifecycleError(
+                "Gaming host lifecycle requires an authoritative capacity row."
+            )
+
+        locked_node = db.scalar(
+            select(Node)
+            .where(Node.id == node.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked_node is None:
+            raise NodeLifecycleError("Gaming host no longer exists.")
+        node = locked_node
+
     current=node.lifecycle_state
     if new_state not in LIFECYCLE_STATES: raise NodeLifecycleError(f"Unknown lifecycle state: {new_state}")
     if new_state not in ALLOWED_TRANSITIONS.get(current,set()):

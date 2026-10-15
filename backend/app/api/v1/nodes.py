@@ -273,11 +273,16 @@ def set_gaming_availability(
     # placement and existing-session START decisions.
     from app.models.compute import NodeCapacity
 
-    db.scalar(
+    capacity = db.scalar(
         select(NodeCapacity)
         .where(NodeCapacity.node_id == node.id)
         .with_for_update()
     )
+    if capacity is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Gaming host capacity is unavailable.",
+        )
 
     node = db.scalar(
         select(Node)
@@ -285,6 +290,13 @@ def set_gaming_availability(
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+    if node.intended_purpose != "gaming_host":
+        raise HTTPException(
+            status_code=409,
+            detail="Node is not configured as a gaming host.",
+        )
 
     node.gaming_accepting_work = payload.accepting_work
     node.gaming_admission_auto_blocked = False

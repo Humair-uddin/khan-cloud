@@ -698,8 +698,31 @@ def queue_gaming_action(
     if action not in {"start", "stop", "terminate"}:
         raise ComputeError("Unsupported gaming session action.")
 
-    # Serialize lifecycle admission before inspecting session state
-    # or checking pending jobs. Refresh from the locked database row.
+    # START locks capacity, node, then session.
+    # STOP and TERMINATE retain session-first locking.
+    if action == "start":
+        start_node_id = db.scalar(
+            select(GamingSession.node_id)
+            .where(GamingSession.id == session.id)
+        )
+        if start_node_id is None:
+            raise ComputeError("Gaming session has no assigned node.")
+
+        capacity = db.scalar(
+            select(NodeCapacity)
+            .where(NodeCapacity.node_id == start_node_id)
+            .with_for_update()
+        )
+        if capacity is None:
+            raise ComputeError("Gaming host capacity is unavailable.")
+
+        node = db.scalar(
+            select(Node)
+            .where(Node.id == start_node_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
     locked_session = db.scalar(
         select(GamingSession)
         .where(GamingSession.id == session.id)
@@ -753,22 +776,11 @@ def queue_gaming_action(
         )
 
     if action == "start":
-        # Serialize restart admission with capacity scheduling and
-        # administrative gaming-availability changes.
-        capacity = db.scalar(
-            select(NodeCapacity)
-            .where(NodeCapacity.node_id == session.node_id)
-            .with_for_update()
-        )
-        if capacity is None:
-            raise ComputeError("Gaming host capacity is unavailable.")
+        if session.node_id != start_node_id:
+            raise ComputeError(
+                "Gaming session host changed during admission."
+            )
 
-        node = db.scalar(
-            select(Node)
-            .where(Node.id == session.node_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
         if (
             node is None
             or node.intended_purpose != "gaming_host"
@@ -1115,6 +1127,31 @@ def reconcile_gaming_node_drain(db: Session, *, node: Node) -> bool:
     """Advance draining -> maintenance only after all gaming ownership clears."""
     if node.lifecycle_state != "draining":
         return False
+
+    # Serialize the final lifecycle transition with START, placement,
+    # administrative availability, and controlled drain.
+    capacity = db.scalar(
+        select(NodeCapacity)
+        .where(NodeCapacity.node_id == node.id)
+        .with_for_update()
+    )
+    if capacity is None:
+        return False
+
+    locked_node = db.scalar(
+        select(Node)
+        .where(Node.id == node.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_node is None:
+        return False
+    node = locked_node
+
+    # The lifecycle may have changed while waiting for the locks.
+    if node.lifecycle_state != "draining":
+        return False
+
     if gaming_node_active_reservation_count(db, node_id=node.id):
         return False
     if gaming_node_inflight_job_count(db, node_id=node.id):
