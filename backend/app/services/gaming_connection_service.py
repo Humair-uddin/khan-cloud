@@ -441,6 +441,7 @@ def continue_deferred_session_action(
         session.failure_message = "Gaming session lost its assigned node during shutdown."
         return
     action = "delete" if session.desired_state == "terminated" else "stop"
+    from app.services.gaming_service import gaming_delete_ownership_fence
     session.status = "terminating" if action == "delete" else "stopping"
     job_type = f"gaming.vm.{action}" if session.deployment_mode == "proxmox_windows_vm" else f"gaming.session.{action}"
     db.add(NodeJob(
@@ -448,6 +449,11 @@ def continue_deferred_session_action(
         payload={
             "session_id": str(session.id),
             "gpu_uuid": session.gpu_uuid,
+            **(
+                gaming_delete_ownership_fence(db, session)
+                if action == "delete"
+                else {}
+            ),
             **(
                 {"billing_generation": str(session.usage_reservation_id or "")}
                 if action == "stop"

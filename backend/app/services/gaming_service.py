@@ -583,6 +583,67 @@ def release_gaming_reservation(db: Session, session: GamingSession) -> None:
     reservation.status = "released"; reservation.released_at = datetime.now(UTC)
 
 
+
+def gaming_delete_ownership_fence(db: Session, session: GamingSession) -> dict:
+    """Capture immutable compute and runtime ownership for a DELETE job."""
+    reservation = db.scalar(
+        select(GamingReservation).where(
+            GamingReservation.gaming_session_id == session.id,
+            GamingReservation.status.in_(ACTIVE_RESERVATION_STATES),
+        )
+    )
+    if reservation is None:
+        raise ComputeError("DELETE requires an active gaming reservation.")
+    if session.node_id != reservation.node_id or session.gpu_uuid != reservation.gpu_uuid:
+        raise ComputeError("DELETE reservation ownership mismatch.")
+    return {
+        "delete_ownership_fence": {
+            "reservation_id": str(reservation.id),
+            "node_id": str(reservation.node_id),
+            "gpu_uuid": reservation.gpu_uuid,
+            "runtime_id": str(session.runtime_id or ""),
+            "runtime_started_at": (
+                session.started_at.isoformat() if session.started_at else ""
+            ),
+            "billing_generation": str(session.usage_reservation_id or ""),
+        }
+    }
+
+
+def gaming_delete_ownership_matches(
+    db: Session, *, session: GamingSession, job: NodeJob
+) -> bool:
+    """Reject missing, malformed or stale DELETE ownership evidence."""
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    fence = payload.get("delete_ownership_fence")
+    if not isinstance(fence, dict):
+        return False
+    reservation = db.scalar(
+        select(GamingReservation).where(
+            GamingReservation.gaming_session_id == session.id
+        ).with_for_update()
+    )
+    if reservation is None or reservation.status not in ACTIVE_RESERVATION_STATES:
+        return False
+    expected = {
+        "reservation_id": str(reservation.id),
+        "node_id": str(reservation.node_id),
+        "gpu_uuid": reservation.gpu_uuid,
+        "runtime_id": str(session.runtime_id or ""),
+        "runtime_started_at": (
+            session.started_at.isoformat() if session.started_at else ""
+        ),
+        "billing_generation": str(session.usage_reservation_id or ""),
+    }
+    return (
+        all(isinstance(fence.get(key), str) for key in expected)
+        and fence == expected
+        and session.node_id == reservation.node_id
+        and session.gpu_uuid == reservation.gpu_uuid
+        and job.node_id == reservation.node_id
+    )
+
+
 def _gaming_runtime_job_type(session: GamingSession, action: str) -> str:
     if session.deployment_mode == "proxmox_windows_vm":
         mapping = {"start":"gaming.vm.start","stop":"gaming.vm.stop","delete":"gaming.vm.delete"}
@@ -871,6 +932,11 @@ def queue_gaming_action(
                 payload={
                     "session_id": str(session.id),
                     "gpu_uuid": session.gpu_uuid,
+                    **(
+                        gaming_delete_ownership_fence(db, session)
+                        if action == "terminate"
+                        else {}
+                    ),
                     **(
                         {
                             "billing_generation": str(
@@ -1279,6 +1345,7 @@ def queue_gaming_legacy_retirement(
         payload={
             "session_id": str(session.id),
             "gpu_uuid": session.gpu_uuid,
+            **gaming_delete_ownership_fence(db, session),
             "legacy_retirement": True,
             "legacy_retirement_expected_state_sha256": state_sha256,
             "legacy_runtime_id": session.runtime_id,
@@ -1517,6 +1584,7 @@ def queue_gaming_quarantine_recovery(
     recovery_payload = {
         "session_id": str(session.id),
         "gpu_uuid": session.gpu_uuid,
+        **gaming_delete_ownership_fence(db, session),
         "quarantine_recovery": True,
         "recovery_source": source,
         "recovery_attempt": session.quarantine_recovery_attempt_count,
@@ -1835,6 +1903,19 @@ def finish_gaming_job(
             session.desired_state != expected_desired
             or session.status != expected_status
         ):
+            return
+
+    if job.job_type in {"gaming.session.delete", "gaming.vm.delete"}:
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        recovery = bool(payload.get("quarantine_recovery"))
+        if session.desired_state != "terminated":
+            return
+        if recovery:
+            if session.status not in {"quarantined", "terminating"}:
+                return
+        elif session.status != "terminating":
+            return
+        if not gaming_delete_ownership_matches(db, session=session, job=job):
             return
 
     reservation = db.scalar(
