@@ -21,6 +21,176 @@ class InstallerState:
         self.update_destination_schema()
         self.update_remediation_schema()
         self.update_trust_schema()
+        self.update_backend_runtime_schema()
+        self.update_destination_activation_schema()
+
+
+    def update_backend_runtime_schema(self) -> None:
+        with self._connect() as db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS
+                transaction_backend_runtimes (
+                    transaction_id TEXT PRIMARY KEY,
+                    runtime_root TEXT NOT NULL,
+                    active_link TEXT NOT NULL,
+                    previous_path TEXT,
+                    candidate_path TEXT NOT NULL,
+                    requirements_sha256 TEXT NOT NULL,
+                    phase TEXT NOT NULL
+                        CHECK (phase IN (
+                            'intent',
+                            'activated',
+                            'restored',
+                            'committed'
+                        )),
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(transaction_id)
+                        REFERENCES installations(transaction_id)
+                        ON DELETE CASCADE
+                )
+            """)
+
+    def record_backend_runtime_intent(
+        self,
+        transaction_id: str,
+        *,
+        runtime_root: Path,
+        active_link: Path,
+        previous_path: Path | None,
+        candidate_path: Path,
+        requirements_sha256: str,
+    ) -> None:
+        import re
+
+        if not re.fullmatch(
+            r"[0-9a-f]{64}", requirements_sha256
+        ):
+            raise ValueError("Invalid requirements SHA-256.")
+
+        with self._connect() as db:
+            db.execute("""
+                INSERT INTO transaction_backend_runtimes (
+                    transaction_id,
+                    runtime_root,
+                    active_link,
+                    previous_path,
+                    candidate_path,
+                    requirements_sha256,
+                    phase,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'intent', ?)
+            """, (
+                transaction_id,
+                str(runtime_root),
+                str(active_link),
+                str(previous_path) if previous_path else None,
+                str(candidate_path),
+                requirements_sha256,
+                utc_now(),
+            ))
+
+    def backend_runtime_record(
+        self,
+        transaction_id: str,
+    ) -> dict | None:
+        with self._connect() as db:
+            row = db.execute("""
+                SELECT *
+                FROM transaction_backend_runtimes
+                WHERE transaction_id = ?
+            """, (transaction_id,)).fetchone()
+
+        return dict(row) if row else None
+
+    def transition_backend_runtime(
+        self,
+        transaction_id: str,
+        *,
+        expected_phase: str,
+        new_phase: str,
+    ) -> None:
+        allowed = {
+            ("intent", "activated"),
+            ("intent", "restored"),
+            ("activated", "restored"),
+            ("activated", "committed"),
+        }
+
+        if (expected_phase, new_phase) not in allowed:
+            raise ValueError("Invalid runtime phase transition.")
+
+        with self._connect() as db:
+            result = db.execute("""
+                UPDATE transaction_backend_runtimes
+                SET phase = ?, updated_at = ?
+                WHERE transaction_id = ?
+                  AND phase = ?
+            """, (
+                new_phase,
+                utc_now(),
+                transaction_id,
+                expected_phase,
+            ))
+
+            if result.rowcount != 1:
+                raise ValueError(
+                    "Runtime phase conflict or missing transaction."
+                )
+
+
+    def update_destination_activation_schema(self) -> None:
+        with self._connect() as db:
+            columns = {
+                row["name"]
+                for row in db.execute(
+                    "PRAGMA table_info(transaction_destinations)"
+                ).fetchall()
+            }
+            if "activation_phase" not in columns:
+                db.execute(
+                    "ALTER TABLE transaction_destinations "
+                    "ADD COLUMN activation_phase TEXT "
+                    "NOT NULL DEFAULT 'pending' "
+                    "CHECK (activation_phase IN "
+                    "('pending', 'activating', 'activated'))"
+                )
+
+    def transition_destination_activation(
+        self,
+        transaction_id: str,
+        destination_path: Path,
+        *,
+        expected_phase: str,
+        new_phase: str,
+    ) -> None:
+        allowed = {
+            ("pending", "activating"),
+            ("activating", "activated"),
+        }
+        if (expected_phase, new_phase) not in allowed:
+            raise ValueError("Invalid destination activation transition.")
+
+        with self._connect() as db:
+            result = db.execute(
+                """
+                UPDATE transaction_destinations
+                SET activation_phase = ?
+                WHERE transaction_id = ?
+                  AND destination_path = ?
+                  AND activation_phase = ?
+                """,
+                (
+                    new_phase,
+                    transaction_id,
+                    str(destination_path),
+                    expected_phase,
+                ),
+            )
+            if result.rowcount != 1:
+                raise ValueError(
+                    "Destination activation phase conflict."
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -607,7 +777,8 @@ class InstallerState:
                     destination_path,
                     existed_before,
                     position,
-                    backup_checksum
+                    backup_checksum,
+                    activation_phase
                 FROM transaction_destinations
                 WHERE transaction_id = ?
                 ORDER BY position

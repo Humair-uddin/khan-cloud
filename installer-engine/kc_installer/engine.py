@@ -711,6 +711,28 @@ def prepare_context(
     )
 
 
+
+def enforce_component_destination(
+    target_root: Path,
+    destination: Path,
+) -> Path:
+    from kc_installer.protected_destinations import (
+        ProtectedDestinationError,
+        validate_component_destination,
+    )
+
+    root = target_root.resolve(strict=True)
+    candidate = Path(destination)
+
+    try:
+        relative = candidate.relative_to(root)
+        return validate_component_destination(root, relative)
+    except (ValueError, ProtectedDestinationError) as exc:
+        raise InstallError(
+            f"Unsafe component destination: {destination}: {exc}"
+        ) from exc
+
+
 def copy_component_to_stage(
     context: InstallContext,
     name: str,
@@ -739,6 +761,10 @@ def copy_component_to_stage(
         raise InstallError(
             f"Unsafe destination outside target repository: {destination}"
         ) from exc
+
+    destination = enforce_component_destination(
+        context.target_dir, destination
+    )
 
     if source.is_dir():
         shutil.copytree(source, staged)
@@ -781,28 +807,90 @@ def activate_component(
     shutil.move(str(staged), str(destination))
 
 
+
 def rollback(
     context: InstallContext,
     destinations: list[Path],
 ) -> None:
+    records = {
+        Path(item["destination_path"]): item
+        for item in context.state.destinations(
+            context.transaction_id
+        )
+    }
+
+    actions = []
+
+    # Validate every required backup before changing anything.
     for destination in reversed(destinations):
+        record = records.get(destination)
+
+        if record is None:
+            raise InstallError(
+                f"Rollback destination not journaled: {destination}"
+            )
+
+        phase = record["activation_phase"]
+
+        if phase == "pending":
+            continue
+
+        if phase not in {"activating", "activated"}:
+            raise InstallError(
+                f"Invalid rollback activation phase: {phase}"
+            )
+
+        enforce_component_destination(
+            context.target_dir, destination
+        )
+
+        existed_before = bool(record["existed_before"])
+
+        relative = destination.relative_to(
+            context.target_dir
+        )
+        backup = context.backup_dir / relative
+
+        if existed_before:
+            expected = record["backup_checksum"]
+
+            if not expected or not backup.exists():
+                raise InstallError(
+                    f"Rollback refused: missing verified backup "
+                    f"for {destination}"
+                )
+
+            if checksum_path(backup) != expected:
+                raise InstallError(
+                    f"Rollback refused: backup checksum mismatch "
+                    f"for {destination}"
+                )
+
+        actions.append(
+            (destination, backup, existed_before)
+        )
+
+    for destination, backup, existed_before in actions:
+        enforce_component_destination(
+            context.target_dir, destination
+        )
+
         if destination.exists():
             if destination.is_dir():
                 shutil.rmtree(destination)
             else:
                 destination.unlink()
 
-        relative = destination.relative_to(context.target_dir)
-        backup = context.backup_dir / relative
-
-        if backup.exists():
-            destination.parent.mkdir(parents=True, exist_ok=True)
+        if existed_before:
+            destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
             if backup.is_dir():
                 shutil.copytree(backup, destination)
             else:
                 shutil.copy2(backup, destination)
-
 
 def run_health_checks(context: InstallContext) -> None:
     for position, check in enumerate(context.manifest.health_checks):
@@ -1040,7 +1128,22 @@ def _install_locked(
         )
 
         for staged, destination in staged_items:
+            enforce_component_destination(
+                context.target_dir, destination
+            )
+            context.state.transition_destination_activation(
+                context.transaction_id,
+                destination,
+                expected_phase="pending",
+                new_phase="activating",
+            )
             activate_component(staged, destination)
+            context.state.transition_destination_activation(
+                context.transaction_id,
+                destination,
+                expected_phase="activating",
+                new_phase="activated",
+            )
 
         context.state.heartbeat(context.transaction_id)
         context.state.record(
@@ -1270,6 +1373,10 @@ def recover_transaction(
                         "Recovery refused: backup integrity check "
                         f"failed for {destination}"
                     )
+
+            enforce_component_destination(
+                target_root, destination
+            )
 
             validated.append(
                 (
