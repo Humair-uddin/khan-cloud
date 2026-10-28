@@ -742,6 +742,18 @@ def test_d1_legacy_delete_never_terminates_reused_pid(
     runtime_id = f"kc-gaming-{session_id}"
     state_file = sessions / f"{runtime_id}.json"
 
+    generation = {
+        "reservation_id": "11111111-2222-4333-8444-555555555555",
+        "node_id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+        "gpu_uuid": "GPU-test",
+        "runtime_id": runtime_id,
+    }
+    delete_fence = {
+        **generation,
+        "runtime_started_at": "2026-10-15T10:00:00+00:00",
+        "billing_generation": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    }
+
     state_file.write_text(
         json.dumps(
             {
@@ -750,6 +762,7 @@ def test_d1_legacy_delete_never_terminates_reused_pid(
                 "session_id": session_id,
                 "status": "running",
                 "gpu_uuid": "GPU-test",
+                "runtime_generation": generation,
                 "minimum_vram_mb": 8192,
                 "launch_info": {
                     "launcher_pid": 20900,
@@ -782,6 +795,7 @@ def test_d1_legacy_delete_never_terminates_reused_pid(
     result = gaming_runtime.change_session_state(
         {
             "session_id": session_id,
+            "delete_ownership_fence": delete_fence,
         },
         state_root=state_root,
         execution_backend="windows_native",
@@ -872,6 +886,18 @@ def test_d1_structural_stop_then_delete_uses_persisted_terminated_proof(
     runtime_id = f"kc-gaming-{session_id}"
     state_file = sessions / f"{runtime_id}.json"
 
+    generation = {
+        "reservation_id": "11111111-2222-4333-8444-555555555555",
+        "node_id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+        "gpu_uuid": "GPU-test",
+        "runtime_id": runtime_id,
+    }
+    delete_fence = {
+        **generation,
+        "runtime_started_at": "2026-10-15T10:00:00+00:00",
+        "billing_generation": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    }
+
     state_file.write_text(
         json.dumps(
             {
@@ -885,6 +911,7 @@ def test_d1_structural_stop_then_delete_uses_persisted_terminated_proof(
                 "streaming_backend":
                     "sunshine",
                 "gpu_uuid": "GPU-test",
+                "runtime_generation": generation,
                 "minimum_vram_mb": 8192,
                 "paired_clients": [],
                 "launch_info": {
@@ -1009,6 +1036,7 @@ def test_d1_structural_stop_then_delete_uses_persisted_terminated_proof(
     delete = gaming_runtime.change_session_state(
         {
             "session_id": session_id,
+            "delete_ownership_fence": delete_fence,
         },
         state_root=state_root,
         execution_backend="windows_native",
@@ -1094,6 +1122,18 @@ def test_d1_delete_accepts_verified_persisted_terminated_proof_without_retermina
     runtime_id = f"kc-gaming-{session_id}"
     state_file = sessions / f"{runtime_id}.json"
 
+    generation = {
+        "reservation_id": "11111111-2222-4333-8444-555555555555",
+        "node_id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+        "gpu_uuid": "GPU-test",
+        "runtime_id": runtime_id,
+    }
+    delete_fence = {
+        **generation,
+        "runtime_started_at": "2026-10-15T10:00:00+00:00",
+        "billing_generation": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    }
+
     state_file.write_text(
         json.dumps(
             {
@@ -1107,6 +1147,7 @@ def test_d1_delete_accepts_verified_persisted_terminated_proof_without_retermina
                 "streaming_backend":
                     "sunshine",
                 "gpu_uuid": "GPU-test",
+                "runtime_generation": generation,
                 "minimum_vram_mb": 8192,
                 "paired_clients": [],
                 "runtime_ownership": {
@@ -1144,6 +1185,7 @@ def test_d1_delete_accepts_verified_persisted_terminated_proof_without_retermina
     delete = gaming_runtime.change_session_state(
         {
             "session_id": session_id,
+            "delete_ownership_fence": delete_fence,
         },
         state_root=state_root,
         execution_backend="windows_native",
@@ -1212,6 +1254,18 @@ def test_d1_delete_rejects_unverified_terminated_proof(
     runtime_id = f"kc-gaming-{session_id}"
     state_file = sessions / f"{runtime_id}.json"
 
+    generation = {
+        "reservation_id": "11111111-2222-4333-8444-555555555555",
+        "node_id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+        "gpu_uuid": "GPU-test",
+        "runtime_id": runtime_id,
+    }
+    delete_fence = {
+        **generation,
+        "runtime_started_at": "2026-10-15T10:00:00+00:00",
+        "billing_generation": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    }
+
     state_file.write_text(
         json.dumps(
             {
@@ -1225,6 +1279,7 @@ def test_d1_delete_rejects_unverified_terminated_proof(
                 "streaming_backend":
                     "sunshine",
                 "gpu_uuid": "GPU-test",
+                "runtime_generation": generation,
                 "minimum_vram_mb": 8192,
                 "paired_clients": [],
                 "runtime_ownership": {
@@ -1250,6 +1305,7 @@ def test_d1_delete_rejects_unverified_terminated_proof(
     delete = gaming_runtime.change_session_state(
         {
             "session_id": session_id,
+            "delete_ownership_fence": delete_fence,
         },
         state_root=state_root,
         execution_backend="windows_native",

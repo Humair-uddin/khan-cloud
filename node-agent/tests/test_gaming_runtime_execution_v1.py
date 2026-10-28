@@ -160,8 +160,19 @@ def test_missing_sunshine_fails_closed_without_installing_anything(tmp_path, mon
 def test_lifecycle_is_stateful_idempotent_and_delete_is_safe(tmp_path, monkeypatch):
     _good_environment(monkeypatch)
     session_id = uuid4()
+    generation = {
+        "reservation_id": str(uuid4()),
+        "node_id": str(uuid4()),
+        "gpu_uuid": "GPU-A",
+        "runtime_id": f"kc-gaming-{session_id}",
+    }
+    delete_fence = {
+        **generation,
+        "runtime_started_at": "2026-10-15T10:00:00+00:00",
+        "billing_generation": str(uuid4()),
+    }
     create = execute_node_job(
-        _job("gaming.session.create", session_id, gpu_uuid="GPU-A", minimum_vram_mb=8192),
+        _job("gaming.session.create", session_id, gpu_uuid="GPU-A", minimum_vram_mb=8192, runtime_generation=generation),
         gaming_state_root=tmp_path,
         **COMMON,
     )
@@ -172,9 +183,9 @@ def test_lifecycle_is_stateful_idempotent_and_delete_is_safe(tmp_path, monkeypat
     assert stop2.result["idempotent"] is True
     start = execute_node_job(_job("gaming.session.start", session_id), gaming_state_root=tmp_path, **COMMON)
     assert start.status == "succeeded" and start.result["status"] == "running"
-    delete = execute_node_job(_job("gaming.session.delete", session_id), gaming_state_root=tmp_path, **COMMON)
+    delete = execute_node_job(_job("gaming.session.delete", session_id, delete_ownership_fence=delete_fence), gaming_state_root=tmp_path, **COMMON)
     assert delete.status == "succeeded" and delete.result["deleted"] is True
-    delete2 = execute_node_job(_job("gaming.session.delete", session_id), gaming_state_root=tmp_path, **COMMON)
+    delete2 = execute_node_job(_job("gaming.session.delete", session_id, delete_ownership_fence=delete_fence), gaming_state_root=tmp_path, **COMMON)
     assert delete2.status == "succeeded" and delete2.result["idempotent"] is True
 
 

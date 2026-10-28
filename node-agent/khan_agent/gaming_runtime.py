@@ -221,6 +221,32 @@ def _legacy_retirement_evidence(
     state_file: Path,
     runtime_id: str,
 ) -> dict[str, Any]:
+    if payload.get("legacy_retirement") is not True:
+        raise GamingRuntimeError(
+            "Legacy retirement requires an explicit Boolean authorization flag."
+        )
+
+    required_fields = (
+        "legacy_retirement_expected_state_sha256",
+        "legacy_runtime_id",
+        "legacy_runtime_started_at",
+        "requested_by_user_id",
+        "legacy_retirement_reason",
+    )
+    if any(
+        not isinstance(payload.get(key), str)
+        or not payload[key].strip()
+        for key in required_fields
+    ):
+        raise GamingRuntimeError(
+            "Legacy retirement authorization evidence is incomplete."
+        )
+
+    if isinstance(state.get("runtime_generation"), dict):
+        raise GamingRuntimeError(
+            "Legacy retirement is forbidden for generation-bound runtime state."
+        )
+
     expected_sha = str(
         payload.get(
             "legacy_retirement_expected_state_sha256"
@@ -417,6 +443,9 @@ class GamingRuntimePaths:
     def session_file(self, runtime_id: str) -> Path:
         return self.sessions_dir / f"{runtime_id}.json"
 
+    def deletion_receipt_file(self, runtime_id: str) -> Path:
+        return self.sessions_dir / f"{runtime_id}.deleted.json"
+
 
 def _runtime_id(session_id: str) -> str:
     try:
@@ -483,6 +512,18 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+
+
+
+def _sync_deleted_state_directory(path: Path) -> None:
+    """Durably record removal of a runtime state on POSIX."""
+    if platform.system() == "Windows":
+        return
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _interactive_session_context() -> dict[str, Any]:
@@ -1520,8 +1561,47 @@ def create_session(
         )
 
         existing = _read_state(state_file)
+        deletion_receipt = _read_state(
+            paths.deletion_receipt_file(runtime_id)
+        )
+        if deletion_receipt is not None:
+            raise GamingRuntimeError(
+                "CREATE rejected: runtime has a durable deletion receipt."
+            )
+
+        requested_generation = payload.get("runtime_generation")
+        if requested_generation is not None:
+            if not isinstance(requested_generation, dict):
+                raise GamingRuntimeError(
+                    "Runtime generation must be an object."
+                )
+            expected_generation = {
+                "reservation_id": str(
+                    requested_generation.get("reservation_id") or ""
+                ),
+                "node_id": str(
+                    requested_generation.get("node_id") or ""
+                ),
+                "gpu_uuid": gpu_uuid,
+                "runtime_id": runtime_id,
+            }
+            if (
+                not expected_generation["reservation_id"]
+                or not expected_generation["node_id"]
+                or requested_generation != expected_generation
+            ):
+                raise GamingRuntimeError(
+                    "Runtime generation identity is invalid."
+                )
+        else:
+            expected_generation = None
 
         if existing is not None:
+            if expected_generation is not None:
+                if existing.get("runtime_generation") != expected_generation:
+                    raise GamingRuntimeError(
+                        "Existing runtime generation mismatch."
+                    )
             if str(existing.get("gpu_uuid")) != gpu_uuid:
                 raise GamingRuntimeError(
                     "Existing runtime is bound to a different GPU; refusing reassignment."
@@ -1814,6 +1894,9 @@ def create_session(
             "runtime_ownership": runtime_ownership,
             "stream_readiness": readiness,
         }
+
+        if expected_generation is not None:
+            state["runtime_generation"] = expected_generation
 
         if display_policy_result is not None:
             state["display_policy_request"] = (
@@ -2113,10 +2196,92 @@ def change_session_state(
             trace.emit("runtime_start_enter")
             trace.emit("runtime_preparation_begin")
         state = _read_state(state_file)
+        receipt_path = GamingRuntimePaths(
+            Path(state_root)
+        ).deletion_receipt_file(runtime_id)
+        receipt = (
+            _read_state(receipt_path)
+            if action == "delete" and payload.get("legacy_retirement") is not True
+            else None
+        )
+
+        if action == "delete" and payload.get("legacy_retirement") is not True:
+            fence = payload.get("delete_ownership_fence")
+            if not isinstance(fence, dict):
+                raise GamingRuntimeError(
+                    "DELETE requires an ownership fence."
+                )
+
+            required = {
+                "reservation_id",
+                "node_id",
+                "gpu_uuid",
+                "runtime_id",
+                "runtime_started_at",
+                "billing_generation",
+            }
+            if (
+                set(fence) != required
+                or not all(isinstance(fence[k], str) for k in required)
+                or not fence["reservation_id"]
+                or not fence["node_id"]
+                or not fence["gpu_uuid"]
+                or fence["runtime_id"] != runtime_id
+            ):
+                raise GamingRuntimeError(
+                    "DELETE ownership fence is malformed."
+                )
+
+            if receipt is not None:
+                if (
+                    (
+                        type(receipt.get("schema_version")) is not int
+                        or receipt["schema_version"] != 1
+                    )
+                    or receipt.get("runtime_id") != runtime_id
+                    or receipt.get("delete_ownership_fence") != fence
+                    or receipt.get("sanitized") is not True
+                    or type(receipt.get("runtime_state_deleted")) is not bool
+                ):
+                    raise GamingRuntimeError(
+                        "DELETE rejected: deletion receipt proof mismatch."
+                    )
+                if (
+                    state is not None
+                    and receipt["runtime_state_deleted"] is True
+                ):
+                    raise GamingRuntimeError(
+                        "DELETE rejected: completed receipt conflicts "
+                        "with active runtime state."
+                    )
+
+            if state is not None:
+                generation = state.get("runtime_generation")
+                if not isinstance(generation, dict):
+                    raise GamingRuntimeError(
+                        "DELETE runtime has no generation evidence."
+                    )
+
+                expected = {
+                    "reservation_id": fence["reservation_id"],
+                    "node_id": fence["node_id"],
+                    "gpu_uuid": fence["gpu_uuid"],
+                    "runtime_id": fence["runtime_id"],
+                }
+                if generation != expected:
+                    raise GamingRuntimeError(
+                        "DELETE runtime generation mismatch."
+                    )
+
+                if str(state.get("gpu_uuid") or "") != fence["gpu_uuid"]:
+                    raise GamingRuntimeError(
+                        "DELETE GPU ownership mismatch."
+                    )
+
         if state is None:
             if (
                 action == "delete"
-                and payload.get("legacy_retirement")
+                and payload.get("legacy_retirement") is True
             ):
                 expected_sha = str(
                     payload.get(
@@ -2213,6 +2378,26 @@ def change_session_state(
                 )
 
             if action == "delete":
+                if receipt is None:
+                    raise GamingRuntimeError(
+                        "DELETE rejected: runtime state and deletion "
+                        "receipt are both absent."
+                    )
+                if receipt.get("delete_ownership_fence") != payload.get(
+                    "delete_ownership_fence"
+                ):
+                    raise GamingRuntimeError(
+                        "DELETE rejected: deletion receipt generation mismatch."
+                    )
+                if receipt.get("sanitized") is not True:
+                    raise GamingRuntimeError(
+                        "DELETE rejected: deletion receipt is not sanitized."
+                    )
+                if receipt["runtime_state_deleted"] is False:
+                    _sync_deleted_state_directory(state_file)
+                    completed_receipt = dict(receipt)
+                    completed_receipt["runtime_state_deleted"] = True
+                    _write_state(receipt_path, completed_receipt)
                 return JobExecutionResult(
                     "succeeded",
                     {
@@ -2580,7 +2765,7 @@ def change_session_state(
 
                 legacy_retirement = bool(
                     action == "delete"
-                    and payload.get("legacy_retirement")
+                    and payload.get("legacy_retirement") is True
                 )
 
                 if legacy_retirement:
@@ -2698,12 +2883,7 @@ def change_session_state(
                     )
 
         if action == "delete":
-            try:
-                state_file.unlink()
-            except FileNotFoundError:
-                pass
-
-            state_deleted = not state_file.exists()
+            state_deleted = True
             assert sanitation is not None
             sanitation.update(
                 {
@@ -2770,6 +2950,44 @@ def change_session_state(
             )
             if not bool(sanitation["sanitized"]):
                 raise GamingRuntimeError("Gaming runtime sanitization proof failed.")
+
+            fence = payload.get("delete_ownership_fence")
+            if not isinstance(fence, dict):
+                raise GamingRuntimeError(
+                    "DELETE requires a valid ownership fence."
+                )
+            if receipt is None:
+                _write_state(
+                    receipt_path,
+                    {
+                        "schema_version": 1,
+                        "runtime_id": runtime_id,
+                        "delete_ownership_fence": fence,
+                        "sanitized": True,
+                        "runtime_state_deleted": False,
+                    },
+                )
+
+            state_file.unlink()
+            if state_file.exists():
+                raise GamingRuntimeError(
+                    "DELETE could not remove runtime state."
+                )
+            _sync_deleted_state_directory(state_file)
+
+            # Persist completion after state removal. A crash between
+            # these operations is recoverable from the prepared receipt.
+            _write_state(
+                receipt_path,
+                {
+                    "schema_version": 1,
+                    "runtime_id": runtime_id,
+                    "delete_ownership_fence": fence,
+                    "sanitized": True,
+                    "runtime_state_deleted": True,
+                },
+            )
+            sanitation["runtime_state_deleted"] = True
 
             return JobExecutionResult(
                 "succeeded",

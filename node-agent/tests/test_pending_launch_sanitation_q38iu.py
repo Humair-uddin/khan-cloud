@@ -481,6 +481,26 @@ def test_q38iu_delete_pending_candidate_sanitizes_before_state_removal(
         write_pending(tmp_path)
     )
 
+    # Bind this pending-launch fixture to the authorized generation.
+    generation = {
+        "reservation_id": "11111111-2222-4333-8444-555555555555",
+        "node_id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+        "gpu_uuid": "GPU-test",
+        "runtime_id": runtime_id,
+    }
+    delete_fence = {
+        **generation,
+        "runtime_started_at": "2026-10-15T10:00:00+00:00",
+        "billing_generation": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    }
+
+    saved = read(path)
+    saved["runtime_generation"] = generation
+    path.write_text(
+        __import__("json").dumps(saved),
+        encoding="utf-8",
+    )
+
     ownership = recovered_ownership(
         runtime_id
     )
@@ -506,7 +526,10 @@ def test_q38iu_delete_pending_candidate_sanitizes_before_state_removal(
 
     result = (
         gaming_runtime.change_session_state(
-            {"session_id": session_id},
+            {
+                "session_id": session_id,
+                "delete_ownership_fence": delete_fence,
+            },
             state_root=tmp_path,
             execution_backend=
                 "windows_native",
@@ -516,7 +539,7 @@ def test_q38iu_delete_pending_candidate_sanitizes_before_state_removal(
         )
     )
 
-    assert result.status == "succeeded"
+    assert result.status == "succeeded", result.error_message
     assert not path.exists()
 
 

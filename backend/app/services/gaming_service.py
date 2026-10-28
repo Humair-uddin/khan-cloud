@@ -509,7 +509,17 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
         except GamingBillingError as exc:
             db.rollback()
             raise ComputeError(str(exc)) from exc
-    db.add(GamingReservation(gaming_session_id=session.id,node_id=node.id,gpu_uuid=gpu_uuid,cpu=payload.cpu,memory_bytes=memory_bytes,storage_bytes=storage_bytes,status="reserved"))
+    reservation = GamingReservation(
+        gaming_session_id=session.id,
+        node_id=node.id,
+        gpu_uuid=gpu_uuid,
+        cpu=payload.cpu,
+        memory_bytes=memory_bytes,
+        storage_bytes=storage_bytes,
+        status="reserved",
+    )
+    db.add(reservation)
+    db.flush()
     capacity.cpu_allocated += payload.cpu; capacity.memory_allocated_bytes += memory_bytes; capacity.storage_allocated_bytes += storage_bytes
     display_policy = _gaming_session_display_policy(payload)
 
@@ -528,6 +538,12 @@ def create_gaming_session(db: Session, *, payload: GamingSessionCreate, actor: U
             payload={
                 "session_id": str(session.id),
                 "gpu_uuid": gpu_uuid,
+                "runtime_generation": {
+                    "reservation_id": str(reservation.id),
+                    "node_id": str(node.id),
+                    "gpu_uuid": gpu_uuid,
+                    "runtime_id": f"kc-gaming-{session.id}",
+                },
                 "gpu_name": gpu_name,
                 "minimum_vram_mb": effective_vram,
                 "streaming_backend": payload.streaming_backend,
